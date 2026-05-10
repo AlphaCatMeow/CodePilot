@@ -25,8 +25,14 @@ import * as path from 'node:path';
 const repoRoot = path.join(__dirname, '..', '..');
 
 describe('RunCockpit — capacity-unknown context block', () => {
+  // 2026-05-09 split: the unknown-capacity branch lives in the lazy
+  // popover content file (RunCockpit.tsx is the trigger-only shell).
+  // We read from RunCockpitPopoverContent.tsx so the contract still
+  // catches a regression that drops the breakdown rows. The shell file
+  // intentionally never references these keys — that's the whole point
+  // of the split, and the chat-static-graph test enforces it.
   const src = fs.readFileSync(
-    path.join(repoRoot, 'components/chat/RunCockpit.tsx'),
+    path.join(repoRoot, 'components/chat/RunCockpitPopoverContent.tsx'),
     'utf8',
   );
 
@@ -34,7 +40,7 @@ describe('RunCockpit — capacity-unknown context block', () => {
     assert.match(
       src,
       /showUnknownCapacityBlock\s*=\s*usage\.hasData\s*&&\s*!hasFullCtx/,
-      'RunCockpit must derive an unknown-capacity flag so the fallback path can render context details when usage exists but contextWindow is missing',
+      'RunCockpitPopoverContent must derive an unknown-capacity flag so the fallback path can render context details when usage exists but contextWindow is missing',
     );
   });
 
@@ -42,7 +48,7 @@ describe('RunCockpit — capacity-unknown context block', () => {
     assert.match(
       src,
       /runStatus\.contextCapacityUnknown/,
-      'RunCockpit fallback must surface a "capacity unknown" label so the user can tell the percentage is intentionally missing rather than the data being absent',
+      'RunCockpitPopoverContent fallback must surface a "capacity unknown" label so the user can tell the percentage is intentionally missing rather than the data being absent',
     );
   });
 
@@ -54,7 +60,7 @@ describe('RunCockpit — capacity-unknown context block', () => {
       assert.match(
         src,
         new RegExp(`runStatus\\.${key}`),
-        `RunCockpit unknown-capacity branch must reference runStatus.${key} so input / output / cache breakdown stays visible without a contextWindow`,
+        `RunCockpitPopoverContent unknown-capacity branch must reference runStatus.${key} so input / output / cache breakdown stays visible without a contextWindow`,
       );
     }
   });

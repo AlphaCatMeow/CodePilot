@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
+import { Suspense, useState, useCallback, useRef, useEffect, useMemo } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import type { Message, SSEEvent, SessionResponse, TokenUsage, PermissionRequestEvent, FileAttachment, MentionRef } from '@/types';
 import { MessageList } from '@/components/chat/MessageList';
 import { MessageInput } from '@/components/chat/MessageInput';
@@ -18,15 +18,29 @@ import { RunCheckpoint } from '@/components/chat/RunCheckpoint';
 import { OnboardingWizard } from '@/components/assistant/OnboardingWizard';
 import { ErrorBanner } from '@/components/ui/error-banner';
 import { buildCheckpoints } from '@/lib/run-checkpoint';
-import { useOverviewData } from '@/components/settings/useOverviewData';
-import { computeEffectiveRuntime } from '@/lib/runtime/effective';
-import { useClaudeStatus } from '@/hooks/useClaudeStatus';
+// Chat first-paint memory contract (2026-05-09): NewChatPage must NOT
+// statically reach `useOverviewData` (full Settings overview snapshot,
+// fans out to 6+ /api endpoints + transitively pulls runtime/effective
+// + provider-catalog). RunCheckpoint now only carries session-scoped
+// "can this send go through" reasons; full health signals belong to
+// /settings/health and the lazy RunCockpit popover. RuntimeSelector
+// only needs the global agent_runtime label, which the lightweight
+// hook below fetches from /api/settings/app alone.
+// `computeEffectiveRuntime` and `useClaudeStatus` were here ONLY to
+// compute `runtimeFallback` for the checkpoint banner — that signal
+// was global health, not session blocking, so it's no longer surfaced
+// at the chat first-paint. See chat-static-graph.test.ts.
+import { useGlobalAgentRuntime } from '@/hooks/useGlobalAgentRuntime';
 import { FolderPicker } from '@/components/chat/FolderPicker';
 import { useNativeFolderPicker } from '@/hooks/useNativeFolderPicker';
 import { useTranslation } from '@/hooks/useTranslation';
 import { usePanel } from '@/hooks/usePanel';
 import { maybeShowStatusToast } from '@/hooks/useSSEStream';
 import { seedSnapshotPatch } from '@/lib/stream-session-manager';
+// `runtime/effective` stays — it's needed for the local resolver effect
+// that produces `invalidDefault` (runtime-aware pinned-default check).
+// That's the only contributor to RunCheckpoint's pinned-invalid
+// reason on the new-chat page.
 import { resolveNewChatDefault } from '@/lib/runtime/effective';
 
 interface ToolUseInfo {
@@ -42,13 +56,26 @@ interface ToolResultInfo {
 }
 
 export default function NewChatPage() {
+  // useSearchParams in App Router needs a Suspense boundary. The body of
+  // NewChatPage was previously reading window.location.search inside a
+  // `useMemo([])` to avoid that wrapper, but `useMemo([])` only runs once
+  // per mount, so URL changes after mount (e.g. router.push to
+  // /chat?prefill=… while /chat is already mounted, or back-forward
+  // navigation) didn't update `prefillText`. Result: Tasks page → "新建任务"
+  // could land on /chat with the prefill query in the URL but an empty
+  // textarea. Suspense + useSearchParams makes prefill reactive without
+  // breaking SSR/static prerender.
+  return (
+    <Suspense fallback={null}>
+      <NewChatPageInner />
+    </Suspense>
+  );
+}
+
+function NewChatPageInner() {
   const router = useRouter();
-  // Read prefill from URL once on mount — avoids useSearchParams which requires Suspense boundary
-  const prefillText = useMemo(() => {
-    if (typeof window === 'undefined') return '';
-    const params = new URLSearchParams(window.location.search);
-    return params.get('prefill') || '';
-  }, []);
+  const searchParams = useSearchParams();
+  const prefillText = searchParams.get('prefill') || '';
   const { setPendingApprovalSessionId } = usePanel();
   const { t } = useTranslation();
   const { isElectron, openNativePicker } = useNativeFolderPicker();
@@ -148,83 +175,66 @@ export default function NewChatPage() {
   // already corrected itself.
   const sessionRuntimeParam = chatRuntimeParamForSession(runtimePin);
 
-  // Run Checkpoint signals — pulled from the same `useOverviewData` snapshot
-  // that drives RunCockpit so the inline banner above the composer and the
-  // status row below it can never disagree. `runtimeFallback` is derived
-  // here (not in the hook) because it depends on whether the bridged
-  // Claude Code CLI is currently reachable — see `useClaudeStatus`.
-  // Round 2 adds context-cost and permission-elevation triggers; the
-  // first reads `pendingContextTokens` (already lifted from MessageInput)
-  // plus `usedContextTokens` derived from session messages.
-  const overview = useOverviewData();
-  const { status: claudeStatus } = useClaudeStatus();
+  // Run Checkpoint signals — session-scoped only, no global health.
+  //
+  // Phase 2 originally pulled the full `useOverviewData()` snapshot
+  // here so RunCheckpoint and RunCockpit could "agree on the same
+  // numbers". That coupling cost the chat first paint a fan-out of
+  // /api fetches plus a static compile-graph reach into Settings
+  // Overview / runtime/effective / provider catalog. The 2026-05-09
+  // memory cut moves global health (provider count / models enabled /
+  // workspace state / global default invalid / runtime fallback) out
+  // of this surface entirely — RunCockpit's lazy popover still shows
+  // them when the user opens it, /settings/health is the canonical
+  // dashboard. RunCheckpoint here keeps only the reasons that gate
+  // "can this send go through":
+  //   - noCompatibleProvider:        local state, set when the picker
+  //                                   can't find a provider/model pair
+  //                                   under the active runtime
+  //   - !!invalidDefault:            local state from the runtime-aware
+  //                                   resolver effect (NOT OR'd with
+  //                                   any global flag — under explicit
+  //                                   pin the local check is canonical;
+  //                                   under follow-default it's the
+  //                                   runtime-aware substitute for the
+  //                                   global pinned check)
+  //   - context-cost + permission-elevation: per-send confirmation
+  //                                   gates, unrelated to runtime
+  //
   // /chat (new conversation page) hasn't accumulated messages yet, so
   // usedContextTokens is 0 — the context-cost trigger collapses to the
   // 10K hard cap on the pending side.
   const usedContextTokens = 0;
   const checkpointReasons = useMemo(() => {
-    if (overview.loading) return [];
-    const cliConnected = !!claudeStatus?.connected;
-    const settingRuntime = computeEffectiveRuntime(
-      overview.agentRuntime,
-      overview.cliEnabled,
-      cliConnected,
-    );
-    const isOpenAiOauth = currentProviderId === 'openai-oauth';
-    const effectiveRuntime = isOpenAiOauth ? 'native' : settingRuntime;
-    const runtimeFallback =
-      overview.agentRuntime === 'claude-code-sdk' && effectiveRuntime !== 'claude-code-sdk';
     const pinnedDescriptor = invalidDefault?.modelValue
       ? `${invalidDefault.providerName ?? invalidDefault.providerId ?? '?'} / ${invalidDefault.modelValue}`
-      : (invalidDefault?.providerId ?? overview.defaultProviderName ?? undefined);
+      : invalidDefault?.providerId ?? undefined;
     const permissionElevationPending =
       permissionProfile === 'full_access' &&
       permissionElevationConfirmedFor !== 'full_access';
-    // Step 4c round 2 — `overview.defaultInvalid` is computed against the
-    // GLOBAL default (independent of session runtime), so under an
-    // explicit runtimePin override it's stale: the user's pick has
-    // already routed around the broken global pin, the local resolver
-    // has confirmed a valid pair under the new runtime, and continuing
-    // to OR this in keeps the red checkpoint up + composer disabled
-    // even though the path is unblocked. Suppress the global flag in
-    // that case; the local `invalidDefault` (which IS runtime-aware,
-    // since the resolver fetched against `sessionRuntimeParam`) is the
-    // source of truth here. When the user is following the global
-    // runtime (`runtimePin === ''`), keep the OR — the global pinned
-    // gate still applies per the "pinned default is a hard promise"
-    // rule.
-    //
-    // **Step 4c round 3** extends the same rule to `runtimeFallback`:
-    // that flag is computed entirely from `overview.agentRuntime`
-    // (global setting) + Claude CLI reachability, so it fires "执行
-    // 引擎已降级" whenever the global pin is `claude-code-sdk` but the
-    // CLI isn't there — even when the user has explicitly opted out
-    // of Claude Code for this session via RuntimeSelector. Under an
-    // override, the global SDK→native fallback is none of this
-    // session's business; the user's pick already runs natively. Same
-    // suppression shape: gate on `overrideGlobalPinnedGate`.
-    const overrideGlobalPinnedGate = !!runtimePin;
     return buildCheckpoints({
       noCompatibleProvider,
-      defaultInvalid: !!invalidDefault || (!overrideGlobalPinnedGate && overview.defaultInvalid),
-      runtimeFallback: overrideGlobalPinnedGate ? false : runtimeFallback,
+      defaultInvalid: !!invalidDefault,
       pinnedDescriptor,
       pendingContextTokens,
       usedContextTokens,
       permissionElevationPending,
     });
   }, [
-    overview,
-    claudeStatus?.connected,
-    currentProviderId,
     invalidDefault,
     noCompatibleProvider,
     pendingContextTokens,
     usedContextTokens,
     permissionProfile,
     permissionElevationConfirmedFor,
-    runtimePin,
   ]);
+  // RuntimeSelector display fallback — when the session has no
+  // explicit pin, show the current global runtime so the user sees
+  // a concrete name instead of a hedge. Lightweight hook (single
+  // /api/settings/app fetch) keeps this surface off the heavy
+  // overview path; the heavy popover content uses `useOverviewData`
+  // when actually opened.
+  const globalRuntime = useGlobalAgentRuntime();
   const blockingReasonIds = useMemo(
     () => checkpointReasons.filter((r) => r.requiresConfirm).map((r) => r.id),
     [checkpointReasons],
@@ -953,7 +963,7 @@ export default function NewChatPage() {
                         'CLI_NOT_FOUND', 'UNSUPPORTED_FEATURE',
                       ]);
                       if (diagCategories.has(parsed.category)) {
-                        errorDisplay += '\n\n💡 [Run Provider Diagnostics](/settings#providers) to troubleshoot, or check the [Provider Setup Guide](https://www.codepilot.sh/docs/providers).';
+                        errorDisplay += '\n\n💡 [Run Provider Diagnostics](/settings/providers) to troubleshoot, or check the [Provider Setup Guide](https://www.codepilot.sh/docs/providers).';
                       }
                     } else {
                       errorDisplay = event.data;
@@ -1074,7 +1084,7 @@ export default function NewChatPage() {
             } else if (assistantWorkspacePath) {
               setShowWizard(true);
             } else {
-              router.push('/settings#assistant');
+              router.push('/settings/assistant');
             }
           }}
         />
@@ -1135,6 +1145,23 @@ export default function NewChatPage() {
           setCurrentModel(model);
           localStorage.setItem('codepilot:last-provider-id', pid);
           localStorage.setItem('codepilot:last-model', model);
+          // Codex P1 — manual picker override clears the
+          // RunCheckpoint blocker. The picker is runtime-filtered (it
+          // only surfaces models that resolve in the current
+          // provider+runtime combo), so any (pid, model) the user
+          // can pick from this dropdown is by construction reachable.
+          // Without these resets, the new-chat page would stay
+          // "固定默认模型不可用" / send-disabled even after the user
+          // explicitly chose a working model — they'd have no way
+          // out except to fix the global pinned default in Settings,
+          // which is the wrong remedy when the user is just trying
+          // to start a single conversation. The state these flags
+          // gate (invalidDefault / noCompatibleProvider) describes
+          // the GLOBAL default's reachability under the active
+          // runtime; once the user has overridden it for this
+          // conversation, that gate is no longer load-bearing.
+          setInvalidDefault(null);
+          setNoCompatibleProvider(false);
         }}
         workingDirectory={workingDir}
         effort={selectedEffort}
@@ -1149,7 +1176,7 @@ export default function NewChatPage() {
             <ModeIndicator mode={mode} onModeChange={setMode} disabled={isStreaming} />
             <RuntimeSelector
               runtimePin={runtimePin}
-              effectiveRuntime={overview.agentRuntime === 'claude-code-sdk' ? 'claude_code' : 'codepilot_runtime'}
+              effectiveRuntime={globalRuntime.agentRuntime === 'claude-code-sdk' ? 'claude_code' : 'codepilot_runtime'}
               onRuntimePinChange={(pin: ChatRuntime) => setRuntimePin(pin)}
               disabled={isStreaming}
             />

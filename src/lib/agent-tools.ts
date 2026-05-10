@@ -75,9 +75,15 @@ export function assembleTools(options: AssembleToolsOptions = {}): AssembleTools
   }
 
   // Built-in MCP-equivalent tools (notification, memory, dashboard, etc.)
+  // Pass through sessionId so codepilot_schedule_task can inject
+  // origin_session_id + working_directory into /api/tasks/schedule
+  // POST body. Without this, AI tasks created by the model would be
+  // unanchored and the runner couldn't tell which project session the
+  // result belongs to.
   const { tools: builtinMcpTools, systemPrompts } = getBuiltinTools({
     workspacePath: cwd,
     prompt: options.prompt,
+    sessionId: options.permissionContext?.sessionId,
   });
 
   // External MCP tools from connected servers

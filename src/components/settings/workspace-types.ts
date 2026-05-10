@@ -11,6 +11,8 @@ export interface WorkspaceState {
   lastCheckInDate?: string | null;
   schemaVersion: number;
   heartbeatEnabled: boolean;
+  /** Phase 3 Step 4 — heartbeat interval (in hours). */
+  heartbeatIntervalHours?: number;
   /** @deprecated Use heartbeatEnabled instead */
   dailyCheckInEnabled?: boolean;
 }

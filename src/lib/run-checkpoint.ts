@@ -47,8 +47,10 @@ export type CheckpointActionId =
 export interface CheckpointAction {
   /** i18n key for the button label. Resolved by the renderer. */
   labelKey: string;
-  /** Settings hash to navigate to (e.g. `'/settings#runtime'`). The
-   *  renderer turns this into a router.push or window.location nav. */
+  /** Settings route to navigate to (e.g. `'/settings/runtime'`). The
+   *  renderer turns this into a router.push or window.location nav.
+   *  Use the route-level path so the user lands directly in the section
+   *  without paying the redirect-from-root recompile cost. */
   href?: string;
   /** Optional explicit handler — wins over `href` if both provided. */
   onClick?: () => void;
@@ -82,15 +84,23 @@ export interface CheckpointReason {
 }
 
 export interface BuildCheckpointsOpts {
-  /** `state.noCompatibleProvider` from `useOverviewData`. */
+  /** Session-scoped: the picker couldn't resolve a provider/model
+   *  pair under the active runtime. Always required because every
+   *  RunCheckpoint surface needs to be able to express it. */
   noCompatibleProvider: boolean;
-  /** `state.defaultInvalid` from `useOverviewData` — only meaningful
-   *  in Pinned mode (Auto-mode silent fallback is allowed). */
-  defaultInvalid: boolean;
-  /** Derived in `RunCockpit`: `agentRuntime === 'claude-code-sdk' &&
-   *  effectiveRuntime !== 'claude-code-sdk'`. True when the user
-   *  asked for SDK but we're actually on Native. */
-  runtimeFallback: boolean;
+  /** Pinned-default invalid. Optional because chat first-paint surfaces
+   *  use only the local runtime-aware resolver result here, and existing
+   *  sessions ignore the global pin entirely. Settings / Health pages
+   *  may still pass `true` from `useOverviewData().defaultInvalid` when
+   *  surfacing global health. Defaults to `false`. */
+  defaultInvalid?: boolean;
+  /** Global "user asked for SDK but CLI fell back to native" notice.
+   *  Optional because the chat surfaces dropped this signal entirely
+   *  (it's global health, not session blocking — see
+   *  `chat-static-graph.test.ts` for the contract). Settings / Health
+   *  pages still drive it from `useOverviewData` + `useClaudeStatus`.
+   *  Defaults to `false`. */
+  runtimeFallback?: boolean;
   /** Human-readable "Anthropic / sonnet-4-5" for the pinned-invalid
    *  banner. Renderer interpolates into the description.
    *  Undefined → renders as "?" placeholder. */
@@ -170,7 +180,7 @@ export function buildCheckpoints(opts: BuildCheckpointsOpts): CheckpointReason[]
       descriptionKey: 'runCheckpoint.noProvider.description',
       action: {
         labelKey: 'runCheckpoint.noProvider.action',
-        href: '/settings#providers',
+        href: '/settings/providers',
         actionId: 'open-providers',
       },
     });
@@ -186,7 +196,7 @@ export function buildCheckpoints(opts: BuildCheckpointsOpts): CheckpointReason[]
       descriptionValues: { pinned: opts.pinnedDescriptor || '?' },
       action: {
         labelKey: 'runCheckpoint.pinnedInvalid.action',
-        href: '/settings#runtime',
+        href: '/settings/runtime',
         actionId: 'open-runtime',
       },
     });
@@ -200,7 +210,7 @@ export function buildCheckpoints(opts: BuildCheckpointsOpts): CheckpointReason[]
       descriptionKey: 'runCheckpoint.runtimeFallback.description',
       action: {
         labelKey: 'runCheckpoint.runtimeFallback.action',
-        href: '/settings#runtime',
+        href: '/settings/runtime',
         actionId: 'open-runtime',
       },
     });

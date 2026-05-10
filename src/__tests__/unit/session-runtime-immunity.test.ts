@@ -952,91 +952,69 @@ describe('RED — known global-runtime hazard sites Phase 2 Step 2 must replace'
     }
   });
 
-  it('explicit runtimePin overrides global pinned-default gate on /chat (Step 4c round 2)', () => {
-    // Round-2 review caught: even after round-1 made the resolver fetch
-    // runtime-aware, the result was still gated by global `default_mode:
-    // pinned` and the checkpoint OR'd `overview.defaultInvalid` (which
-    // is computed against the global default and ignores session
-    // runtime). Net effect: switching RuntimeSelector to a runtime
+  it('explicit runtimePin keeps the resolver effect runtime-aware on /chat (Step 4c round 2)', () => {
+    // Round-2 originally caught: switching RuntimeSelector to a runtime
     // where the picker auto-resolves a valid pair STILL kept the red
-    // RunCheckpoint up + composer disabled, because the page-level
-    // gate insisted on the global pinned default that the user just
-    // overrode by switching runtimes.
+    // RunCheckpoint up + composer disabled, because the page OR'd
+    // `overview.defaultInvalid` (a global stat about the global pin)
+    // into the checkpoint and unconditionally fed `mode: 'pinned'` to
+    // the resolver under explicit override.
     //
-    // Two invariants to lock in:
-    //   1. The `resolveNewChatDefault({ mode })` arg must collapse to
-    //      `'auto'` whenever `runtimePin` is non-empty. Pinned semantics
-    //      only apply when the session is following the global runtime.
-    //   2. `overview.defaultInvalid` must NOT contribute to the
-    //      `defaultInvalid` checkpoint signal under explicit
-    //      runtimePin — a global stat about the global pin, not about
-    //      the user's overridden session.
-    const src = fs.readFileSync(
+    // 2026-05-09 second cut: the second prong (`overview.defaultInvalid`
+    // OR-in) and `runtimeFallback` suppression were both retired by
+    // dropping `useOverviewData()` from chat entries entirely — the
+    // `chat-static-graph.test.ts` contract now forbids reaching it.
+    // The bug they guarded against can't recur because the global
+    // signals are no longer in the chat first-paint graph.
+    //
+    // What still matters is the resolver effect's mode override: every
+    // place that feeds `mode:` into `resolveNewChatDefault` must branch
+    // on `runtimePin` so pinned semantics only apply under follow-default.
+    const stripComments = (s: string) =>
+      s.replace(/(^|[^:])\/\/.*$/gm, '$1').replace(/\/\*[\s\S]*?\*\//g, '');
+
+    const rawPage = fs.readFileSync(
       path.join(repoRoot, 'app/chat/page.tsx'),
       'utf8',
     );
-    // (1) effective-mode override: every place we feed `mode:` into the
-    // resolver must branch on `runtimePin`. We don't pin the exact
-    // ternary shape, only that the mode-resolution chain references
-    // `runtimePin`. Two such call sites (initial-load + provider-changed
-    // listener); both must follow the rule.
-    const modeAssignments = [...src.matchAll(/effectiveMode[\s\S]{0,200}runtimePin/g)];
+    const pageCode = stripComments(rawPage);
+    const modeAssignments = [...pageCode.matchAll(/effectiveMode[\s\S]{0,200}runtimePin/g)];
     assert.ok(
       modeAssignments.length >= 2,
       `expected ≥2 effectiveMode derivations branching on runtimePin (initial-load + provider-changed) — found ${modeAssignments.length}`,
     );
-    // (2) checkpoint suppression: `overview.defaultInvalid` may only
-    // contribute when an override flag is FALSE. Match the suppression
-    // shape — an `&&` against a `runtimePin`-derived flag. The current
-    // form is `(!overrideGlobalPinnedGate && overview.defaultInvalid)`
-    // but we keep the regex shape-tolerant (any `<flag> &&
-    // overview.defaultInvalid` or symmetric).
-    assert.match(
-      src,
-      /(!\w+\s*&&\s*overview\.defaultInvalid|overview\.defaultInvalid\s*&&\s*!\w+)/,
-      'checkpoint must guard overview.defaultInvalid with a runtimePin-derived flag, not OR it unconditionally — explicit runtime override must not be blocked by stale global signals',
+
+    // chat/page.tsx must NOT touch overview.defaultInvalid in runtime
+    // code. Earlier rounds carried a "(!overrideGlobalPinnedGate &&
+    // overview.defaultInvalid)" guard; the new contract is "overview
+    // doesn't reach this file at all". JSDoc that explains the history
+    // is stripped before checking — only runtime references count.
+    assert.doesNotMatch(
+      pageCode,
+      /overview\.defaultInvalid/,
+      'chat/page.tsx must not read overview.defaultInvalid — RunCheckpoint here is session-scoped, global pinned-invalid lives in /settings',
     );
-    // (3) Step 4c round 3 — `runtimeFallback` is also a purely-global
-    // signal (overview.agentRuntime + Claude CLI reachability), so it
-    // must follow the same suppression rule. Match the ternary shape:
-    // `<flag> ? false : runtimeFallback` (or the symmetric form).
-    assert.match(
-      src,
-      /(\w+\s*\?\s*false\s*:\s*runtimeFallback|runtimeFallback\s*&&\s*!\w+)/,
-      'checkpoint must suppress runtimeFallback under explicit runtime override — same shape as defaultInvalid',
-    );
-    // The override flag itself must be derived from runtimePin in the
-    // same memo so a future rename doesn't disconnect them.
-    const checkpointMemo = src.match(/checkpointReasons\s*=\s*useMemo\(\s*\(\)\s*=>\s*\{[\s\S]*?\}\s*,\s*\[/);
-    assert.ok(checkpointMemo, 'expected to find the checkpointReasons useMemo for static check');
-    assert.match(
-      checkpointMemo![0],
-      /runtimePin/,
-      'checkpointReasons memo body must reference runtimePin so the override flag tracks the user pick',
+    assert.doesNotMatch(
+      pageCode,
+      /\bruntimeFallback\b/,
+      'chat/page.tsx must not compute runtimeFallback — runtime-fallback notice is global health, not session blocking',
     );
 
-    // Step 4c round 5 — same `runtimeFallback` suppression must also
-    // exist in `ChatView.tsx` (existing-session path). Round-3 only
-    // touched `app/chat/page.tsx` (new-chat path), and the existing-
-    // session ChatView kept ORing the global runtime-fallback into
-    // its checkpointReasons — making "执行引擎已降级" stick around for
-    // saved sessions even after the user explicitly switched runtime.
-    // Same shape as the new-chat fix.
-    const chatViewSrc = fs.readFileSync(
+    // Same guard for the existing-session path.
+    const rawView = fs.readFileSync(
       path.join(repoRoot, 'components/chat/ChatView.tsx'),
       'utf8',
     );
-    assert.match(
-      chatViewSrc,
-      /(\w+\s*\?\s*false\s*:\s*runtimeFallback|runtimeFallback\s*&&\s*!\w+)/,
-      'ChatView checkpoint must suppress runtimeFallback under runtimePin override — existing sessions need the same gate as new-chat (round 3)',
+    const viewCode = stripComments(rawView);
+    assert.doesNotMatch(
+      viewCode,
+      /overview\.defaultInvalid/,
+      'ChatView must not read overview.defaultInvalid — global pinned-invalid is not relevant to a saved session',
     );
-    const chatViewMemo = chatViewSrc.match(/checkpointReasons\s*=\s*useMemo\(\s*\(\)\s*=>\s*\{[\s\S]*?\}\s*,\s*\[/);
-    assert.ok(chatViewMemo, 'expected to find checkpointReasons useMemo in ChatView.tsx');
-    assert.match(
-      chatViewMemo![0],
-      /runtimePin/,
-      'ChatView checkpointReasons memo must reference runtimePin so the override flag stays in sync with the selector',
+    assert.doesNotMatch(
+      viewCode,
+      /\bruntimeFallback\b/,
+      'ChatView must not compute runtimeFallback — runtime-fallback notice is global health, not session blocking',
     );
   });
 
@@ -1048,34 +1026,49 @@ describe('RED — known global-runtime hazard sites Phase 2 Step 2 must replace'
     // a prop and gates global signals (defaultInvalid + runtimeFallback)
     // behind a `sessionRuntimeOverride` derived from it.
     //
+    // 2026-05-09 split: RunCockpit.tsx is now the trigger-only shell;
+    // the heavy data layer (severity, runtime override gating) lives
+    // in RunCockpitPopoverContent.tsx. The shell still declares the
+    // `sessionRuntimePin` prop (and forwards it), but the derivation
+    // moved to the popover content file.
+    //
     // Three invariants:
-    //   (a) The component declares a `sessionRuntimePin` prop.
-    //   (b) `runtimeFallback` derivation in the component includes
-    //       `!sessionRuntimeOverride` (or equivalent guard) so it's
-    //       suppressed under override.
+    //   (a) The shell declares `sessionRuntimePin` AND forwards it
+    //       to the popover content (otherwise the prop is dead weight).
+    //   (b) The popover content derives `sessionRuntimeOverride` from
+    //       the prop and short-circuits the runtimeFallback signal
+    //       under override.
     //   (c) Both render sites (ChatView + chat/page) pass
-    //       `sessionRuntimePin={runtimePin}` — otherwise the prop is
-    //       declared but never populated, and the bug regresses.
-    const cockpitSrc = fs.readFileSync(
+    //       `sessionRuntimePin={runtimePin}` to the shell — otherwise
+    //       the chain is declared but never populated and the bug
+    //       regresses.
+    const shellSrc = fs.readFileSync(
       path.join(repoRoot, 'components/chat/RunCockpit.tsx'),
       'utf8',
     );
-    // (a)
+    const popoverSrc = fs.readFileSync(
+      path.join(repoRoot, 'components/chat/RunCockpitPopoverContent.tsx'),
+      'utf8',
+    );
+    // (a) shell side — prop declared and forwarded into the lazy popover
     assert.match(
-      cockpitSrc,
+      shellSrc,
       /sessionRuntimePin\?:\s*string/,
-      'RunCockpit must declare sessionRuntimePin prop',
+      'RunCockpit shell must declare sessionRuntimePin prop',
     );
-    // (b) — match the AND-with-not-override shape inside the
-    // runtimeFallback derivation. Also assert there's an override flag
-    // derived from the prop so future renames stay coupled.
     assert.match(
-      cockpitSrc,
+      shellSrc,
+      /<RunCockpitPopoverContent[\s\S]{0,400}sessionRuntimePin=\{sessionRuntimePin\}/,
+      'RunCockpit shell must forward sessionRuntimePin to RunCockpitPopoverContent — without forwarding, the popover falls back to global signals and the override breaks',
+    );
+    // (b) popover content side — override flag + runtimeFallback gate
+    assert.match(
+      popoverSrc,
       /sessionRuntimeOverride\s*=\s*!!sessionRuntimePin/,
-      'RunCockpit must derive sessionRuntimeOverride from sessionRuntimePin',
+      'RunCockpitPopoverContent must derive sessionRuntimeOverride from sessionRuntimePin',
     );
     assert.match(
-      cockpitSrc,
+      popoverSrc,
       /runtimeFallback\s*=\s*\n?\s*!sessionRuntimeOverride/,
       'runtimeFallback derivation must short-circuit under sessionRuntimeOverride — global SDK→native fallback notice does not apply when the user has explicitly pinned runtime',
     );

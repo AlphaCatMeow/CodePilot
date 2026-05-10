@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import type { Message, MessagesResponse, FileAttachment, SessionStreamSnapshot, MentionRef } from '@/types';
+import type { Message, MessagesResponse, FileAttachment, SessionStreamSnapshot, MentionRef, TaskRunSummary } from '@/types';
 import { MessageList } from './MessageList';
 import { TerminalReasonChip } from './TerminalReasonChip';
 import { RateLimitBanner } from './RateLimitBanner';
@@ -16,9 +16,16 @@ import { RunCockpit } from './RunCockpit';
 import { RunCheckpoint } from './RunCheckpoint';
 import { TaskCheckpoint } from './TaskCheckpoint';
 import { buildCheckpoints } from '@/lib/run-checkpoint';
-import { useOverviewData } from '@/components/settings/useOverviewData';
-import { useClaudeStatus } from '@/hooks/useClaudeStatus';
-import { computeEffectiveRuntime } from '@/lib/runtime/effective';
+// Chat first-paint memory contract (2026-05-09): ChatView must NOT
+// statically reach `useOverviewData` (full Settings overview snapshot,
+// fans out to 6+ /api endpoints + transitively pulls runtime/effective
+// + provider-catalog). RunCheckpoint here keeps only session-scoped
+// reasons; global health (runtimeFallback / Claude CLI fallback)
+// belongs to /settings/health and the lazy RunCockpit popover. The
+// previous `computeEffectiveRuntime` + `useClaudeStatus` imports
+// existed solely to compute `runtimeFallback`; with that signal
+// dropped from this surface, both go away too.
+import { useGlobalAgentRuntime } from '@/hooks/useGlobalAgentRuntime';
 import { Button } from '@/components/ui/button';
 import { usePanel } from '@/hooks/usePanel';
 import { useTranslation } from '@/hooks/useTranslation';
@@ -92,6 +99,12 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
   const { t } = useTranslation();
   const router = useRouter();
   const [messages, setMessages] = useState<Message[]>(initialMessages);
+  // Phase 3 Step 4 — inline-joined task_run_logs metadata for messages
+  // tagged via `messages.task_run_id`. Populated from
+  // `MessagesResponse.taskRuns` whenever we (re)fetch messages.
+  // Used by `<MessageList />` to render `<TaskRunMarker />` without
+  // per-marker fetches.
+  const [taskRuns, setTaskRuns] = useState<Record<string, TaskRunSummary>>({});
   const [permissionProfile, setPermissionProfile] = useState<'default' | 'full_access'>(initialPermissionProfile || 'default');
   const [pendingContextTokens, setPendingContextTokens] = useState(0);
 
@@ -124,9 +137,15 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
   const reconcileWithDb = useCallback(() => {
     fetch(`/api/chat/sessions/${sessionId}/messages?limit=50`)
       .then(res => res.ok ? res.json() : null)
-      .then(data => {
+      .then((data: MessagesResponse | null) => {
         if (!data?.messages) return;
         setHasMore(data.hasMore ?? true);
+        // Phase 3 Step 4 — capture inline-joined task_run summaries.
+        // Merge into existing map (don't replace) so older marker
+        // entries from earlier pages are preserved when paging.
+        if (data.taskRuns) {
+          setTaskRuns(prev => ({ ...prev, ...data.taskRuns }));
+        }
         const dbMessages: Message[] = data.messages;
         setMessages(current => {
           const localCommands = current.filter(m => m.id.startsWith('cmd-'));
@@ -270,30 +289,26 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
     }
   }, [currentProviderId, invalidSessionProvider]);
 
-  // Run Checkpoint signals — only session-scoped concerns. An
-  // ALREADY-OPENED conversation has its own `currentProviderId/currentModel`
-  // saved on chat_sessions; the global pinned-default-invalid signal
-  // (`overview.defaultInvalid`) describes whether *new conversations* would
-  // get a valid model, which has nothing to do with whether *this saved
-  // session* can still send. Surfacing the global flag here would block-
-  // shame a perfectly working session and contradict `MessageInput.disabled`
-  // (which gates on `noCompatibleProvider` only).
+  // Run Checkpoint signals — session-scoped only.
   //
-  // - `noCompatibleProvider`: session-specific (returned by
-  //   `useProviderModels(currentProviderId, currentModel)`); covers the
-  //   only case where this saved session genuinely can't send.
-  // - `runtimeFallback`: global, but applies to every session equally —
-  //   the user asked for SDK and we're on Native, regardless of session.
-  // - Global pinned-default-invalid → owned by Overview / Runtime / Health
-  //   pages and the `/chat` new-conversation entry; intentionally NOT here.
-  const overview = useOverviewData();
-  const { status: claudeStatus } = useClaudeStatus();
-  // Round 2 inputs:
-  //   - usedContextTokens: pulled from the same hook RunCockpit uses
-  //     so the cost trigger reads the SAME used count the user sees
-  //     in the status row.
-  //   - permissionElevationConfirmedFor: session-scoped ack flag.
-  //     Resets when the user toggles permission off then back on.
+  // An ALREADY-OPENED conversation has its own `currentProviderId/currentModel`
+  // saved on chat_sessions; the global pinned-default-invalid signal
+  // describes whether *new conversations* would get a valid model, which
+  // has nothing to do with whether *this saved session* can still send.
+  // The 2026-05-09 memory cut removes the rest of the global checks
+  // (`runtimeFallback` / Claude CLI fallback) too — those are global
+  // health, not session blocking, and live in /settings/health and the
+  // lazy RunCockpit popover. RunCheckpoint here is purely about "can
+  // this send go through":
+  //   - noCompatibleProvider: session-specific (set by the picker when
+  //     no provider/model pair is reachable under the active runtime)
+  //   - sessionProviderRuntimeIncompatible (rendered as a separate
+  //     banner just below RunCheckpoint, not piped through buildCheckpoints)
+  //   - context-cost / permission-elevation: per-send confirmation gates
+  //
+  // usedContextTokens reads from the same `useContextUsage` hook
+  // RunCockpit uses so the cost trigger reads the SAME used count the
+  // user sees in the status row.
   const usage = useContextUsage(messages, currentModel);
   const usedContextTokens = usage.used;
   const [permissionElevationConfirmedFor, setPermissionElevationConfirmedFor] =
@@ -305,51 +320,29 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
   }, [permissionProfile]);
 
   const checkpointReasons = useMemo(() => {
-    if (overview.loading) return [];
-    const cliConnected = !!claudeStatus?.connected;
-    const settingRuntime = computeEffectiveRuntime(
-      overview.agentRuntime,
-      overview.cliEnabled,
-      cliConnected,
-    );
-    const isOpenAiOauth = currentProviderId === 'openai-oauth';
-    const effectiveRuntime = isOpenAiOauth ? 'native' : settingRuntime;
-    const runtimeFallback =
-      overview.agentRuntime === 'claude-code-sdk' && effectiveRuntime !== 'claude-code-sdk';
     const permissionElevationPending =
       permissionProfile === 'full_access' &&
       permissionElevationConfirmedFor !== 'full_access';
-    // Step 4c round 5 — same `runtimeFallback` suppression pattern that
-    // chat/page.tsx (round 3) and RunCockpit (round 4) use: when the
-    // user has explicitly pinned this session's runtime via the
-    // composer's RuntimeSelector, the global "Claude Code SDK pinned
-    // but CLI unreachable → fell back to native" notice is no longer
-    // about this session — they've moved off SDK by choice. Without
-    // this guard the existing-session ChatView still shows "执行
-    // 引擎已降级" RunCheckpoint even after RunCockpit and the new-chat
-    // checkpoint had cleared, contradicting the upper-vs-lower
-    // invariant rounds 3/4 just established.
-    const overrideGlobalRuntimeFallback = !!runtimePin;
     return buildCheckpoints({
       noCompatibleProvider,
-      // Always false for an existing session — see comment block above.
+      // Always false for an existing session — global pinned-default
+      // is not this session's concern.
       defaultInvalid: false,
-      runtimeFallback: overrideGlobalRuntimeFallback ? false : runtimeFallback,
       pendingContextTokens,
       usedContextTokens,
       permissionElevationPending,
     });
   }, [
-    overview,
-    claudeStatus?.connected,
-    currentProviderId,
     noCompatibleProvider,
     pendingContextTokens,
     usedContextTokens,
     permissionProfile,
     permissionElevationConfirmedFor,
-    runtimePin,
   ]);
+  // RuntimeSelector display fallback — same lightweight hook the new-chat
+  // page uses. Only fetches /api/settings/app, no fan-out, no transitive
+  // imports of the heavy overview / runtime resolver chain.
+  const globalRuntime = useGlobalAgentRuntime();
   const blockingReasonIds = useMemo(
     () => checkpointReasons.filter((r) => r.requiresConfirm).map((r) => r.id),
     [checkpointReasons],
@@ -1265,6 +1258,13 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
         startedAt={streamSnapshot?.startedAt}
         isAssistantProject={isAssistantProject}
         assistantName={assistantName}
+        taskRuns={taskRuns}
+        // Codex P2 — wire the WaitingForPermissionPanel's
+        // post-action callback into our existing message reconcile
+        // so abandoning / re-running a paused run actually causes
+        // the panel to disappear (or update to the new run state)
+        // instead of staying frozen on the cancelled row.
+        onTaskRunAction={reconcileWithDb}
       />
       {/* End-of-turn terminal reason chip (only shown when stream is not active) */}
       {!isStreaming && (
@@ -1481,7 +1481,7 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
             <ModeIndicator mode={mode} onModeChange={handleModeChange} disabled={isStreaming} />
             <RuntimeSelector
               runtimePin={runtimePin}
-              effectiveRuntime={overview.agentRuntime === 'claude-code-sdk' ? 'claude_code' : 'codepilot_runtime'}
+              effectiveRuntime={globalRuntime.agentRuntime === 'claude-code-sdk' ? 'claude_code' : 'codepilot_runtime'}
               onRuntimePinChange={handleRuntimePinChange}
               disabled={isStreaming}
             />

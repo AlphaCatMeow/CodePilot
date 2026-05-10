@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import { getSetting, setSetting } from '@/lib/db';
-import { validateWorkspace, initializeWorkspace, loadState, saveState, shouldRunHeartbeat } from '@/lib/assistant-workspace';
+import { validateWorkspace, initializeWorkspace, loadState, saveState } from '@/lib/assistant-workspace';
 
 export async function GET() {
   try {
@@ -90,9 +90,13 @@ export async function GET() {
       files: fileStatus,
       state,
       taxonomy,
-      // Server-computed heartbeat check — single source of truth for all consumers.
-      // Requires buddy to exist (heartbeat defers to buddy-welcome when no buddy).
-      needsHeartbeat: !!state.buddy && shouldRunHeartbeat(state),
+      // Codex P1 — heartbeat is now scheduler-only. The
+      // `needsHeartbeat` field used to drive the foreground
+      // chat-mount auto-trigger via useAssistantTrigger; we removed
+      // both the trigger and this signal so no UI surface can
+      // accidentally re-introduce mount-time heartbeat firing.
+      // shouldRunHeartbeat is still exported for the scheduler
+      // stale-check guard but must NOT be exposed over HTTP.
     });
   } catch (e) {
     console.error('[settings/workspace] GET failed:', e);
@@ -202,6 +206,13 @@ export async function PATCH(request: NextRequest) {
     if ('heartbeatEnabled' in body && typeof body.heartbeatEnabled === 'boolean') {
       state.heartbeatEnabled = body.heartbeatEnabled;
     }
+    // Phase 3 Step 4 — heartbeat interval (hours). Min 1h to avoid
+    // background polling pressure; values < 1 are coerced to 1. Stored
+    // alongside heartbeatEnabled so toggling the switch off doesn't
+    // clobber the user's chosen interval.
+    if ('heartbeatIntervalHours' in body && typeof body.heartbeatIntervalHours === 'number') {
+      state.heartbeatIntervalHours = Math.max(1, Math.floor(body.heartbeatIntervalHours));
+    }
     // Reset buddy so user can hatch a new one
     if (body.resetBuddy === true) {
       state.buddy = undefined;
@@ -231,6 +242,20 @@ export async function PATCH(request: NextRequest) {
     }
 
     saveState(workspacePath, state);
+
+    // Phase 3 Step 4 — keep the system-injected heartbeat task in
+    // sync with the user's enable / interval settings. Idempotent:
+    // disable removes the row, enable creates / updates it.
+    try {
+      const { ensureHeartbeatTask } = await import('@/lib/task-scheduler');
+      await ensureHeartbeatTask({
+        enabled: state.heartbeatEnabled === true,
+        intervalHours: state.heartbeatIntervalHours,
+      });
+    } catch (err) {
+      console.warn('[settings/workspace] ensureHeartbeatTask failed:', err);
+    }
+
     return NextResponse.json({ success: true, state });
   } catch (e) {
     console.error('[settings/workspace] PATCH failed:', e);

@@ -94,8 +94,9 @@ export function RunCheckpoint({ reasons, className, onAction }: RunCheckpointPro
             return;
           }
           if (reason.action?.href) {
-            // `/settings#xxx` — Next.js router.push handles hash navigation
-            // correctly within the SPA, no full reload needed.
+            // `/settings/xxx` route-level paths — Next.js router.push handles
+            // SPA navigation directly into the section without paying the
+            // /settings root redirect compile cost.
             router.push(reason.action.href);
           }
         };

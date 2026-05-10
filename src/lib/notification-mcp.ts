@@ -37,7 +37,35 @@ export const NOTIFICATION_MCP_SYSTEM_PROMPT = `## 通知与定时任务
 - 用户说"孵化"、"领养"、"hatch" → 用 codepilot_hatch_buddy
 - 用户给伙伴起名字 → 用 codepilot_hatch_buddy(buddyName: 名字)`;
 
-export function createNotificationMcpServer() {
+/**
+ * Phase 3 Step 4 follow-up — hidden run context.
+ *
+ * `codepilot_schedule_task` USED to ship the model's literal args
+ * straight to /api/tasks/schedule, which meant a task created by the
+ * AI in chat session A had no way to remember which working
+ * directory or which originating chat it belonged to. When the
+ * scheduler later fired the task, the runner had only the prompt +
+ * schedule data and fell back to whatever the global default was —
+ * so two tasks created from two different projects both ended up
+ * writing into a shared "latest assistant" session, even though they
+ * structurally were per-project work.
+ *
+ * Fix: the SDK MCP / native builtin tool factories now take a
+ * `{sessionId, workingDirectory}` context closed over at registration
+ * time (claude-client passes the current stream's sessionId +
+ * resolvedWorkingDirectory.path). The schedule_task tool's execute
+ * closure then injects these as `origin_session_id` and
+ * `working_directory` into the POST body. The model can't override
+ * them — they're read from the closure, not the model's params.
+ */
+export interface NotificationMcpContext {
+  /** Originating chat_session.id for tasks created via codepilot_schedule_task. */
+  sessionId?: string;
+  /** Originating working directory (resolved on the streamClaude side). */
+  workingDirectory?: string;
+}
+
+export function createNotificationMcpServer(ctx: NotificationMcpContext = {}) {
   return createSdkMcpServer({
     name: 'codepilot-notify',
     version: '1.0.0',
@@ -66,19 +94,38 @@ export function createNotificationMcpServer() {
       // Tool 2: Schedule a task
       tool(
         'codepilot_schedule_task',
-        'Create a scheduled task. Supports cron expressions (e.g. "0 9 * * *" for daily 9am), fixed intervals (e.g. "30m", "2h"), or one-time timestamps (ISO format). The task prompt will be executed by AI when triggered.',
+        'Create a scheduled task. Pick `kind` based on user intent: ' +
+          '`reminder` for natural-language reminders (e.g. "remind me to drink water in 5 minutes" — ' +
+          'shows a notification with the prompt as body, NEVER calls a model); `ai_task` for ' +
+          'workflows where an AI should run on schedule (e.g. "every Monday review last week\'s commits" ' +
+          '— feeds the prompt to the configured provider). Supports cron / interval / once schedules.',
         {
           name: z.string().describe('Task name (e.g. "Drink water reminder")'),
-          prompt: z.string().describe('The instruction to execute when triggered'),
+          prompt: z.string().describe(
+            'For kind=reminder: notification body the user will see. ' +
+            'For kind=ai_task: instruction handed to the model.',
+          ),
+          // Phase 3 Step 3 — kind required so reminders bypass the AI
+          // path. Same schema as the builtin-tool variant in
+          // src/lib/builtin-tools/notification.ts; tests grep both files
+          // for parity.
+          kind: z.enum(['reminder', 'ai_task']).describe(
+            "Task kind: 'reminder' (notification only, no AI call) or 'ai_task' (run prompt against configured provider)",
+          ),
           schedule_type: z.enum(['cron', 'interval', 'once']).describe('Schedule type'),
           schedule_value: z.string().describe('cron: "0 9 * * *", interval: "30m"/"2h", once: ISO timestamp like "2026-03-31T15:00:00"'),
           priority: z.enum(['low', 'normal', 'urgent']).optional().default('normal'),
           notify_on_complete: z.boolean().optional().default(true),
           durable: z.boolean().optional().default(true).describe('true=persists across restart, false=session-only'),
         },
-        async ({ name, prompt, schedule_type, schedule_value, priority, notify_on_complete, durable }) => {
+        async ({ name, prompt, kind, schedule_type, schedule_value, priority, notify_on_complete, durable }) => {
           try {
-            // Session-only tasks: stored in memory, not persisted to DB
+            // Session-only tasks: stored in memory, not persisted to DB.
+            // v4 fix #1 — `kind` MUST land on the in-memory literal too.
+            // Without this, the durable=false path bypasses the API
+            // schedule route's kind validation and would default to
+            // ai_task in the scheduler dispatch (which then tries to
+            // call a provider that may not exist).
             if (!durable) {
               const crypto = await import('crypto');
               const { addSessionTask } = await import('@/lib/task-scheduler');
@@ -104,6 +151,7 @@ export function createNotificationMcpServer() {
                 id,
                 name,
                 prompt,
+                kind,
                 schedule_type,
                 schedule_value,
                 next_run,
@@ -112,24 +160,42 @@ export function createNotificationMcpServer() {
                 priority: priority || 'normal',
                 notify_on_complete: notify_on_complete ? 1 : 0,
                 permanent: 0,
+                // Hidden run context — even non-durable session tasks
+                // need origin so the runner can scope execution to the
+                // right project's working dir + provider config.
+                origin_session_id: ctx.sessionId,
+                working_directory: ctx.workingDirectory,
                 created_at: now.toISOString(),
                 updated_at: now.toISOString(),
               };
               addSessionTask(task);
-              return { content: [{ type: 'text' as const, text: `Session task "${name}" scheduled (non-durable). ID: ${id}, next run: ${next_run}` }] };
+              return { content: [{ type: 'text' as const, text: `Session task "${name}" scheduled (${kind}, non-durable). ID: ${id}, next run: ${next_run}` }] };
             }
 
             const res = await fetch(`${getBaseUrl()}/api/tasks/schedule`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ name, prompt, schedule_type, schedule_value, priority, notify_on_complete: notify_on_complete ? 1 : 0 }),
+              body: JSON.stringify({
+                name,
+                prompt,
+                kind,
+                schedule_type,
+                schedule_value,
+                priority,
+                notify_on_complete: notify_on_complete ? 1 : 0,
+                // Hidden run context — model can't override; closure
+                // value wins. Empty when the tool was registered
+                // without context (legacy callers / unit tests).
+                origin_session_id: ctx.sessionId,
+                working_directory: ctx.workingDirectory,
+              }),
             });
             if (!res.ok) {
               const err = await res.json().catch(() => ({}));
               throw new Error(err.error || `HTTP ${res.status}`);
             }
             const data = await res.json();
-            return { content: [{ type: 'text' as const, text: `Task "${name}" scheduled. ID: ${data.task.id}, next run: ${data.task.next_run}` }] };
+            return { content: [{ type: 'text' as const, text: `Task "${name}" scheduled (${kind}). ID: ${data.task.id}, next run: ${data.task.next_run}` }] };
           } catch (err) {
             return { content: [{ type: 'text' as const, text: `Failed to schedule task: ${err instanceof Error ? err.message : 'unknown'}` }] };
           }

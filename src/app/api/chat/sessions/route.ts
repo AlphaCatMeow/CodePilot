@@ -3,9 +3,28 @@ import fs from 'fs/promises';
 import { getAllSessions, createSession } from '@/lib/db';
 import type { CreateSessionRequest, SessionsResponse, SessionResponse } from '@/types';
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const sessions = getAllSessions();
+    // Phase 3 Step 4 — task-bound sessions (`source='task'`) are the
+    // execution sessions created by the agent task runner; they
+    // shouldn't pollute the main ChatListPanel. The `source` query
+    // param controls visibility:
+    //   - omitted / 'user' → only user-created sessions (the default
+    //     for ChatListPanel and most consumers).
+    //   - 'task' → only task-bound sessions (used by Tasks page when
+    //     listing all execution sessions).
+    //   - 'all' → both (no filter).
+    // This keeps the original "main list shows user conversations"
+    // contract while still letting the Tasks page surface execution
+    // sessions for users who want to browse them directly.
+    const sourceParam = request.nextUrl.searchParams.get('source');
+    const includeSources: ReadonlyArray<'user' | 'task'> | undefined =
+      sourceParam === 'task'
+        ? ['task']
+        : sourceParam === 'all'
+          ? undefined
+          : ['user'];
+    const sessions = getAllSessions(includeSources ? { includeSources } : undefined);
     const response: SessionsResponse = { sessions };
     return Response.json(response);
   } catch (error) {

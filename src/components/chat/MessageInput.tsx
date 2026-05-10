@@ -173,6 +173,12 @@ export function MessageInput({
     if (initialValue) return initialValue;
     try { return sessionStorage.getItem(draftKey) || ''; } catch { return ''; }
   });
+  // Track the last `initialValue` we adopted so the warm-navigation sync
+  // below only fires when the prop ACTUALLY changes (not on every render
+  // where the prop is stable). Initialised to the same value the
+  // useState initialiser saw, so the first effect pass after mount is
+  // a no-op and we don't double-set inputValue.
+  const adoptedInitialValueRef = useRef(initialValue);
   const [mentionNodeTypes, setMentionNodeTypes] = useState<Record<string, 'file' | 'directory'>>({});
   // Directories attached via the file tree's "+" button. Kept separate
   // from textarea-driven `@folder` mentions so the chip lives in the
@@ -189,6 +195,26 @@ export function MessageInput({
       return next;
     });
   }, [draftKey]);
+
+  // Warm-navigation prefill sync. The `useState` initialiser above only
+  // runs at mount — if `initialValue` arrives later (e.g. /chat is
+  // already mounted and the URL changes to /chat?prefill=…, or the
+  // parent reads URL via `useSearchParams` after first paint), the
+  // textarea would otherwise stay empty. Adopt the new value when (and
+  // only when) the prop actually transitions to a non-empty string we
+  // haven't seen before. Mirrors the mount-time priority: prefill beats
+  // any persisted draft. Stable initialValue across renders → no-op.
+  useEffect(() => {
+    if (initialValue && initialValue !== adoptedInitialValueRef.current) {
+      adoptedInitialValueRef.current = initialValue;
+      setInputValue(initialValue);
+    } else if (!initialValue) {
+      // Prop went back to empty (e.g. user navigated away from a
+      // prefill URL). Reset the ref so a future re-arrival of the same
+      // prefill text is treated as a fresh transition.
+      adoptedInitialValueRef.current = '';
+    }
+  }, [initialValue, setInputValue]);
 
   const mentions = useMemo(() => {
     // Render chips only for explicitly inserted/known mentions.

@@ -23,13 +23,24 @@ export interface BuiltinToolGroup {
   tools: ToolSet;
 }
 
+export interface GetBuiltinToolsOptions {
+  workspacePath?: string;
+  prompt?: string;
+  /**
+   * Originating chat session id — plumbed through to
+   * `createNotificationTools` so codepilot_schedule_task knows which
+   * chat session the task is being created from. Mirrors the SDK
+   * MCP variant in claude-client.ts.
+   */
+  sessionId?: string;
+}
+
 /**
  * Get all built-in tools that should be registered for the current context.
  */
-export function getBuiltinTools(options: {
-  workspacePath?: string;
-  prompt?: string;
-}): { tools: ToolSet; systemPrompts: string[] } {
+export function getBuiltinTools(
+  options: GetBuiltinToolsOptions,
+): { tools: ToolSet; systemPrompts: string[] } {
   const tools: ToolSet = {};
   const systemPrompts: string[] = [];
 
@@ -53,10 +64,12 @@ export function getBuiltinTools(options: {
   return { tools, systemPrompts };
 }
 
-function getToolGroups(options: { workspacePath?: string }): BuiltinToolGroup[] {
+function getToolGroups(options: GetBuiltinToolsOptions): BuiltinToolGroup[] {
   const groups: BuiltinToolGroup[] = [];
 
-  // Notification tools — always available
+  // Notification tools — always available. Pass through the run
+  // context so codepilot_schedule_task injects origin_session_id +
+  // working_directory into /api/tasks/schedule POST body.
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createNotificationTools, NOTIFICATION_SYSTEM_PROMPT } = require('./notification');
@@ -64,7 +77,10 @@ function getToolGroups(options: { workspacePath?: string }): BuiltinToolGroup[] 
       name: 'codepilot-notify',
       systemPrompt: NOTIFICATION_SYSTEM_PROMPT,
       condition: 'always',
-      tools: createNotificationTools(),
+      tools: createNotificationTools({
+        sessionId: options.sessionId,
+        workingDirectory: options.workspacePath,
+      }),
     });
   } catch { /* notification module not available */ }
 

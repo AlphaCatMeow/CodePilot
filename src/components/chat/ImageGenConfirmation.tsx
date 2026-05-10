@@ -289,7 +289,7 @@ export function ImageGenConfirmation({
           </span>
         ) : activeInfo?.stale ? (
           <a
-            href="/settings#providers"
+            href="/settings/providers"
             className="inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 hover:underline"
             title={t('imageGen.activeProviderStaleHint' as TranslationKey)}
           >
@@ -298,7 +298,7 @@ export function ImageGenConfirmation({
           </a>
         ) : activeInfo ? (
           <a
-            href="/settings#providers"
+            href="/settings/providers"
             className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground hover:underline"
           >
             <PaintBrush size={12} className="shrink-0" />

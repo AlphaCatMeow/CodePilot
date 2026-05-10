@@ -7,10 +7,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PromptDialog } from "@/components/ui/prompt-dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { SpinnerGap, CheckCircle, X, Trash } from "@/components/ui/icon";
+import { SpinnerGap, CheckCircle, X } from "@/components/ui/icon";
 import { useTranslation } from "@/hooks/useTranslation";
 import { SettingsCard } from "@/components/patterns/SettingsCard";
-import type { WorkspaceInspectResult, ScheduledTask } from "@/types";
+import type { WorkspaceInspectResult } from "@/types";
 import { FilesTabPanel, TaxonomyTabPanel, IndexTabPanel, OrganizeTabPanel } from "./WorkspaceTabPanels";
 import { WorkspaceConfirmDialogs, type ConfirmDialogType } from "./WorkspaceConfirmDialogs";
 import { OnboardingCard, CheckInCard } from "./WorkspaceStatusCards";
@@ -58,7 +58,6 @@ export function AssistantWorkspaceSection() {
   const [pathPromptOpen, setPathPromptOpen] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
   const [summary, setSummary] = useState<WorkspaceSummary | null>(null);
-  const [tasks, setTasks] = useState<ScheduledTask[]>([]);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const fetchWorkspace = useCallback(async () => {
@@ -82,16 +81,6 @@ export function AssistantWorkspaceSection() {
       if (res.ok) {
         const data = await res.json();
         setSummary(data);
-      }
-    } catch { /* ignore */ }
-  }, []);
-
-  const fetchTasks = useCallback(async () => {
-    try {
-      const res = await fetch("/api/tasks/list");
-      if (res.ok) {
-        const data = await res.json();
-        setTasks(data.tasks || []);
       }
     } catch { /* ignore */ }
   }, []);
@@ -123,9 +112,8 @@ export function AssistantWorkspaceSection() {
   useEffect(() => {
     if (workspace?.path && workspace.valid !== false) {
       fetchSummary();
-      fetchTasks();
     }
-  }, [workspace?.path, workspace?.valid, fetchSummary, fetchTasks]);
+  }, [workspace?.path, workspace?.valid, fetchSummary]);
 
   useEffect(() => {
     if (workspace?.path && activeTab === 'taxonomy') fetchTaxonomy();
@@ -362,17 +350,6 @@ export function AssistantWorkspaceSection() {
     }
   }, []);
 
-  const handleDeleteTask = useCallback(async (taskId: string) => {
-    try {
-      const res = await fetch(`/api/tasks/${taskId}`, { method: "DELETE" });
-      if (res.ok) {
-        setTasks((prev) => prev.filter((t) => t.id !== taskId));
-      }
-    } catch (e) {
-      console.error("Failed to delete task:", e);
-    }
-  }, []);
-
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -539,55 +516,33 @@ export function AssistantWorkspaceSection() {
               } : prev);
             } catch { /* network error — leave UI unchanged */ }
           }}
+          intervalHours={workspace.state?.heartbeatIntervalHours ?? 24}
+          onIntervalChange={async (hours) => {
+            try {
+              const res = await fetch('/api/settings/workspace', {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ heartbeatIntervalHours: hours }),
+              });
+              if (!res.ok) return;
+              setWorkspace((prev) => prev && prev.state ? {
+                ...prev,
+                state: { ...prev.state, heartbeatIntervalHours: hours },
+              } : prev);
+            } catch { /* network error — leave UI unchanged */ }
+          }}
         />
       )}
 
-      {/* Scheduled Tasks */}
-      {workspace?.path && workspace.valid !== false && (
-        <SettingsCard title={t('assistant.scheduledTasks')}>
-          {tasks.length === 0 ? (
-            <p className="text-xs text-muted-foreground">{t('assistant.noTasks')}</p>
-          ) : (
-            // Inset-divider sub-card per design.md § Sub-card.
-            <div className="rounded-md bg-muted/40">
-              <div className="px-3.5 divide-y divide-border/50">
-                {tasks.map((task) => (
-                  <div key={task.id} className="flex items-center justify-between gap-2 py-2.5 text-xs">
-                    <div className="flex-1 min-w-0">
-                      <span className="font-medium truncate block">{task.name}</span>
-                      <span className="text-muted-foreground">
-                        {task.schedule_value}
-                        {task.next_run && (
-                          <> &middot; {t('assistant.taskNextRun')}: {new Date(task.next_run).toLocaleString()}</>
-                        )}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                        task.status === 'active' ? 'bg-status-success-muted text-status-success-foreground' :
-                        task.status === 'paused' ? 'bg-status-warning-muted text-status-warning-foreground' :
-                        'bg-muted text-muted-foreground'
-                      }`}>
-                        {task.status}
-                      </span>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-7 w-7 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                        onClick={() => handleDeleteTask(task.id)}
-                        aria-label={`${t('assistant.taskDelete')} ${task.name}`}
-                        title={`${t('assistant.taskDelete')} ${task.name}`}
-                      >
-                        <Trash size={14} />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-        </SettingsCard>
-      )}
+      {/* v12 — Scheduled tasks block removed entirely.
+          Phase 3 IA: Settings → Tasks (`/settings/tasks`) is the
+          single home for all scheduled tasks (list + run + pause +
+          delete + delivery log). The Assistant page has no entry of
+          its own — neither inline list (v9 retired that) nor a link
+          card (v12 retired even the link, since the global Tasks
+          entry already exists in the sidebar nav and a redundant
+          Assistant-page link added IA noise without surfacing
+          assistant-specific information). */}
 
       {/* Tabbed Section: Files (default) + Advanced (Taxonomy / Index / Organize).
           Uses shadcn <Tabs> with controlled value so the existing

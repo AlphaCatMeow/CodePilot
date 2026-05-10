@@ -343,7 +343,7 @@ function handleSSEEvent(
               if (a.url) {
                 links.push(`[${a.label}](${a.url})`);
               } else if (a.action === 'open_settings') {
-                links.push(`[${a.label}](/settings#providers)`);
+                links.push(`[${a.label}](/settings/providers)`);
               } else if (a.action === 'new_conversation') {
                 links.push(`[${a.label}](/chat)`);
               }

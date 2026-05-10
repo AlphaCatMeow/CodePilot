@@ -11,7 +11,7 @@ interface ProviderCardProps {
   status: SetupCardStatus;
   onStatusChange: (status: SetupCardStatus) => void;
   /**
-   * Invoked before navigating away to /settings#providers. SetupCenter passes
+   * Invoked before navigating away to /settings/providers. SetupCenter passes
    * its `persistAndClose` so clicking "Add Provider" / "Open provider
    * settings" closes the modal + marks setup_completed=true atomically,
    * avoiding the historical ping-pong where /settings re-opened SetupCenter
@@ -118,10 +118,10 @@ export function ProviderCard({ status, onStatusChange, onBeforeNavigate }: Provi
     await onBeforeNavigate?.();
     // router.push keeps the navigation inside the SPA so in-flight requests
     // triggered by handlers that fire after onBeforeNavigate aren't aborted
-    // by a hard page unload. SettingsLayout's hashchange listener still
-    // picks up #providers for section routing (AppShell's hash bridge early-
-    // returns on /settings to avoid swallowing it).
-    router.push('/settings#providers');
+    // by a hard page unload. The route-level split puts Providers at its
+    // own page; landing directly there avoids paying the /settings root
+    // redirect compile cost.
+    router.push('/settings/providers');
   }, [onBeforeNavigate, router]);
 
   const description = status === 'completed'

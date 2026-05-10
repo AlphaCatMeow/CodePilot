@@ -585,7 +585,17 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
     autoTrigger,
     context1m,
     generativeUI,
+    agentMode,
   } = options;
+  // Codex P1 — heartbeat agentMode is a HARD restriction, not a hint.
+  // It tightens defaults at the SDK level so the model literally
+  // cannot reach the dangerous tools, regardless of system-prompt
+  // pressure. Tools the heartbeat run is allowed to use:
+  //   - mcp__codepilot-memory (codepilot_memory_recent only — for
+  //     interpreting HEARTBEAT.md against recent memory)
+  // Everything else is either not registered (MCP servers below) or
+  // listed in disallowedTools (SDK builtins).
+  const isHeartbeatMode = agentMode === 'heartbeat';
 
   return new ReadableStream<string>({
     async start(controllerRaw) {
@@ -652,7 +662,26 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
           // Load settings so the SDK behaves like the CLI (tool permissions,
           // CLAUDE.md, etc.). For DB providers settingSources is ['user'] only;
           // for env mode it's ['user', 'project', 'local']. See provider-resolver.ts.
-          settingSources: resolved.settingSources as Options['settingSources'],
+          //
+          // Codex P2 — heartbeat narrows this to `[]` (no filesystem
+          // settings loading at all). The MCP-server gates above only
+          // skip the explicit registrations claude-client controls;
+          // the SDK ALSO auto-loads MCP servers declared in
+          // ~/.claude/settings.json (`user`), <cwd>/.claude/settings.json
+          // (`project`), and .claude/settings.local.json (`local`).
+          // Without this collapse, a user-level MCP would be loaded
+          // by the SDK even though we never asked for it, and the
+          // model could see those tools (`disallowedTools` blocks
+          // SDK builtins like Bash but does not enumerate every
+          // user-configured MCP server name). The cost: heartbeat
+          // also won't auto-pick-up ambient CLAUDE.md / tool
+          // permissions / agents — none of which heartbeat needs.
+          // The in-process codepilot-memory MCP we register manually
+          // does NOT depend on settingSources, so memory access
+          // continues to work.
+          settingSources: isHeartbeatMode
+            ? ([] as Options['settingSources'])
+            : (resolved.settingSources as Options['settingSources']),
           // Auto-allow all CodePilot built-in MCPs. These are host-defined
           // in-process servers (createSdkMcpServer in claude-client.ts below)
           // that ship with CodePilot — they're not third-party plugins and
@@ -660,16 +689,44 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
           // default 'acceptEdits' mode prompts the user for each mcp__codepilot-*
           // invocation, which is the regression users reported after we
           // stopped silently allowing everything via project-level settings.
-          allowedTools: [
-            'mcp__codepilot-memory',
-            'mcp__codepilot-notify',
-            'mcp__codepilot-widget',
-            'mcp__codepilot-widget-guidelines',
-            'mcp__codepilot-media',
-            'mcp__codepilot-image-gen',
-            'mcp__codepilot-cli-tools',
-            'mcp__codepilot-dashboard',
-          ],
+          //
+          // Codex P1 — heartbeat narrows this down to memory only, AND
+          // adds disallowedTools so SDK builtins (Bash/Edit/Write/etc.)
+          // can't be invoked even though they're not gated by
+          // allowedTools (which is auto-approve, not whitelist).
+          allowedTools: isHeartbeatMode
+            ? ['mcp__codepilot-memory']
+            : [
+                'mcp__codepilot-memory',
+                'mcp__codepilot-notify',
+                'mcp__codepilot-widget',
+                'mcp__codepilot-widget-guidelines',
+                'mcp__codepilot-media',
+                'mcp__codepilot-image-gen',
+                'mcp__codepilot-cli-tools',
+                'mcp__codepilot-dashboard',
+              ],
+          ...(isHeartbeatMode
+            ? {
+                // Hard block of dangerous SDK builtins for heartbeat
+                // runs. The system prompt also tells the model not
+                // to use these (belt + suspenders) — but the SDK
+                // refusal is what makes "model decides to ignore
+                // the prompt and call Bash anyway" not a problem.
+                disallowedTools: [
+                  'Bash',
+                  'Edit',
+                  'Write',
+                  'NotebookEdit',
+                  'Task',
+                  'WebSearch',
+                  'WebFetch',
+                  'Read',
+                  'Glob',
+                  'Grep',
+                ],
+              }
+            : {}),
         };
 
         if (skipPermissions) {
@@ -713,7 +770,13 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         // User-level MCP config from ~/.claude.json and ~/.claude/settings.json
         // is automatically loaded by the SDK via settingSources: ['user'] (DB
         // providers) or ['user', 'project', 'local'] (env mode).
-        if (mcpServers && Object.keys(mcpServers).length > 0) {
+        //
+        // Codex P1 — heartbeat agentMode forbids external MCP entirely.
+        // External servers can do anything (HTTP / shell / DB writes),
+        // and a heartbeat that touches them is by definition off-spec.
+        // We let `codepilot-memory` get registered later; everything
+        // else is dropped here.
+        if (!isHeartbeatMode && mcpServers && Object.keys(mcpServers).length > 0) {
           queryOptions.mcpServers = toSdkMcpConfig(mcpServers);
         }
 
@@ -724,7 +787,7 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         // `<cwd>/.mcp.json`, which is normally an auth-neutral file team
         // members commit to share project MCP servers. Re-inject it here so
         // those servers don't silently disappear for DB-provider users.
-        if (resolved.provider) {
+        if (!isHeartbeatMode && resolved.provider) {
           const { loadProjectMcpServers } = await import('@/lib/mcp-loader');
           const projectMcps = loadProjectMcpServers(resolvedWorkingDirectory.path);
           if (projectMcps) {
@@ -756,12 +819,27 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         }
 
         // Notification + Schedule MCP: globally available in all contexts
-        {
+        // EXCEPT heartbeat (Codex P1) — codepilot-notify exposes
+        // schedule_task / list_tasks / cancel_task / hatch_buddy /
+        // notify, all of which are exactly the tools that caused the
+        // heartbeat-tool-loop hang. Skipping registration is the
+        // hard guarantee; the system prompt + allowedTools are
+        // additional belts.
+        if (!isHeartbeatMode) {
           const { createNotificationMcpServer, NOTIFICATION_MCP_SYSTEM_PROMPT } =
             await import('@/lib/notification-mcp');
           queryOptions.mcpServers = {
             ...(queryOptions.mcpServers || {}),
-            'codepilot-notify': createNotificationMcpServer(),
+            // Inject hidden run context so codepilot_schedule_task can
+            // POST origin_session_id + working_directory to /api/tasks/schedule
+            // without exposing those fields in the model's tool schema.
+            // Tasks created here will fire later in this session's
+            // working dir + provider, not whatever the global default
+            // is at scheduler-tick time.
+            'codepilot-notify': createNotificationMcpServer({
+              sessionId,
+              workingDirectory: resolvedWorkingDirectory.path,
+            }),
           };
           if (queryOptions.systemPrompt && typeof queryOptions.systemPrompt === 'object' && 'append' in queryOptions.systemPrompt) {
             queryOptions.systemPrompt.append = (queryOptions.systemPrompt.append || '') + '\n\n' + NOTIFICATION_MCP_SYSTEM_PROMPT;
@@ -774,7 +852,9 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         // conversation likely involves widget generation — detected by keywords in
         // the user's prompt or existing show-widget output in conversation history.
         // This avoids SDK tool discovery overhead (~1s) on plain text conversations.
-        if (generativeUI !== false) {
+        // Codex P1 — heartbeat skips this entirely; HEARTBEAT.md is
+        // text-only, no widget surface.
+        if (!isHeartbeatMode && generativeUI !== false) {
           const needsWidgetSpecs = (() => {
             const widgetKeywords = /可视化|图表|流程图|时间线|架构图|对比|visualiz|diagram|chart|flowchart|timeline|infographic|interactive|widget|show-widget|hierarchy|dashboard/i;
             // Check current user prompt
@@ -798,7 +878,10 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         // Registered when the conversation involves media/image generation tasks
         // in CODE mode. The legacy "Design Agent mode" branch was removed in
         // Phase 2D.0 (2026-04-30) — it was never user-reachable.
-        const needsMediaMcp = (() => {
+        // Codex P1 — heartbeat never needs media tools; skip even
+        // before keyword evaluation so a HEARTBEAT.md mentioning the
+        // word "图片" can't accidentally pull the MCP in.
+        const needsMediaMcp = !isHeartbeatMode && (() => {
           const mediaKeywords = /生成图片|画一|图像|图片|素材|保存.*素材|import.*library|save.*library|codepilot_import_media|codepilot_generate_image/i;
           if (mediaKeywords.test(prompt)) return true;
           if (conversationHistory?.some(m =>
@@ -824,7 +907,8 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         // CLI tools MCP: tool management capabilities (keyword-gated).
         // Wide regex to cover natural phrasing like "帮我装 jq", "install uv",
         // "brew install", "pip install", "npm install -g", etc.
-        const needsCliToolsMcp = (() => {
+        // Codex P1 — heartbeat never installs CLI tools.
+        const needsCliToolsMcp = !isHeartbeatMode && (() => {
           const cliKeywords = /CLI\s*工具|cli.tool|安装.*工具|卸载.*工具|添加.*工具|更新.*工具|升级.*工具|入库.*工具|工具.*入库|加入.*工具库|添加到.*库|工具库|tool\s*library|codepilot_cli_tools|帮我装|帮我安装|帮我更新|帮我升级|\binstall\s+[@\w./-]+|\buninstall\s+[@\w./-]+|\bupdate\s+[@\w./-]+|\bupgrade\s+[@\w./-]+|brew\s+install|brew\s+upgrade|pip\s+install|pipx\s+install|npm\s+install\s+-g|npm\s+update\s+-g|cargo\s+install|apt\s+install|apt-get\s+install/i;
           if (cliKeywords.test(prompt)) return true;
           if (conversationHistory?.some(m => cliKeywords.test(m.content))) return true;
@@ -843,7 +927,8 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         }
 
         // Dashboard MCP: widget management capabilities (keyword-gated).
-        const needsDashboardMcp = (() => {
+        // Codex P1 — heartbeat never manages dashboard pins.
+        const needsDashboardMcp = !isHeartbeatMode && (() => {
           const dashboardKeywords = /dashboard|仪表盘|看板|pin.*widget|pinned.*widget|refresh.*widget|固定.*组件|刷新.*组件|codepilot_dashboard/i;
           if (dashboardKeywords.test(prompt)) return true;
           if (conversationHistory?.some(m => dashboardKeywords.test(m.content))) return true;

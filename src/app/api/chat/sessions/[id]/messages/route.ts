@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
-import { getMessages, getSession } from '@/lib/db';
-import type { MessagesResponse } from '@/types';
+import { getMessages, getSession, getTaskRunSummariesByIds } from '@/lib/db';
+import type { MessagesResponse, TaskRunSummary } from '@/types';
 
 /** Strip base64 `data` fields from <!--files:...--> HTML comments in message content */
 function stripFileData(content: string): string {
@@ -42,7 +42,25 @@ export async function GET(
       ...m,
       content: stripFileData(m.content),
     }));
-    const response: MessagesResponse = { messages: sanitizedMessages, hasMore };
+
+    // Phase 3 Step 4 — inline-join task_run_logs for messages whose
+    // `task_run_id` is non-null. Lets MessageList render
+    // `<TaskRunMarker />` without N+1 fetches per marker. Empty when
+    // no message in this page came from a scheduled task / heartbeat.
+    // task_run_id is NEVER appended to message.content, so prompt
+    // builders constructing LLM context naturally ignore it.
+    const runIds = Array.from(
+      new Set(
+        sanitizedMessages
+          .map((m) => m.task_run_id)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0),
+      ),
+    );
+    const taskRuns: Record<string, TaskRunSummary> = runIds.length > 0
+      ? getTaskRunSummariesByIds(runIds)
+      : {};
+
+    const response: MessagesResponse = { messages: sanitizedMessages, hasMore, taskRuns };
     return Response.json(response);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to fetch messages';

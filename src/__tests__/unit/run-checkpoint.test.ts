@@ -42,12 +42,12 @@ describe('buildCheckpoints — no-compatible-provider precedence', () => {
     assert.equal(out.length, 1);
     assert.equal(out[0].id, 'no-compatible-provider');
     assert.equal(out[0].tone, 'error');
-    assert.equal(out[0].action?.href, '/settings#providers');
+    assert.equal(out[0].action?.href, '/settings/providers');
   });
 
-  it('uses the providers settings hash, not runtime, for the action', () => {
+  it('uses the providers settings route, not runtime, for the action', () => {
     const out = buildCheckpoints({ ...ok, noCompatibleProvider: true });
-    assert.equal(out[0].action?.href, '/settings#providers');
+    assert.equal(out[0].action?.href, '/settings/providers');
   });
 });
 
@@ -57,7 +57,7 @@ describe('buildCheckpoints — pinned-invalid', () => {
     assert.equal(out.length, 1);
     assert.equal(out[0].id, 'pinned-invalid');
     assert.equal(out[0].tone, 'error');
-    assert.equal(out[0].action?.href, '/settings#runtime');
+    assert.equal(out[0].action?.href, '/settings/runtime');
   });
 
   it('renders a {pinned} placeholder when no descriptor is provided', () => {
@@ -81,7 +81,7 @@ describe('buildCheckpoints — runtime-fallback', () => {
     assert.equal(out.length, 1);
     assert.equal(out[0].id, 'runtime-fallback');
     assert.equal(out[0].tone, 'warning');
-    assert.equal(out[0].action?.href, '/settings#runtime');
+    assert.equal(out[0].action?.href, '/settings/runtime');
   });
 });
 
