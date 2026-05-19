@@ -1092,14 +1092,14 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         // continues to skip the splice when there's nothing useful
         // to inject (capability + extension fragments both empty).
         //
-        // Phase 0 stop-bleeding (Context Accounting Runtime Contract,
-        // 2026-05-20): the previous "假数据" snapshot computation was
-        // deleted. capabilityFragments aggregate ≠ Skill invocation;
-        // workspaceFragments was empty; basePrompt was empty; adapter
-        // never passed assistantMemory — so the resulting snapshot
-        // misled users by attributing fixed compiler artifacts to
-        // user-facing Skills / Rules / Memory rows. Real per-Runtime
-        // accounting lands in Phase 2+ via produceContextAccountingSnapshot.
+        // Phase 2 Context Accounting (2026-05-20): produce per-turn
+        // RuntimeContextAccountingSnapshot here. ONLY real sources are
+        // entered (skills via slash-command + SKILL.md filesize; rules
+        // via CLAUDE.md filesize); other kinds declared unsupported.
+        // See src/lib/harness/claude-code-context-accounting.ts.
+        let contextAccountingSnapshot:
+          | import('@/types').RuntimeContextAccountingSnapshot
+          | undefined;
         {
           const { adaptForClaudeCode } = await import('@/lib/harness/runtime-adapter');
           // Phase 5e review fix P1 #2 (2026-05-18) — scan User /
@@ -1145,6 +1145,23 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
             userExtensions,
             externalExtensions,
           });
+
+          // Phase 2 — produce per-turn ClaudeCode Context Accounting
+          // snapshot. Uses prompt + workspace fs reads, no SDK rpc.
+          // Best-effort: failures degrade to "no real source" entries
+          // rather than fake data.
+          try {
+            const { produceClaudeCodeAccountingSnapshot } = await import(
+              '@/lib/harness/claude-code-context-accounting'
+            );
+            contextAccountingSnapshot = produceClaudeCodeAccountingSnapshot({
+              workspacePath: resolvedWorkingDirectory.path,
+              userPrompt: prompt || '',
+            });
+          } catch {
+            // producer failed — leave snapshot undefined; result event
+            // falls back to raw tokenUsage (popover hides Runtime kinds).
+          }
           if (adapted.systemPromptAppend.length > 0) {
             if (
               queryOptions.systemPrompt &&
@@ -1818,10 +1835,14 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
               // When present, it enriches the end-of-turn UI chip (Phase 1 of
               // agent-sdk-0-2-111-adoption) without replacing error-classifier.
               const terminalReason = (resultMsg as SDKResultMessage & { terminal_reason?: string }).terminal_reason;
-              // Phase 0 stop-bleeding (2026-05-20): the previous block
-              // attached a "假数据" context_breakdown to usage. Reverted
-              // to raw tokenUsage — Phase 2+ will reintroduce a real
-              // snapshot path via produceContextAccountingSnapshot.
+              // Phase 2 — attach RuntimeContextAccountingSnapshot to
+              // usage so chat/route.ts persists it via the existing
+              // `tokenUsage = resultData.usage` path. Old context_breakdown
+              // field is not written (Phase 0 deleted that path).
+              const usageWithAccounting =
+                tokenUsage && contextAccountingSnapshot
+                  ? { ...tokenUsage, context_accounting: contextAccountingSnapshot }
+                  : tokenUsage;
               controller.enqueue(formatSSE({
                 type: 'result',
                 data: JSON.stringify({
@@ -1829,7 +1850,7 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
                   is_error: resultMsg.is_error,
                   num_turns: resultMsg.num_turns,
                   duration_ms: resultMsg.duration_ms,
-                  usage: tokenUsage,
+                  usage: usageWithAccounting,
                   session_id: resultMsg.session_id,
                   ...(terminalReason ? { terminal_reason: terminalReason } : {}),
                 }),
