@@ -577,17 +577,18 @@ export function MessageInput({
       // Codex review v3 P1 fix (2026-05-20) — extract agent_skill badge
       // labels as a structured channel for Context Accounting Phase 2.
       // Codex v5 P1 fix (2026-05-20) — canonicalize before passing.
-      // Real badge picker stores `command: '/humanizer-zh'` (display
-      // form). Producer's discoverSkills().find compares against
-      // SkillDefinition.name = 'humanizer-zh' (frontmatter). Strip
-      // leading slash here so producer matches, even if a future
-      // picker change makes label/command formats inconsistent.
-      const { canonicalizeSkillName } = await import(
-        '@/lib/harness/claude-code-context-accounting'
-      );
+      // Inline (NOT importing canonicalizeSkillName from
+      // claude-code-context-accounting): that module pulls
+      // discoverSkills → `node:fs`, which Next.js Turbopack drags into
+      // the client bundle through this import — produced "Module not
+      // found: 'fs'" 500 on /chat. Keeping canonicalize inline here is
+      // client-safe; the producer module has its own copy defensively
+      // (intentional duplication for boundary safety).
+      const canonicalizeSkillNameInline = (v: string) =>
+        v.trim().replace(/^\/+/, '');
       const selectedSkills = badges
         .filter((b) => b.kind === 'agent_skill')
-        .map((b) => canonicalizeSkillName(b.command || b.label))
+        .map((b) => canonicalizeSkillNameInline(b.command || b.label))
         .filter((n) => n.length > 0);
       // Badge path: `prompt` (dispatchBadge output) takes the content slot
       // for the model side, but the bubble's `displayLabel` is owned by the
