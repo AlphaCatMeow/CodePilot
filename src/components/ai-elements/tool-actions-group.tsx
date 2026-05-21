@@ -1,22 +1,14 @@
 'use client';
 
-import React, { useState, createElement } from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import type { Icon } from "@phosphor-icons/react";
 import {
-  File,
-  NotePencil,
-  Terminal,
-  MagnifyingGlass,
-  Wrench,
   SpinnerGap,
   CheckCircle,
   XCircle,
   CaretRight,
-  Brain,
-  Image as ImageIcon,
-  Lightning,
 } from "@phosphor-icons/react";
+import { CodePilotIcon, type CodePilotIconName } from "@/components/ui/semantic-icon";
 import { cn } from '@/lib/utils';
 import { Shimmer } from '@/components/ai-elements/shimmer';
 import { useStickToBottomContext } from 'use-stick-to-bottom';
@@ -61,7 +53,7 @@ interface ToolActionsGroupProps {
 
 interface ToolRendererDef {
   match: (name: string) => boolean;
-  icon: Icon;
+  iconName: CodePilotIconName;
   label: string;
   getSummary: (input: unknown, name?: string) => string;
   /** Render inline detail when tool row is hovered/expanded (optional) */
@@ -87,7 +79,7 @@ function truncatePath(path: string, maxLen = 50): string {
 const TOOL_REGISTRY: ToolRendererDef[] = [
   {
     match: (n) => ['bash', 'execute', 'run', 'shell', 'execute_command'].includes(n.toLowerCase()),
-    icon: Terminal,
+    iconName: 'terminal',
     label: '',
     getSummary: (input) => {
       const cmd = ((input as Record<string, unknown>)?.command || (input as Record<string, unknown>)?.cmd || '') as string;
@@ -128,7 +120,7 @@ const TOOL_REGISTRY: ToolRendererDef[] = [
   },
   {
     match: (n) => ['write', 'edit', 'writefile', 'write_file', 'create_file', 'createfile', 'notebookedit', 'notebook_edit'].includes(n.toLowerCase()),
-    icon: NotePencil,
+    iconName: 'edit',
     label: 'Edit',
     getSummary: (input) => {
       const path = getFilePath(input);
@@ -137,7 +129,7 @@ const TOOL_REGISTRY: ToolRendererDef[] = [
   },
   {
     match: (n) => ['read', 'readfile', 'read_file'].includes(n.toLowerCase()),
-    icon: File,
+    iconName: 'file',
     label: 'Read',
     getSummary: (input) => {
       const path = getFilePath(input);
@@ -146,7 +138,7 @@ const TOOL_REGISTRY: ToolRendererDef[] = [
   },
   {
     match: (n) => ['search', 'glob', 'grep', 'find_files', 'search_files', 'websearch', 'web_search'].includes(n.toLowerCase()),
-    icon: MagnifyingGlass,
+    iconName: 'search',
     label: 'Search',
     getSummary: (input) => {
       const inp = input as Record<string, unknown> | undefined;
@@ -156,7 +148,7 @@ const TOOL_REGISTRY: ToolRendererDef[] = [
   },
   {
     match: (n) => n.toLowerCase() === 'agent',
-    icon: Lightning,
+    iconName: 'assistant',
     label: 'Agent',
     getSummary: (input) => {
       const inp = input as Record<string, unknown> | undefined;
@@ -209,7 +201,7 @@ const TOOL_REGISTRY: ToolRendererDef[] = [
     // Fallback — must be last. Shows the raw tool name so unregistered tools
     // (TodoWrite, MCP tools, plugin tools) remain identifiable.
     match: () => true,
-    icon: Wrench,
+    iconName: 'wrench',
     label: '',
     getSummary: (input, name?: string) => {
       const prefix = name || '';
@@ -341,7 +333,7 @@ function ContextGroup({ tools }: { tools: ToolAction[] }) {
         onClick={() => setExpanded((prev) => !prev)}
         className="flex w-full items-center gap-2 px-2 py-1 min-h-[28px] text-xs hover:bg-muted/30 rounded-sm transition-colors"
       >
-        <MagnifyingGlass size={14} className="shrink-0 text-muted-foreground" />
+        <CodePilotIcon name="search" size="sm" className="shrink-0 text-muted-foreground" aria-hidden />
         <CaretRight
           size={10}
           className={cn(
@@ -419,7 +411,7 @@ function ThinkingRow({ content, isStreaming }: { content: string; isStreaming?: 
             )}
           />
         ) : (
-          <Brain size={14} className="shrink-0 text-muted-foreground" />
+          <CodePilotIcon name="assistant" size="sm" className="shrink-0 text-muted-foreground" aria-hidden />
         )}
         <span className="font-mono text-muted-foreground/60 truncate flex-1 text-left">
           {isStreaming ? <Shimmer duration={1.5}>{summary}</Shimmer> : summary}
@@ -453,7 +445,7 @@ function ToolActionRow({ tool, streamingToolOutput }: { tool: ToolAction; stream
   const summary = renderer.getSummary(tool.input, tool.name);
   const filePath = getFilePath(tool.input);
   const status = getStatus(tool);
-  const hasDetail = renderer.icon === Terminal || renderer.icon === Lightning;
+  const hasDetail = renderer.iconName === 'terminal' || renderer.iconName === 'assistant';
   const showDetail = hasDetail && renderer.renderDetail && (status === 'running' || streamingToolOutput || tool.result);
 
   // Phase 5e round 8 (2026-05-18) — small inline hint when the model
@@ -475,7 +467,7 @@ function ToolActionRow({ tool, streamingToolOutput }: { tool: ToolAction; stream
   return (
     <div>
       <div className="flex items-center gap-2 px-2 py-1 min-h-[28px] text-xs hover:bg-muted/30 rounded-sm transition-colors">
-        {createElement(renderer.icon, { size: 14, className: "shrink-0 text-muted-foreground" })}
+        <CodePilotIcon name={renderer.iconName} size="sm" className="shrink-0 text-muted-foreground" aria-hidden />
 
         {renderer.label && (
           <span className="font-medium text-muted-foreground shrink-0">{renderer.label}</span>
@@ -492,7 +484,7 @@ function ToolActionRow({ tool, streamingToolOutput }: { tool: ToolAction; stream
         )}
 
         {tool.media && tool.media.length > 0 && (
-          <ImageIcon size={14} className="shrink-0 text-primary/60" />
+          <CodePilotIcon name="image" size="sm" className="shrink-0 text-primary/60" aria-hidden />
         )}
 
         <StatusDot status={status} />

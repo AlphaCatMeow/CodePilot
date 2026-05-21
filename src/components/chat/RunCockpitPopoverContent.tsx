@@ -31,7 +31,7 @@ import { useClaudeStatus } from "@/hooks/useClaudeStatus";
 import { ContextContentFooter } from "@/components/ai-elements/context";
 import { ContextBreakdownList } from "@/components/chat/context-breakdown/ContextBreakdownList";
 import { ContextDotMatrix } from "@/components/chat/context-breakdown/ContextDotMatrix";
-import { ArrowSquareOut } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { cn } from "@/lib/utils";
 import {
   computeEffectiveRuntime,
@@ -240,7 +240,7 @@ export function RunCockpitPopoverContent({
           className="shrink-0 inline-flex items-center gap-0.5 text-[11px] text-muted-foreground/40 transition-colors group-hover/row:text-muted-foreground hover:!text-foreground"
         >
           {t("runStatus.switch" as TranslationKey)}
-          <ArrowSquareOut size={10} />
+          <CodePilotIcon name="external" size={10} aria-hidden />
         </button>
       </div>
       <div className="group/row flex items-baseline gap-3">
@@ -263,7 +263,7 @@ export function RunCockpitPopoverContent({
           className="shrink-0 inline-flex items-center gap-0.5 text-[11px] text-muted-foreground/40 transition-colors group-hover/row:text-muted-foreground hover:!text-foreground"
         >
           {t("runStatus.modify" as TranslationKey)}
-          <ArrowSquareOut size={10} />
+          <CodePilotIcon name="external" size={10} aria-hidden />
         </button>
       </div>
       <div className="flex items-baseline gap-3">
@@ -305,7 +305,7 @@ export function RunCockpitPopoverContent({
                     className="ml-2 inline-flex items-center gap-0.5 text-[11px] text-muted-foreground hover:text-foreground"
                   >
                     {issue.actionLabel}
-                    <ArrowSquareOut size={10} />
+                    <CodePilotIcon name="external" size={10} aria-hidden />
                   </button>
                 )}
               </div>

@@ -4,7 +4,7 @@ import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import { useTranslation } from '@/hooks/useTranslation';
 import { resolveThemeVars, getWidgetIframeStyleBlock } from '@/lib/widget-css-bridge';
 import { sanitizeForStreaming, sanitizeForIframe, buildReceiverSrcdoc } from '@/lib/widget-sanitizer';
-import { Code } from '@/components/ui/icon';
+import { CodePilotIcon } from '@/components/ui/semantic-icon';
 import { WidgetErrorBoundary } from './WidgetErrorBoundary';
 
 interface WidgetRendererProps {
@@ -274,7 +274,7 @@ function WidgetRendererInner({ widgetCode, isStreaming, title, showOverlay, extr
           onClick={() => setShowCode(!showCode)}
           className="text-[10px] px-1.5 py-0.5 rounded text-muted-foreground/50 hover:text-muted-foreground hover:bg-muted/50 flex items-center gap-0.5"
         >
-          <Code size={12} />
+          <CodePilotIcon name="code" size={12} aria-hidden />
           {showCode ? t('widget.hideCode') : t('widget.showCode')}
         </button>
       </div>

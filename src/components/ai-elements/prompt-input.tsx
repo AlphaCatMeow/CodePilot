@@ -55,13 +55,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import {
-  ArrowElbowDownLeft,
-  Image,
-  Plus,
-  Square,
-  X,
-} from "@phosphor-icons/react";
+import { ArrowElbowDownLeft, Square, X } from "@phosphor-icons/react";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { nanoid } from "nanoid";
 import {
   Children,
@@ -358,7 +353,7 @@ export const PromptInputActionAddAttachments = ({
 
   return (
     <DropdownMenuItem {...props} onSelect={handleSelect}>
-      <Image className="mr-2 size-4" /> {label}
+      <CodePilotIcon name="image" size="md" className="mr-2" aria-hidden /> {label}
     </DropdownMenuItem>
   );
 };
@@ -1113,7 +1108,7 @@ export const PromptInputActionMenuTrigger = ({
 }: PromptInputActionMenuTriggerProps) => (
   <DropdownMenuTrigger asChild>
     <PromptInputButton className={className} {...props}>
-      {children ?? <Plus className="size-4" />}
+      {children ?? <CodePilotIcon name="plus" size="md" aria-hidden />}
     </PromptInputButton>
   </DropdownMenuTrigger>
 );

@@ -11,7 +11,8 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { Brain, CaretDown, DotOutline } from "@phosphor-icons/react";
+import { CaretDown, DotOutline } from "@phosphor-icons/react";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { createContext, memo, useContext, useMemo } from "react";
 
 interface ChainOfThoughtContextValue {
@@ -86,7 +87,7 @@ export const ChainOfThoughtHeader = memo(
           )}
           {...props}
         >
-          <Brain className="size-4" />
+          <CodePilotIcon name="assistant" size="md" aria-hidden />
           <span className="flex-1 text-left">
             {children ?? "Chain of Thought"}
           </span>

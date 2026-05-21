@@ -1,7 +1,7 @@
 'use client';
 
 import { cn } from '@/lib/utils';
-import { Eye, Image, NotePencil } from '@/components/ui/icon';
+import { CodePilotIcon } from '@/components/ui/semantic-icon';
 import { Button } from '@/components/ui/button';
 import { useTranslation } from '@/hooks/useTranslation';
 
@@ -91,7 +91,7 @@ function ArtifactFileCard({
     <div className="mt-2 flex items-center gap-3 rounded-lg border border-border/50 bg-card px-4 py-3">
       <div className="min-w-0 flex-1">
         <p className="flex min-w-0 items-center gap-1.5 text-sm font-medium text-foreground">
-          <NotePencil size={12} className="shrink-0 text-muted-foreground" />
+          <CodePilotIcon name="edit" size={12} className="shrink-0 text-muted-foreground" aria-hidden />
           <span className="truncate">{file.name}</span>
           <span
             className={cn(
@@ -120,7 +120,7 @@ function ArtifactFileCard({
               onClick={() => onPreview?.(file)}
               className="gap-1.5"
             >
-              <Eye size={14} />
+              <CodePilotIcon name="preview" size="sm" aria-hidden />
               {t('diffSummary.openPreview')}
             </Button>
           )}
@@ -132,7 +132,7 @@ function ArtifactFileCard({
               title={t('diffSummary.exportLongShot')}
               aria-label={t('diffSummary.exportLongShot')}
             >
-              <Image size={14} />
+              <CodePilotIcon name="image" size="sm" aria-hidden />
             </Button>
           )}
         </div>
@@ -176,7 +176,7 @@ export function DiffSummary({ files, onPreview, onExportLongShot }: DiffSummaryP
       ))}
       {others.length > 0 && (
         <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground/60">
-          <NotePencil size={10} className="shrink-0" />
+          <CodePilotIcon name="edit" size={10} className="shrink-0" aria-hidden />
           <span className="truncate">
             {previewable.length > 0 ? 'Also modified: ' : 'Modified: '}
             {others.map((f) => f.name).join(', ')}

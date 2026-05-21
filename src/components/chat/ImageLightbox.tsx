@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
-import { ArrowLeft, ArrowRight } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -67,7 +67,7 @@ export function ImageLightbox({ images, initialIndex, open, onOpenChange }: Imag
                 onClick={goToPrev}
                 className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/50 p-2 text-white hover:bg-black/70 transition"
               >
-                <ArrowLeft size={24} />
+                <CodePilotIcon name="back" size={24} aria-hidden />
               </Button>
               <Button
                 variant="ghost"
@@ -75,7 +75,7 @@ export function ImageLightbox({ images, initialIndex, open, onOpenChange }: Imag
                 onClick={goToNext}
                 className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/50 p-2 text-white hover:bg-black/70 transition"
               >
-                <ArrowRight size={24} />
+                <CodePilotIcon name="forward" size={24} aria-hidden />
               </Button>
               <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-white/70 text-sm">
                 {currentIndex + 1} / {images.length}

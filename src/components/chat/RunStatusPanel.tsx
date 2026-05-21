@@ -18,7 +18,7 @@
  */
 
 import type { ReactNode } from "react";
-import { ArrowSquareOut } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { cn } from "@/lib/utils";
 
 interface RowProps {
@@ -54,7 +54,7 @@ function Row({ label, value, tone = "default", actionLabel, onAction }: RowProps
           className="shrink-0 inline-flex items-center gap-0.5 text-[11px] text-muted-foreground/40 transition-colors group-hover/row:text-muted-foreground hover:!text-foreground"
         >
           {actionLabel}
-          <ArrowSquareOut size={10} />
+          <CodePilotIcon name="external" size={10} aria-hidden />
         </button>
       )}
     </div>
@@ -176,7 +176,7 @@ export function RunStatusPanel({
                       className="ml-2 inline-flex items-center gap-0.5 text-[11px] text-muted-foreground hover:text-foreground"
                     >
                       {issue.actionLabel}
-                      <ArrowSquareOut size={10} />
+                      <CodePilotIcon name="external" size={10} aria-hidden />
                     </button>
                   )}
                 </div>

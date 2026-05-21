@@ -4,7 +4,8 @@ import type { ComponentProps } from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { ArrowDown, DownloadSimple } from "@phosphor-icons/react";
+import { ArrowDown } from "@phosphor-icons/react";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { useCallback } from "react";
 import { StickToBottom, useStickToBottomContext } from "use-stick-to-bottom";
 
@@ -161,7 +162,7 @@ export const ConversationDownload = ({
       variant="outline"
       {...props}
     >
-      {children ?? <DownloadSimple className="size-4" />}
+      {children ?? <CodePilotIcon name="download" size="md" aria-hidden />}
     </Button>
   );
 };

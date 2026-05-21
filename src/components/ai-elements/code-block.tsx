@@ -21,17 +21,8 @@ import { cn } from "@/lib/utils";
 import { useThemeFamily } from "@/lib/theme/context";
 import { resolveShikiTheme, resolveShikiThemes, SHIKI_DEFAULT_LIGHT, SHIKI_DEFAULT_DARK } from "@/lib/theme/code-themes";
 import type { Icon } from "@phosphor-icons/react";
-import {
-  Check,
-  Copy,
-  CaretDown,
-  CaretUp,
-  FileCode,
-  Terminal,
-  Code,
-  File,
-  Hash,
-} from "@phosphor-icons/react";
+import { Check, CaretDown, CaretUp, Hash, Terminal, Code, File, FileCode } from "@phosphor-icons/react";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import {
   createElement,
   createContext,
@@ -820,7 +811,7 @@ const CodeBlockDefaultHeader = ({
             </>
           ) : (
             <>
-              <Copy size={12} />
+              <CodePilotIcon name="copy" size={12} aria-hidden />
               <span>Copy</span>
             </>
           )}
@@ -843,7 +834,7 @@ const CodeBlockDefaultHeader = ({
             </>
           ) : (
             <>
-              <FileCode size={12} />
+              <CodePilotIcon name="file_code" size={12} aria-hidden />
               <span>Markdown</span>
             </>
           )}
@@ -891,7 +882,7 @@ function CodeFencePreviewButton({
       className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
       title={`Open this ${language} in the Artifact preview`}
     >
-      <FileCode size={12} />
+      <CodePilotIcon name="file_code" size={12} aria-hidden />
       <span>Preview</span>
     </button>
   );
@@ -1023,8 +1014,6 @@ export const CodeBlockCopyButton = ({
     []
   );
 
-  const Icon = isCopied ? Check : Copy;
-
   return (
     <Button
       className={cn("shrink-0", className)}
@@ -1033,7 +1022,7 @@ export const CodeBlockCopyButton = ({
       variant="ghost"
       {...props}
     >
-      {children ?? <Icon size={14} />}
+      {children ?? (isCopied ? <Check size={14} /> : <CodePilotIcon name="copy" size="sm" aria-hidden />)}
     </Button>
   );
 };
