@@ -186,11 +186,14 @@ describe('Add Service eager seed — OpenRouter only writes catalog defaults', (
     seedCatalogModelsIfEmpty(provider.id, defaults);
 
     const rows = getAllModelsForProvider(provider.id);
-    // OpenRouter preset ships ANTHROPIC_DEFAULT_MODELS (sonnet/opus/haiku).
-    assert.equal(rows.length, 3, `expected 3 catalog seed rows, got ${rows.length}`);
+    // OpenRouter preset ships sonnet / opus (4.7) / opus-4-8 / haiku.
+    // (opus-4-8 added 2026-05-29 in Phase A — Opus 4.8 接入; see
+    //  docs/exec-plans/active/post-refactor-cleanup.md.)
+    assert.equal(rows.length, 4, `expected 4 catalog seed rows, got ${rows.length}`);
     const ids = new Set(rows.map(r => r.model_id));
     assert.ok(ids.has('sonnet'));
     assert.ok(ids.has('opus'));
+    assert.ok(ids.has('opus-4-8'));
     assert.ok(ids.has('haiku'));
     for (const row of rows) {
       assert.equal(row.source, 'catalog');
@@ -208,7 +211,7 @@ describe('Add Service eager seed — OpenRouter only writes catalog defaults', (
     seedCatalogModelsIfEmpty(provider.id, defaults);
 
     const rows = getAllModelsForProvider(provider.id);
-    assert.equal(rows.length, 3);
+    assert.equal(rows.length, 4);
   });
 });
 

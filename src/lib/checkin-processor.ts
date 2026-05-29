@@ -70,7 +70,7 @@ export async function processCheckin(
       sessionModel: session?.model || undefined,
     });
     const providerId = resolved.provider?.id || 'env';
-    const model = resolved.upstreamModel || resolved.model || getSetting('default_model') || 'claude-sonnet-4-20250514';
+    const model = resolved.upstreamModel || resolved.model || getSetting('default_model') || 'claude-sonnet-4-6';
 
     const dailyMemoryPrompt = `You maintain daily memory entries for an AI assistant. Given the user's daily check-in answers, generate a daily memory entry for ${today}.
 

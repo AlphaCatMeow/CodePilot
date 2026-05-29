@@ -504,7 +504,7 @@ export function toAiSdkConfig(
       }
     }
   } else {
-    modelId = resolved.upstreamModel || resolved.model || 'claude-sonnet-4-5-20250929';
+    modelId = resolved.upstreamModel || resolved.model || 'claude-sonnet-4-6';
   }
   const provider = resolved.provider;
   const protocol = resolved.protocol;
@@ -842,7 +842,7 @@ function buildResolution(
     const envModels: CatalogModel[] = [
       {
         modelId: 'sonnet',
-        upstreamModelId: 'claude-sonnet-4-20250514',
+        upstreamModelId: 'claude-sonnet-4-6',
         displayName: 'Sonnet 4.6',
         capabilities: {
           supportsEffort: true,
@@ -854,6 +854,16 @@ function buildResolution(
         modelId: 'opus',
         upstreamModelId: 'claude-opus-4-7',
         displayName: 'Opus 4.7',
+        capabilities: {
+          supportsEffort: true,
+          supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+          supportsAdaptiveThinking: true,
+        },
+      },
+      {
+        modelId: 'opus-4-8',
+        upstreamModelId: 'claude-opus-4-8',
+        displayName: 'Opus 4.8',
         capabilities: {
           supportsEffort: true,
           supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],

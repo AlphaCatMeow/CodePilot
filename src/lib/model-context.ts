@@ -16,6 +16,7 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
   'claude-sonnet-4-20250514': 200000,
   'claude-opus-4-20250514': 200000,
   'claude-opus-4-7': 1_000_000,
+  'claude-opus-4-8': 1_000_000,
   'claude-haiku-4-5-20251001': 200000,
   // Third-party chat models — Native runtime fallback (Vercel AI SDK
   // doesn't expose modelContextWindow; ClaudeCode SDK's reported window

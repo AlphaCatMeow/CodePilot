@@ -303,6 +303,19 @@ const OPENROUTER_ANTHROPIC_MODELS: CatalogModel[] = [
     },
   },
   {
+    modelId: 'opus-4-8',
+    // OpenRouter slug confirmed by Codex (2026-05-29) — explicit fixture,
+    // not inferred from the 4.7 naming pattern.
+    upstreamModelId: 'anthropic/claude-opus-4.8',
+    displayName: 'Opus 4.8',
+    // No `role` — explicit pick; `opus` alias stays 4.7 (Phase A safe default).
+    capabilities: {
+      supportsEffort: true,
+      supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      supportsAdaptiveThinking: true,
+    },
+  },
+  {
     modelId: 'haiku',
     upstreamModelId: 'anthropic/claude-haiku-4.5',
     displayName: 'Haiku 4.5',
@@ -339,6 +352,21 @@ const ANTHROPIC_FIRST_PARTY_MODELS: CatalogModel[] = [
     role: 'opus',
     capabilities: {
       supportsEffort: true,
+      supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      supportsAdaptiveThinking: true,
+    },
+  },
+  {
+    modelId: 'opus-4-8',
+    upstreamModelId: 'claude-opus-4-8',
+    displayName: 'Opus 4.8',
+    // No `role`: Opus 4.8 is an explicit pick, NOT the default `opus` role
+    // target. roleModels.opus / ANTHROPIC_DEFAULT_OPUS_MODEL stays
+    // claude-opus-4-7 until the user opts to switch (Phase A safe default).
+    capabilities: {
+      supportsEffort: true,
+      // Same levels as 4.7; the effort DEFAULT (high) is applied by the
+      // Claude Code CLI/SDK when effort is unset, not here.
       supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
       supportsAdaptiveThinking: true,
     },

@@ -58,7 +58,7 @@ export async function processOnboarding(
       sessionModel: session?.model || undefined,
     });
     const providerId = resolved.provider?.id || 'env';
-    const model = resolved.upstreamModel || resolved.model || getSetting('default_model') || 'claude-sonnet-4-20250514';
+    const model = resolved.upstreamModel || resolved.model || getSetting('default_model') || 'claude-sonnet-4-6';
 
     const soulPrompt = `Based on the following conversation summary, generate a soul.md file for an AI assistant.
 
