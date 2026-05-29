@@ -88,10 +88,9 @@
 
 | 文件 | 主题 | 状态 |
 |------|------|------|
-| [active/refactor-closeout.md](active/refactor-closeout.md) | **重构收口总控板**：当前 Phase 状态 / 下一步 / 未闭环风险 / 验收入口 / 最近决策 / Phase 7 方案 | Phase 0-6 ✅；下一步进入 Phase 7 视觉锚点与图标体系 |
-| [active/phase-7-icon-system.md](active/phase-7-icon-system.md) | **Phase 7 图标体系与表意校准**：HugeIcons 主库迁移、CodePilot semantic icon layer、重复图标 / 表意不清收敛、direct import guardrail | 📋 待开始；先做 icon inventory + semantic taxonomy |
-| [active/phase-7b-macos-native-visual-profile.md](active/phase-7b-macos-native-visual-profile.md) | **Phase 7b macOS 平台视觉层**：借鉴 Raycast / Apple HIG 的平台感原则，只在窗口 chrome、顶部栏、侧栏、输入区和浮层做 macOS 材质与 hover profile，不分叉页面内容 | 📋 待 Phase 7 图标收口后启动；先做 macOS profile，Windows profile 后续另开 |
-| [active/phase-7c-card-primitive.md](active/phase-7c-card-primitive.md) | **Phase 7c 浮动卡片 layout primitive**：CardFrame / CardSurface / ResizeGutter 三个单职责组件，收敛四张卡片的 shadow / clip / gutter 几何，验收数据写入 `handover/macos-visual-profile.md` | ✅ Phase A-H；2026-05-26 收口：sidebar→row-level card、AssistantPanel 进 CardFrame/CardSurface、真实 DOM gutter 几何 e2e、tech-debt #29 误判已撤销 |
+| [active/refactor-closeout.md](active/refactor-closeout.md) | **重构收口总控板**：当前 Phase 状态 / 下一步 / 未闭环风险 / 验收入口 / 最近决策 / Phase 7 方案 | Phase 0-6 ✅ / Phase 8 ✅；Phase 7 进行中（图标 0-3、7b 0-2、7c 已归档）；当前整体收尾 |
+| [active/phase-7-icon-system.md](active/phase-7-icon-system.md) | **Phase 7 图标体系与表意校准**：HugeIcons 主库迁移、CodePilot semantic icon layer、重复图标 / 表意不清收敛、direct import guardrail | 🔄 Phase 0-3 完成（semantic layer + 96 文件迁移 + guardrail）；Phase 4 文档收口进行中 |
+| [active/phase-7b-macos-native-visual-profile.md](active/phase-7b-macos-native-visual-profile.md) | **Phase 7b macOS 平台视觉层**：借鉴 Raycast / Apple HIG 的平台感原则，只在窗口 chrome、顶部栏、侧栏、输入区和浮层做 macOS 材质与 hover profile，不分叉页面内容 | 🟡 Phase 0-2 完成（卡片几何拆出为 7c 并已归档）；Phase 3（hover/cursor/density）/ 4（浮层 POC）/ 5（QA 归档）待开始 |
 | [active/development-harness-optimization.md](active/development-harness-optimization.md) | **开发流程 Harness 优化讨论稿（v2）**：Codex 初稿 + ClaudeCode 按用户"可审核"约束重组。事实层面补 3 项 Codex 漏说的已有资产（guardrails/ 4 份模块契约 / lint:colors / tech-debt-tracker）；方向上 Skill 化暂缓、主推自动检查脚本（docs drift / hook 配置）+ 测试矩阵补洞；每个 Step 必须以"用户能看到什么 / 不做什么 / 怎么验收"开头 | 📋 讨论中；待用户对齐 Step 1-3，再决定是否进入 Step 4-6 |
 | [active/issue-tracker.md](active/issue-tracker.md) | **统一问题跟踪**：所有 Bug / Feature Request / Sentry 监控的活动看板 | 持续维护 |
 
@@ -130,6 +129,7 @@
 | 文件 | 主题 | 完成日期 |
 |------|------|----------|
 | [completed/phase-8-codex-mcp-context-injection.md](completed/phase-8-codex-mcp-context-injection.md) | **Phase 8 Codex MCP / Memory 注入**：`config.mcp_servers` 注入链路 + 5 项核心能力（Memory / Widget / Tasks+Notify / Dashboard / CLI）在 Codex Account 下真账号 smoke 通过 + 按能力区分的 elicitation 审批策略（read 自动 / write 弹审批）+ Codex 原生图片入库对齐素材库；Image/Media 与用户自定义 MCP 用户决定 defer | 2026-05-29 |
+| [completed/phase-7c-card-primitive.md](completed/phase-7c-card-primitive.md) | **Phase 7c 浮动卡片 layout primitive**：CardFrame / CardSurface / ResizeGutter 三个单职责组件收敛四张浮动卡片的 shadow / clip-path / gutter 几何；sidebar 改 row-level card、AssistantPanel 接入、真实 DOM gutter 几何 e2e；验收证据见 [handover/macos-visual-profile.md](handover/macos-visual-profile.md) Phase 7c 章节 | 2026-05-26 |
 | [completed/phase-6-context-visualization.md](completed/phase-6-context-visualization.md) | Phase 6 上下文用量可视化：点阵式 Context Breakdown、来源分解、剩余上下文、三 Runtime context-accounting smoke；真实数据契约见 [context-accounting-runtime-contract.md](completed/context-accounting-runtime-contract.md) | 2026-05-20 |
 | [completed/context-accounting-runtime-contract.md](completed/context-accounting-runtime-contract.md) | Context Accounting Runtime Contract：三 Runtime context_breakdown 持久化、ToolInvocation 抽象、真实 smoke evidence 与 Phase 6 数据源收口 | 2026-05-20 |
 | [completed/phase-5-codex-runtime.md](completed/phase-5-codex-runtime.md) | Phase 5 Codex Runtime 接入：Codex app-server / Codex Account / Runtime adapter / approval + file events / provider proxy translator / OpenRouter + OAuth 收口 / installed_idle 状态文案 | 2026-05-19 |

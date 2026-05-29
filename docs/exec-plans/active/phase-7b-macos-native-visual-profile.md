@@ -1,8 +1,9 @@
 # Phase 7b: macOS Native Visual Profile
 
 > 创建时间：2026-05-22
-> 最后更新：2026-05-22
+> 最后更新：2026-05-26（Phase 0-2 已落地；卡片几何收口拆出为 7c 并已归档；剩 Phase 3-5）
 > 父计划：[`refactor-closeout.md`](./refactor-closeout.md)
+> 子计划：[`phase-7c-card-primitive.md`](../completed/phase-7c-card-primitive.md)（浮动卡片 layout primitive，从本计划 Phase 2 的卡片几何问题拆出，✅ 已完成并归档）
 > 前置：Phase 7 图标体系主体完成后启动；不阻塞 Phase 8 Codex MCP 调研
 
 ## 用户会看到什么变化
@@ -95,7 +96,7 @@ Apple 在 WWDC 2025 公布 **Liquid Glass** 设计语言，覆盖 iOS 26 / iPadO
 |-------|------|------|----------|
 | Phase 0 | macOS HIG + 当前 surface 审计 | ✅ 已完成 | 明确哪些区域能平台化，哪些必须保持共享；见 [`docs/handover/macos-visual-profile.md`](../../handover/macos-visual-profile.md) |
 | Phase 1 | Platform profile 基础设施 | ✅ 已完成 | `data-platform` + `data-platform-style` 落在 `<html>`；`--platform-*` token 层声明 + 默认值 = 产品 token 等价（无视觉 diff）；`docs/design.md` 新增 Token 分类章节；6 个 source-pin 单元测试 |
-| Phase 2 | macOS chrome + material POC | 🟡 进行中（Codex round 2 后）| 5 个壳层 surface 接 token（ChatListPanel / SettingsSidebar / UnifiedTopBar chat 分支 / MessageInput / Popover）+ 空态 topbar + 右侧 WorkspaceSidebar / TabBar / AssistantPanel / FileTreePanel；macOS profile alpha 拉到 48/55/78/72；Electron BrowserWindow `backgroundColor: '#00000000'` + `visualEffectState: 'followWindow'`；body 在 darwin profile 下 `transparent`；traffic light 安全区 + 垂直对齐 token；`electron:dev` 引入 esbuild watch（避免 main.js stale）|
+| Phase 2 | macOS chrome + material POC | ✅ 主体完成（`1202fef`，Codex round 3 final review 收口；卡片几何后续由 7c 完成）| 5 个壳层 surface 接 token（ChatListPanel / SettingsSidebar / UnifiedTopBar chat 分支 / MessageInput / Popover）+ 空态 topbar + 右侧 WorkspaceSidebar / TabBar / AssistantPanel / FileTreePanel；macOS profile alpha 拉到 48/55/78/72；Electron BrowserWindow `backgroundColor: '#00000000'` + `visualEffectState: 'followWindow'`；body 在 darwin profile 下 `transparent`；traffic light 安全区 + 垂直对齐 token；`electron:dev` 引入 esbuild watch（避免 main.js stale）|
 | Phase 3 | macOS hover / cursor / density 收口 | 📋 待开始 | 高频导航层减少网页 hover 感，但功能和布局不变 |
 | Phase 4 | macOS 浮层视觉 POC | 📋 待开始 | RunCockpit / model picker / command menu 等浮层更像 Mac 控制层 |
 | Phase 5 | CDP / Electron smoke + 文档归档 | 📋 待开始 | 有可回归截图矩阵和设计规范入口 |
@@ -357,6 +358,7 @@ Apple 在 WWDC 2025 公布 **Liquid Glass** 设计语言，覆盖 iOS 26 / iPadO
 | Date | Runtime | Provider | Model | 凭据形态 | 场景 | Result | Evidence |
 |------|---------|----------|-------|---------|------|--------|----------|
 | 2026-05-22 | n/a | n/a | n/a | n/a | Phase 0 renderer baseline: `/chat`, `/settings/runtime`, `/settings/assistant`, `/plugins` light + dark | ✅ | `docs/exec-plans/active/_smoke-evidence/phase-7b/baseline/{chat,settings-runtime,settings-assistant,plugins}-{light,dark}.png`; console: no errors introduced by this round (preexisting 404 on `/api/providers/codex_account/models?all=1` unchanged) |
+| 2026-05-26 | n/a | n/a | n/a | n/a | Phase 2 macOS chrome / material 收口（卡片几何走 7c）：Electron diag `dataPlatform=darwin` / `dataShell=electron` / `opaqueElementCount=0` | ✅ | 见 7c 验收：[`handover/macos-visual-profile.md`](../../handover/macos-visual-profile.md) Phase 7c 章节 + `_smoke-evidence/phase-7c-{light,dark}.png`。**注**：该组截图为 browser 模拟 darwin profile（手动注入 `.dark` class），非真实 Electron 窗口 vibrancy 截图；Phase 5 收口仍需补一次真实 Electron-window material smoke |
 
 ## 决策日志
 

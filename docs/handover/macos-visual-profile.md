@@ -92,7 +92,7 @@ Console result: light and dark capture runs both produced no `console.error` or 
 
 ## Phase 7c — Floating Card Layout Primitive (2026-05-24)
 
-> 执行计划见 [docs/exec-plans/active/phase-7c-card-primitive.md](../exec-plans/active/phase-7c-card-primitive.md)
+> 执行计划见 [docs/exec-plans/completed/phase-7c-card-primitive.md](../exec-plans/completed/phase-7c-card-primitive.md)（已归档）
 
 ### 抽象边界
 
@@ -110,7 +110,7 @@ Console result: light and dark capture runs both produced no `console.error` or 
 
 | card | frame 渲染位置 | width state 来源 |
 |---|---|---|
-| sidebar | `AppShell.tsx`（content-row 第一个 child，wrap 在 `<div className="flex h-full shrink-0">` 内跟 ResizeGutter 同 flex item） | AppShell 本地 `useState(240)` + localStorage `codepilot_chatlist_width` |
+| sidebar | `AppShell.tsx`（content-row 第一个 child，**row-level CardFrame**；2026-05-26 起已删除旧 `<div className="flex h-full shrink-0">` wrapper，见下方"已知问题"中的 wrapper removal 说明） | AppShell 本地 `useState(240)` + localStorage `codepilot_chatlist_width` |
 | main | `ChatContentRow`（Fragment 直接 child） | `CardFrame kind="main"` 自动 flex-1，无 width prop |
 | workspace | `ChatContentRow`（在 `ws.state.open` 守护下） | `useWorkspaceSidebar` context |
 | fileTree | `PanelZone`（在 `fileTreeOpen` 守护下） | PanelZone 本地 `useState(280)` |

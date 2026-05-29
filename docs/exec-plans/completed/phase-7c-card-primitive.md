@@ -1,8 +1,10 @@
 # Phase 7c — Floating Card Layout Primitive
 
 > 创建时间：2026-05-24
-> 最后更新：2026-05-24
-> 产品思考见 [docs/insights/macos-visual-profile.md](../../insights/macos-visual-profile.md)（待补，沿用 Phase 7b 同名文档的延伸）
+> 最后更新：2026-05-26（✅ Phase A-H 全部完成并归档）
+> 父计划：[`refactor-closeout.md`](../active/refactor-closeout.md)（Phase 7 视觉线；同属仍在进行的 phase-7b macOS 平台视觉，见总控板 Phase 7 行）
+> 产品思考见 [docs/insights/macos-visual-profile.md](../../insights/macos-visual-profile.md)
+> 技术验收见 [docs/handover/macos-visual-profile.md](../../handover/macos-visual-profile.md) Phase 7c 章节
 
 ## 上下文
 
