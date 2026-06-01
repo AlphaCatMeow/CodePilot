@@ -24,7 +24,7 @@
 
 | Phase | 内容 | 用户能看到什么 | 状态 | 备注 |
 |-------|------|----------------|------|------|
-| 0 | 预览边界与版本策略 | 不会静默升级；测试用户明确拿到 Preview 包 | ✅ 版本单源已修 | `package.json` + lock bump 到 `0.55.0-preview.3`（>0.54.0）；NEXT_PUBLIC_APP_VERSION / app.getVersion / Codex clientInfo 全部派生自 package.json，已核实。剩签名/绕过说明（P2，非阻断） |
+| 0 | 预览边界与版本策略 | 不会静默升级；测试用户明确拿到 Preview 包 | ✅ 版本单源已修 | `package.json` + lock bump 到 `0.55.0-preview.4`（>0.54.0）；NEXT_PUBLIC_APP_VERSION / app.getVersion / Codex clientInfo 全部派生自 package.json，已核实。剩签名/绕过说明（P2，非阻断） |
 | 1 | 必修用户可见问题 | Mac 通知、默认模型提示、Plan Widget、Windows shell 方言修正 | 🟢 源码已修，待 packaged smoke | 两个 runtime P0（Codex `--listen` / ClaudeCode `sonnet`）**已由 `6923f13` 在 HEAD 修复 + 回归 pin 通过**（坏包是 6923f13 之前的过时构建）；剩 packaged app 真机/CI smoke 确认 |
 | 2 | Windows Preview Readiness | Windows 包不像 macOS 硬搬；命令默认 PowerShell 兼容 | 📋 待开始 | #28 代码已修（默认 PowerShell，bash 只认显式 opt-in），真机验收 blocking |
 | 3 | macOS Preview Readiness | macOS 视觉与通知路径可验证；已知系统设置限制有说明 | 📋 待开始 | #34 链路已确认 delivered/acked，真机通知权限核查 blocking |
@@ -243,7 +243,7 @@ macOS 预览包保留本轮新视觉，但不因为透明 / vibrancy / floating 
 ### 怎么验收
 
 - GitHub Actions 有一个 `workflow_dispatch` preview workflow，输入：
-  - `preview_version`，例如 `0.55.0-preview.3`。
+  - `preview_version`，例如 `0.55.0-preview.4`。
   - `build_macos_arm64` / `build_windows_x64`。
   - `commit_sha` 或默认当前分支 HEAD。
 - macOS job 只产出 arm64 DMG/ZIP；Windows job 只产出 x64 NSIS。
@@ -334,9 +334,9 @@ macOS 预览包保留本轮新视觉，但不因为透明 / vibrancy / floating 
 | 2026-05-31 | macOS packaged | N/A | N/A | N/A | Intel x64 ad-hoc DMG 构建校验 | ✅ | `release-preview-2026-05-31/CodePilot-0.53.0-preview-2026-05-31-x64.dmg`; SHA-256 `be65141fd48643439f0d95a9cd94e56cd3e5fe2ed686cf91a8096d22bd351bd0`; `codesign --deep --strict` + `hdiutil verify` 通过 |
 | 2026-05-31 | macOS packaged | N/A | N/A | N/A | Developer ID 路径构建校验 | ❌ | `release/` 产物生成但 `codesign --verify --deep --strict` 失败；不分发给测试用户 |
 | 2026-05-31 | macOS packaged | N/A | N/A | N/A | `0.55.0-preview.2` 本地临时包安装 smoke | ❌ | 用户实测：app 内仍显示 `0.53`；Codex app-server 启动失败；ClaudeCode 输入框一直"正在准备运行环境"。日志 `/Users/op7418/Downloads/codepilot-main_副本.log`：`Version changed from 0.54.0 to 0.53.0`、`codex app-server error: unexpected argument '--listen' found`、`model_not_found ... sonnet`。该包废弃，不再分发 |
-| 2026-05-31 | dev (worktree) | N/A | N/A | N/A | 版本单源 bump 校验（P0-版本） | ✅ | `package.json` + lock（root + packages['']）= `0.55.0-preview.3`；NEXT_PUBLIC_APP_VERSION（next.config:48 派生）/ `app.getVersion`（Info.plist）/ Codex clientInfo（`readCodePilotVersion` 读 pkg.version）全部同源 |
+| 2026-06-01 | dev (worktree) | N/A | N/A | N/A | 版本单源 bump 校验（P0-版本） | ✅ | `package.json` + lock（root + packages['']）= `0.55.0-preview.4`；NEXT_PUBLIC_APP_VERSION（next.config:48 派生）/ `app.getVersion`（Info.plist）/ Codex clientInfo（`readCodePilotVersion` 读 pkg.version）全部同源 |
 | 2026-05-31 | dev (worktree) | N/A | N/A | N/A | 6923f13 P0 回归 pin（Codex/ClaudeCode） | ✅ | `codex-binary-discovery.test.ts` "spawns app-server without --listen" + `provider-resolver.test.ts` "canonicalizes short role-model aliases to upstream IDs" 全过 → 两个 runtime P0 在 HEAD 已修，坏包系 6923f13 前过时构建 |
-| 待跑 | macOS arm64 packaged | TBD | TBD | TBD | `preview-build.yml` CI：版本显示 + native ABI + 启动（无凭据） | ⏳ | 用户触发 workflow_dispatch（preview_version=`0.55.0-preview.3`）|
+| 待跑 | macOS arm64 packaged | TBD | TBD | TBD | `preview-build.yml` CI：版本显示 + native ABI + 启动（无凭据） | ⏳ | 用户触发 workflow_dispatch（preview_version=`0.55.0-preview.4`）|
 | 待跑 | Windows x64 packaged | TBD | TBD | TBD | `preview-build.yml` CI：版本 + ABI + 启动（无凭据） | ⏳ | windows-latest job |
 | 待跑 | macOS packaged | TBD | TBD | TBD | 真机安装 + Codex/ClaudeCode 真实凭据 marker | ⏳ | 用户本机安装 smoke（CI 不跑真实凭据）|
 | 待跑 | Windows packaged | TBD | TBD | TBD | 真机安装 + Windows shell command smoke | ⏳ | |

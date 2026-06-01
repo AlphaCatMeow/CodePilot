@@ -24,7 +24,7 @@ permissions:
   contents: read
 
 env:
-  PREVIEW_VERSION: 0.55.0-preview.3
+  PREVIEW_VERSION: 0.55.0-preview.4
 
 jobs:
   verify-source:
