@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { GitBranch, Check, Lock } from "@/components/ui/icon";
+import { Check } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/hooks/useTranslation";
 import type { GitBranch as GitBranchType } from "@/types";
@@ -57,7 +58,7 @@ export function GitBranchSelector({ cwd, currentBranch, dirty, onCheckout, error
         className="w-full justify-start text-xs"
         onClick={() => setIsOpen(!isOpen)}
       >
-        <GitBranch size={14} className="mr-1.5" />
+        <CodePilotIcon name="git" size="sm" className="mr-1.5" aria-hidden />
         {t('git.branchSelector')}
       </Button>
 
@@ -83,7 +84,7 @@ export function GitBranchSelector({ cwd, currentBranch, dirty, onCheckout, error
                   onClick={() => handleCheckout(branch.name)}
                 >
                   {isCurrent && <Check size={12} className="text-green-500 shrink-0" />}
-                  {isOccupied && <Lock size={12} className="text-muted-foreground shrink-0" />}
+                  {isOccupied && <CodePilotIcon name="permission" size={12} className="text-muted-foreground shrink-0" aria-hidden />}
                   {!isCurrent && !isOccupied && <span className="w-3 shrink-0" />}
                   <span className="truncate">{branch.name}</span>
                   {isOccupied && (

@@ -133,6 +133,34 @@ export interface VendorPreset {
     billingModel: 'pay_as_you_go' | 'coding_plan' | 'token_plan' | 'free' | 'self_hosted';
     /** Notes/warnings shown during provider configuration */
     notes?: string[];
+    /**
+     * Whether this anthropic-compat preset has been verified end-to-end:
+     * tool calling, thinking, model aliases, and `/v1/messages` quirks all
+     * confirmed to work. Drives the `claude_code_verified` runtime compat
+     * tier (info tone, "Claude Code 兼容") instead of the default
+     * `claude_code_experimental` (warning tone, "Claude Code 实验").
+     * Only meaningful for `protocol: 'anthropic'` presets.
+     */
+    claudeCodeVerified?: boolean;
+    /**
+     * Whether `defaultModels` is the authoritative lineup for this preset
+     * — i.e. anything outside it counts as drift / off-list, not as a
+     * legitimate user customization. Drives the "已不在当前推荐目录"
+     * badge in the Models page.
+     *
+     * Plan providers (`sdkProxyOnly && billingModel ∈ {coding_plan,
+     * token_plan}`) are inherently authoritative — the plan whitelist IS
+     * the truth — so they don't need this flag set explicitly; the badge
+     * gate ORs with `isCatalogOnlyPlanProviderRecord`.
+     *
+     * Set this only on pay-as-you-go presets where we deliberately curate
+     * the lineup (e.g. DeepSeek's v4 family) and want catalog drift to
+     * surface to the user. Do NOT set on starter / seed catalogs (Kimi /
+     * Moonshot / Xiaomi MiMo PAYG / anthropic-thirdparty / OpenRouter)
+     * where defaultModels is just a 1-3 alias bootstrap and user-added
+     * SKUs are normal usage, not drift.
+     */
+    fixedCatalog?: boolean;
   };
 }
 
@@ -145,6 +173,8 @@ const PresetMetaSchema = z.object({
   statusPageUrl: z.string().optional(),
   billingModel: z.enum(['pay_as_you_go', 'coding_plan', 'token_plan', 'free', 'self_hosted']),
   notes: z.array(z.string()).optional(),
+  claudeCodeVerified: z.boolean().optional(),
+  fixedCatalog: z.boolean().optional(),
 });
 
 export const PresetSchema = z.object({
@@ -213,8 +243,48 @@ const ANTHROPIC_DEFAULT_MODELS: CatalogModel[] = [
   },
   {
     modelId: 'opus',
-    displayName: 'Opus',
+    displayName: 'Opus 4.7',
     role: 'opus',
+    capabilities: {
+      supportsEffort: true,
+      supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      supportsAdaptiveThinking: true,
+    },
+  },
+  {
+    modelId: 'haiku',
+    displayName: 'Haiku 4.5',
+    role: 'haiku',
+    capabilities: {
+      supportsEffort: true,
+      supportedEffortLevels: ['low', 'medium', 'high'],
+    },
+  },
+];
+
+// Phase 5b round-8 fix (2026-05-18) — OpenRouter's Anthropic skin
+// (https://openrouter.ai/api) rejects the bare aliases `sonnet` /
+// `opus` / `haiku` with "is not a valid model ID". Real-credential
+// smoke confirmed that switching `haiku` to the upstream slug
+// `anthropic/claude-haiku-4.5` returns the prompted string. The
+// version-tagged slugs follow OpenRouter's documented naming
+// convention (verified for haiku in smoke; sonnet/opus follow the
+// same `<vendor>/claude-<role>-<major.minor>` shape — if a version
+// is unavailable on OpenRouter, the API returns the same
+// "not a valid model ID" error pointing at the canonical name, so
+// users can fix locally via the model picker).
+//
+// First-party Anthropic uses a different upstream slug shape (dash
+// separators, e.g. `claude-haiku-4-5-20251001`) so it stays in its
+// own ANTHROPIC_FIRST_PARTY_MODELS catalog below. OpenRouter is the
+// only preset that re-uses the alias trio but with its own
+// upstream surface, so we keep the array OpenRouter-specific.
+const OPENROUTER_ANTHROPIC_MODELS: CatalogModel[] = [
+  {
+    modelId: 'sonnet',
+    upstreamModelId: 'anthropic/claude-sonnet-4.6',
+    displayName: 'Sonnet 4.6',
+    role: 'sonnet',
     capabilities: {
       supportsEffort: true,
       supportedEffortLevels: ['low', 'medium', 'high', 'max'],
@@ -222,7 +292,32 @@ const ANTHROPIC_DEFAULT_MODELS: CatalogModel[] = [
     },
   },
   {
+    modelId: 'opus',
+    upstreamModelId: 'anthropic/claude-opus-4.7',
+    displayName: 'Opus 4.7',
+    role: 'opus',
+    capabilities: {
+      supportsEffort: true,
+      supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      supportsAdaptiveThinking: true,
+    },
+  },
+  {
+    modelId: 'opus-4-8',
+    // OpenRouter slug confirmed by Codex (2026-05-29) — explicit fixture,
+    // not inferred from the 4.7 naming pattern.
+    upstreamModelId: 'anthropic/claude-opus-4.8',
+    displayName: 'Opus 4.8',
+    // No `role` — explicit pick; `opus` alias stays 4.7 (Phase A safe default).
+    capabilities: {
+      supportsEffort: true,
+      supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      supportsAdaptiveThinking: true,
+    },
+  },
+  {
     modelId: 'haiku',
+    upstreamModelId: 'anthropic/claude-haiku-4.5',
     displayName: 'Haiku 4.5',
     role: 'haiku',
     capabilities: {
@@ -241,6 +336,7 @@ const ANTHROPIC_DEFAULT_MODELS: CatalogModel[] = [
 const ANTHROPIC_FIRST_PARTY_MODELS: CatalogModel[] = [
   {
     modelId: 'sonnet',
+    upstreamModelId: 'claude-sonnet-4-6',
     displayName: 'Sonnet 4.6',
     role: 'sonnet',
     capabilities: {
@@ -261,7 +357,23 @@ const ANTHROPIC_FIRST_PARTY_MODELS: CatalogModel[] = [
     },
   },
   {
+    modelId: 'opus-4-8',
+    upstreamModelId: 'claude-opus-4-8',
+    displayName: 'Opus 4.8',
+    // No `role`: Opus 4.8 is an explicit pick, NOT the default `opus` role
+    // target. roleModels.opus / ANTHROPIC_DEFAULT_OPUS_MODEL stays
+    // claude-opus-4-7 until the user opts to switch (Phase A safe default).
+    capabilities: {
+      supportsEffort: true,
+      // Same levels as 4.7; the effort DEFAULT (high) is applied by the
+      // Claude Code CLI/SDK when effort is unset, not here.
+      supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      supportsAdaptiveThinking: true,
+    },
+  },
+  {
     modelId: 'haiku',
+    upstreamModelId: 'claude-haiku-4-5-20251001',
     displayName: 'Haiku 4.5',
     role: 'haiku',
     capabilities: {
@@ -356,7 +468,14 @@ export const VENDOR_PRESETS: VendorPreset[] = [
     authStyle: 'auth_token',
     baseUrl: 'https://openrouter.ai/api',
     defaultEnvOverrides: {},
-    defaultModels: ANTHROPIC_DEFAULT_MODELS,
+    // Round 8 (2026-05-18) — was ANTHROPIC_DEFAULT_MODELS (bare
+    // sonnet/opus/haiku aliases). OpenRouter rejected the aliases
+    // with "is not a valid model ID"; we now ship the fully-
+    // qualified `anthropic/claude-<role>-<version>` slugs via
+    // upstreamModelId. The resolver reads catalogEntry.upstreamModelId
+    // (provider-resolver.ts:424) so existing role-based pickers keep
+    // working with the short aliases on the UI side.
+    defaultModels: OPENROUTER_ANTHROPIC_MODELS,
     fields: ['api_key'],
     iconKey: 'openrouter',
     meta: {
@@ -389,6 +508,7 @@ export const VENDOR_PRESETS: VendorPreset[] = [
       docsUrl: 'https://docs.bigmodel.cn/cn/coding-plan/tool/claude',
       billingModel: 'coding_plan',
       notes: ['高峰时段（14:00-18:00 UTC+8）消耗 3 倍积分'],
+      claudeCodeVerified: true,
     },
   },
 
@@ -415,6 +535,7 @@ export const VENDOR_PRESETS: VendorPreset[] = [
       docsUrl: 'https://docs.z.ai/devpack/tool/claude',
       billingModel: 'coding_plan',
       notes: ['高峰时段（14:00-18:00 UTC+8）消耗 3 倍积分'],
+      claudeCodeVerified: true,
     },
   },
 
@@ -439,6 +560,7 @@ export const VENDOR_PRESETS: VendorPreset[] = [
       docsUrl: 'https://www.kimi.com/code/docs/more/third-party-agents.html',
       billingModel: 'pay_as_you_go',
       notes: [],
+      claudeCodeVerified: true,
     },
   },
 
@@ -463,6 +585,7 @@ export const VENDOR_PRESETS: VendorPreset[] = [
       docsUrl: 'https://platform.moonshot.cn/docs/guide/agent-support',
       billingModel: 'pay_as_you_go',
       notes: ['建议设置每日消费上限，防止 agentic 循环快速消耗 token'],
+      claudeCodeVerified: true,
     },
   },
 
@@ -495,6 +618,7 @@ export const VENDOR_PRESETS: VendorPreset[] = [
       apiKeyUrl: 'https://platform.minimaxi.com/user-center/payment/token-plan',
       docsUrl: 'https://platform.minimaxi.com/docs/token-plan/claude-code',
       billingModel: 'token_plan',
+      claudeCodeVerified: true,
     },
   },
 
@@ -527,41 +651,7 @@ export const VENDOR_PRESETS: VendorPreset[] = [
       apiKeyUrl: 'https://platform.minimax.io/user-center/payment/token-plan',
       docsUrl: 'https://platform.minimax.io/docs/token-plan/opencode',
       billingModel: 'token_plan',
-    },
-  },
-
-  // ── DeepSeek ──
-  {
-    key: 'deepseek',
-    name: 'DeepSeek',
-    description: 'DeepSeek Anthropic-compatible API — V4 Pro / V4 Flash',
-    descriptionZh: 'DeepSeek Anthropic 兼容 API — V4 Pro / V4 Flash',
-    protocol: 'anthropic',
-    authStyle: 'auth_token',
-    baseUrl: 'https://api.deepseek.com/anthropic',
-    defaultEnvOverrides: {
-      CLAUDE_CODE_SUBAGENT_MODEL: 'deepseek-v4-pro',
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
-      CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: '1',
-      CLAUDE_CODE_EFFORT_LEVEL: 'max',
-    },
-    defaultModels: [
-      { modelId: 'sonnet', upstreamModelId: 'deepseek-v4-pro', displayName: 'DeepSeek V4 Pro', role: 'default' },
-      { modelId: 'opus', upstreamModelId: 'deepseek-v4-pro', displayName: 'DeepSeek V4 Pro', role: 'opus' },
-      { modelId: 'haiku', upstreamModelId: 'deepseek-v4-flash', displayName: 'DeepSeek V4 Flash', role: 'haiku' },
-    ],
-    defaultRoleModels: {
-      default: 'deepseek-v4-pro',
-      sonnet: 'deepseek-v4-pro',
-      opus: 'deepseek-v4-pro',
-      haiku: 'deepseek-v4-flash',
-    },
-    fields: ['api_key'],
-    iconKey: 'deepseek',
-    meta: {
-      apiKeyUrl: 'https://platform.deepseek.com/api_keys',
-      docsUrl: 'https://platform.deepseek.com/docs',
-      billingModel: 'pay_as_you_go',
+      claudeCodeVerified: true,
     },
   },
 
@@ -575,7 +665,27 @@ export const VENDOR_PRESETS: VendorPreset[] = [
     authStyle: 'auth_token',
     baseUrl: 'https://ark.cn-beijing.volces.com/api/coding',
     defaultEnvOverrides: {},
-    defaultModels: [],  // User must specify model_names
+    // Volcengine Ark Coding Plan whitelist. Volcengine's docs explicitly
+    // separate "Coding Plan Model Name" (what users put in ANTHROPIC_MODEL)
+    // from the much larger online-inference Model ID space served by
+    // Ark — never auto-probe that endpoint for a Coding Plan provider
+    // (handled by the Coding/Token Plan gate in model-discovery.ts).
+    // The eight standard SKUs cover the Doubao + cross-vendor lineup;
+    // `ark-code-latest` is a special console-managed entry where the
+    // actual model is selected by Volcengine's Ark console (Auto mode)
+    // — flagged in the displayName so users know it's not a stable
+    // pinned model.
+    defaultModels: [
+      { modelId: 'doubao-seed-2.0-code', displayName: 'Doubao Seed 2.0 Code', role: 'default' },
+      { modelId: 'doubao-seed-2.0-pro', displayName: 'Doubao Seed 2.0 Pro' },
+      { modelId: 'doubao-seed-2.0-lite', displayName: 'Doubao Seed 2.0 Lite' },
+      { modelId: 'doubao-seed-code', displayName: 'Doubao Seed Code' },
+      { modelId: 'minimax-m2.5', displayName: 'MiniMax M2.5' },
+      { modelId: 'glm-4.7', displayName: 'GLM-4.7' },
+      { modelId: 'deepseek-v3.2', displayName: 'DeepSeek V3.2' },
+      { modelId: 'kimi-k2.5', displayName: 'Kimi K2.5' },
+      { modelId: 'ark-code-latest', displayName: 'ark-code-latest (Console-managed / Auto)' },
+    ],
     fields: ['api_key', 'model_names'],
     iconKey: 'volcengine',
     sdkProxyOnly: true,
@@ -584,6 +694,7 @@ export const VENDOR_PRESETS: VendorPreset[] = [
       docsUrl: 'https://www.volcengine.com/docs/82379/1928262',
       billingModel: 'coding_plan',
       notes: ['需先在控制台激活 Endpoint', 'API Key 为临时凭证'],
+      claudeCodeVerified: true,
     },
   },
 
@@ -606,7 +717,12 @@ export const VENDOR_PRESETS: VendorPreset[] = [
       opus: 'mimo-v2.5-pro',
       haiku: 'mimo-v2.5-pro',
     },
-    fields: ['api_key'],
+    // model_names: MiMo has no /v1/models discovery (sdkProxyOnly) and ships
+    // new model ids (v2.5 / v2.5pro) over time. Without a model field the
+    // connect dialog saved role_models_json:'{}', so the resolver back-filled
+    // the stale `mimo-v2-pro` default every send (#577). Exposing model_names
+    // lets the user set their actual model, which the resolver then honors.
+    fields: ['api_key', 'model_names'],
     iconKey: 'xiaomi-mimo',
     sdkProxyOnly: true,
     meta: {
@@ -614,6 +730,7 @@ export const VENDOR_PRESETS: VendorPreset[] = [
       docsUrl: 'https://platform.xiaomimimo.com/#/docs/integration/claudecode',
       billingModel: 'pay_as_you_go',
       notes: [],
+      claudeCodeVerified: true,
     },
   },
 
@@ -636,7 +753,10 @@ export const VENDOR_PRESETS: VendorPreset[] = [
       opus: 'mimo-v2.5-pro',
       haiku: 'mimo-v2.5-pro',
     },
-    fields: ['api_key'],
+    // model_names: same as the pay-as-you-go preset above — lets Token Plan
+    // users set their actual MiMo model instead of being pinned to the stale
+    // `mimo-v2-pro` default (#577).
+    fields: ['api_key', 'model_names'],
     iconKey: 'xiaomi-mimo',
     sdkProxyOnly: true,
     meta: {
@@ -644,6 +764,7 @@ export const VENDOR_PRESETS: VendorPreset[] = [
       docsUrl: 'https://platform.xiaomimimo.com/#/docs/integration/claudecode',
       billingModel: 'token_plan',
       notes: [],
+      claudeCodeVerified: true,
     },
   },
 
@@ -657,8 +778,18 @@ export const VENDOR_PRESETS: VendorPreset[] = [
     authStyle: 'auth_token',
     baseUrl: 'https://coding.dashscope.aliyuncs.com/apps/anthropic',
     defaultEnvOverrides: {},
+    // Bailian Coding Plan whitelist — verified against
+    // https://help.aliyun.com/zh/model-studio/coding-plan (2026-05-06).
+    // Page splits models into "推荐" (qwen3.6-plus, kimi-k2.5, glm-5,
+    // MiniMax-M2.5) and "更多模型" (qwen3.5-plus, qwen3-max-2026-01-23,
+    // qwen3-coder-next, qwen3-coder-plus, glm-4.7). MiniMax stays at M2.5
+    // here even though standalone minimax-cn/global have moved to M2.7
+    // — Bailian's own page still lists M2.5 and that's what their plan
+    // accepts. Don't infer from the standalone provider.
     defaultModels: [
       { modelId: 'qwen3.6-plus', displayName: 'Qwen 3.6 Plus', role: 'default' },
+      { modelId: 'qwen3.5-plus', displayName: 'Qwen 3.5 Plus' },
+      { modelId: 'qwen3-max-2026-01-23', displayName: 'Qwen 3 Max (2026-01-23)' },
       { modelId: 'qwen3-coder-next', displayName: 'Qwen 3 Coder Next' },
       { modelId: 'qwen3-coder-plus', displayName: 'Qwen 3 Coder Plus' },
       { modelId: 'kimi-k2.5', displayName: 'Kimi K2.5' },
@@ -674,6 +805,114 @@ export const VENDOR_PRESETS: VendorPreset[] = [
       docsUrl: 'https://help.aliyun.com/zh/model-studio/coding-plan',
       billingModel: 'coding_plan',
       notes: ['必须使用 Coding Plan 专用 Key（以 sk-sp- 开头）', '普通 DashScope Key 无法使用', '禁止用于自动化脚本'],
+      claudeCodeVerified: true,
+    },
+  },
+
+  // ── Aliyun Bailian Token Plan 团队版 ──
+  // Separate channel from Coding Plan: different host
+  // (`token-plan.cn-beijing.maas.aliyuncs.com`), different Key family (Token
+  // Plan team-tier keys are not interchangeable with Coding Plan sk-sp-…),
+  // and a narrower whitelist. DeepSeek V3.2 is intentionally NOT included:
+  // the Bailian docs explicitly state DeepSeek V3.2 isn't served via the
+  // Anthropic protocol on Token Plan and must use OpenCode instead — listing
+  // it here would silently mismatch when Claude Code resolves the alias.
+  {
+    key: 'bailian-token-plan-cn',
+    name: 'Aliyun Bailian Token Plan',
+    description: 'Aliyun Bailian Token Plan team tier — Qwen / GLM / MiniMax (cn-beijing only)',
+    descriptionZh: '阿里云百炼 Token Plan 团队版 — 通义千问 / GLM / MiniMax（仅华北2北京）',
+    protocol: 'anthropic',
+    authStyle: 'auth_token',
+    baseUrl: 'https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic',
+    defaultEnvOverrides: {},
+    // Token Plan 团队版 whitelist — sourced from
+    // 《阿里云-百炼-Token Plan 团队版.md》(2026-05-06):
+    //   - qwen3.6-plus（推荐，Token Plan 默认配置全角色都用它）
+    //   - glm-5
+    //   - MiniMax-M2.5
+    // Plan docs also list deepseek-v3.2 as a Token Plan model BUT
+    // explicitly note "不支持 Anthropic 协议，仅可在 OpenCode 中使用"。
+    // We're an Anthropic / Claude Code preset, so deepseek-v3.2 is
+    // omitted on purpose — adding it would silently mis-route.
+    defaultModels: [
+      { modelId: 'qwen3.6-plus', displayName: 'Qwen 3.6 Plus', role: 'default' },
+      { modelId: 'glm-5', displayName: 'GLM-5' },
+      { modelId: 'MiniMax-M2.5', displayName: 'MiniMax-M2.5' },
+    ],
+    // Token Plan 团队版 文档示例配置：所有角色（default/sonnet/opus/haiku）
+    // 都默认指向 qwen3.6-plus。用户可以在前端自行切换其他白名单 SKU。
+    defaultRoleModels: {
+      default: 'qwen3.6-plus',
+      sonnet: 'qwen3.6-plus',
+      opus: 'qwen3.6-plus',
+      haiku: 'qwen3.6-plus',
+    },
+    fields: ['api_key'],
+    iconKey: 'bailian',
+    sdkProxyOnly: true,
+    meta: {
+      apiKeyUrl: 'https://bailian.console.aliyun.com',
+      docsUrl: 'https://help.aliyun.com/zh/model-studio/token-plan',
+      billingModel: 'token_plan',
+      notes: [
+        '团队版 Key 与 Coding Plan / 普通 DashScope Key 不通用',
+        '仅华北2（北京）地域提供服务',
+        'DeepSeek V3.2 不支持 Anthropic 协议，需切换 OpenCode 使用',
+      ],
+      claudeCodeVerified: true,
+    },
+  },
+
+  // ── DeepSeek ──
+  {
+    key: 'deepseek',
+    name: 'DeepSeek',
+    description: 'DeepSeek Anthropic-compatible API — fixed model lineup',
+    descriptionZh: 'DeepSeek Anthropic 兼容 API — 模型清单固定',
+    protocol: 'anthropic',
+    authStyle: 'auth_token',
+    baseUrl: 'https://api.deepseek.com/anthropic',
+    defaultEnvOverrides: {
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK: '1',
+    },
+    // DeepSeek catalog — verified against
+    // https://api-docs.deepseek.com/quick_start/agent_integrations/claude_code
+    // and the pricing page (2026-05-06). The legacy aliases deepseek-chat
+    // and deepseek-reasoner will be deprecated 2026-07-24 and currently
+    // map to non-thinking / thinking modes of deepseek-v4-flash, so they
+    // are not surfaced as defaults — users still get them by manual add.
+    // The `[1m]` suffix is a Claude Code convention DeepSeek's docs use
+    // verbatim to select the 1M-context variant; both v4-pro and v4-flash
+    // also have a non-suffixed default-context variant.
+    defaultModels: [
+      { modelId: 'deepseek-v4-pro[1m]', upstreamModelId: 'deepseek-v4-pro[1m]', displayName: 'DeepSeek V4 Pro (1M)', role: 'opus' },
+      { modelId: 'deepseek-v4-pro', upstreamModelId: 'deepseek-v4-pro', displayName: 'DeepSeek V4 Pro', role: 'default' },
+      { modelId: 'deepseek-v4-flash', upstreamModelId: 'deepseek-v4-flash', displayName: 'DeepSeek V4 Flash', role: 'haiku' },
+    ],
+    defaultRoleModels: {
+      default: 'deepseek-v4-pro[1m]',
+      opus: 'deepseek-v4-pro[1m]',
+      sonnet: 'deepseek-v4-pro[1m]',
+      haiku: 'deepseek-v4-flash',
+    },
+    fields: ['api_key'],
+    iconKey: 'deepseek',
+    sdkProxyOnly: true,
+    meta: {
+      apiKeyUrl: 'https://platform.deepseek.com/api_keys',
+      docsUrl: 'https://api-docs.deepseek.com',
+      billingModel: 'pay_as_you_go',
+      claudeCodeVerified: true,
+      // Catalog is the official lineup, not a starter seed — when users
+      // see e.g. deepseek-v3.2-exp from a previous catalog version still
+      // sitting in their list, that's drift, not legitimate custom add.
+      // Surfacing the "已不在当前推荐目录" badge for those rows is the
+      // intended behavior. (Plan providers are caught by
+      // `isCatalogOnlyPlanProviderRecord`; DeepSeek isn't a plan
+      // provider but has the same authoritative-catalog property.)
+      fixedCatalog: true,
     },
   },
 
@@ -877,9 +1116,481 @@ export function getPreset(key: string): VendorPreset | undefined {
   return VENDOR_PRESETS.find(p => p.key === key);
 }
 
+/**
+ * True for presets where the available model list is a subscription SKU
+ * whitelist (Coding Plan / Token Plan), not the full upstream inference
+ * catalogue. These vendors must NOT be auto-probed:
+ *   - their /v1/models endpoint at the same host returns the wider Ark /
+ *     DashScope / etc. catalogue (text + image + embedding + deprecated
+ *     variants);
+ *   - probing-and-writing it surfaces non-plan SKUs that 4xx on use and
+ *     can incur out-of-plan billing.
+ *
+ * Trigger: `sdkProxyOnly && billingModel ∈ {coding_plan, token_plan}`.
+ * Pay-as-you-go anthropic-compat (kimi, moonshot, xiaomi-mimo, deepseek)
+ * is NOT caught — their full inference catalogue is the genuine offering.
+ *
+ * **Caller contract**: this function takes a *verified preset key*. Most
+ * stored providers carry `provider_type='anthropic'` even when they came
+ * from a brand-specific preset (Volcengine, Bailian, GLM, MiniMax, …) —
+ * the actual preset is recovered via `findMatchingPresetForRecord` using
+ * `base_url`. UI sites that only have a provider record must use
+ * `isCatalogOnlyPlanProviderRecord()` instead, otherwise the check
+ * silently misses every plan provider. Only call this directly when
+ * upstream code (e.g. an API route) already ran the matcher and has a
+ * confirmed key (`model-discovery.ts:classifyProvider` is one such caller).
+ */
+export function isCatalogOnlyPlanProvider(presetKey: string | undefined | null): boolean {
+  if (!presetKey) return false;
+  const preset = getPreset(presetKey);
+  if (!preset) return false;
+  return Boolean(
+    preset.sdkProxyOnly &&
+    (preset.meta?.billingModel === 'coding_plan' || preset.meta?.billingModel === 'token_plan')
+  );
+}
+
+/**
+ * Record-aware version of `isCatalogOnlyPlanProvider` — the safe choice
+ * for any UI site that holds a provider record (or an Add-Service draft
+ * record) but not yet a verified preset key.
+ *
+ * Why this exists: brand-specific anthropic-compat presets (Volcengine /
+ * Bailian / GLM CN+Global / MiniMax CN+Global / Xiaomi MiMo Token Plan)
+ * are all stored with `provider_type='anthropic'`. Looking up the preset
+ * by `provider_type` alone always misses them — the matcher needs
+ * `base_url` to recover the real preset. Routing through
+ * `findMatchingPresetForRecord` here keeps every UI caller honest and
+ * keeps both UI sites and the discovery gate on the same answer.
+ */
+export function isCatalogOnlyPlanProviderRecord(record: {
+  provider_type: string;
+  base_url: string;
+}): boolean {
+  const matched = findMatchingPresetForRecord(record);
+  return isCatalogOnlyPlanProvider(matched?.key);
+}
+
+/**
+ * True for OpenRouter provider records — the aggregator that ships 300+
+ * model entries through `/v1/models`. OpenRouter is *not* a Coding/Token
+ * Plan vendor (every model is genuinely usable on pay-as-you-go), but
+ * full materialization of its catalogue into `provider_models` is the
+ * wrong UX: users want to search-and-add a few, not reverse-trim 300.
+ *
+ * Goes through `findMatchingPresetForRecord` so legacy DB rows with empty
+ * `protocol` field still classify correctly via `provider_type='openrouter'`
+ * or `base_url` exact match. UI sites and routes must NOT read
+ * `provider.protocol` directly for this gate — the helper is the contract.
+ *
+ * Used by:
+ *   - `POST /api/providers` route — eager seed via `seedCatalogModelsIfEmpty`
+ *     instead of relying on lazy GET-time seed
+ *   - `POST /api/providers/[id]/search-models` route — auth gate
+ *   - `POST /api/providers/[id]/validate-models` route — auth gate
+ *   - `model-discovery.ts:classifyProvider` — return `unsupported` for
+ *     OpenRouter so the discover/apply path never auto-materializes
+ *   - `POST /api/providers/[id]/discover-models/apply` — 400 reject
+ *   - `ProviderManager` Add-Service success path — show search-add toast
+ *   - `ModelsSection` per-card refresh — route to validate-models
+ */
+export function isOpenRouterProviderRecord(record: {
+  provider_type: string;
+  base_url: string;
+}): boolean {
+  return findMatchingPresetForRecord(record)?.key === 'openrouter';
+}
+
 /** Get all presets for a given category (defaults to 'chat'). */
 export function getPresetsByCategory(category: 'chat' | 'media' = 'chat'): VendorPreset[] {
   return VENDOR_PRESETS.filter(p => (p.category || 'chat') === category);
+}
+
+/**
+ * Catalog defaults for a provider. Used by the Models page as a fallback
+ * when discovery isn't possible (404 on /v1/models, OAuth/SDK-only families,
+ * etc.) — the curated list is shipped in VENDOR_PRESETS.
+ *
+ * Returns [] if no preset matches; the caller should treat that as
+ * "manual entry only" (user must add models themselves).
+ */
+export function getCatalogDefaultModelsForRecord(record: {
+  provider_type: string;
+  base_url: string;
+}): CatalogModel[] {
+  const matched = findMatchingPresetForRecord(record);
+  return matched?.defaultModels ?? [];
+}
+
+/**
+ * Step 4 文案收口（2026-05-06）—— 用户语言的「接入方式」分类。
+ *
+ * Provider Card 之前直接展示 `authStyle` 工程枚举值（"Auth Token" /
+ * "API Key"），缺乏对用户的解释力：套餐 vs 按量、登录 vs 输 Key、本地
+ * vs 远端这几条用户真正关心的轴都被压进了一个底层布尔。
+ *
+ * 这个 helper 把 preset + provider record 映射成下面 6 类用户面文案：
+ *   - subscription_token  套餐 Token：Coding/Token Plan，billingModel 命中
+ *   - api_key             API Key：按量付费、anthropic 官方
+ *   - oauth               授权登录：openai-oauth、anthropic-oauth 等
+ *   - local               本地服务：ollama / litellm / 其它 self_hosted
+ *   - cloud_credentials   云账号凭证：bedrock / vertex（authStyle env_only）
+ *   - gateway             中转网关：anthropic-thirdparty / 没匹配任何 preset
+ *                         的自定义 URL
+ *
+ * UI 自己拿到 `AccessType` 后再走 i18n（`provider.accessType.*`）—— 这个
+ * 文件不包含任何用户文案，只负责分类。
+ */
+export type AccessType =
+  | 'subscription_token'
+  | 'api_key'
+  | 'oauth'
+  | 'local'
+  | 'cloud_credentials'
+  | 'gateway';
+
+export function getProviderAccessType(record: {
+  provider_type: string;
+  base_url: string;
+}): AccessType {
+  // OAuth-shaped provider_type values — these are virtual providers that
+  // don't carry an api_key field (auth is in a side channel) so the
+  // billingModel check below would miss them.
+  if (record.provider_type === 'openai-oauth' || record.provider_type === 'anthropic-oauth') {
+    return 'oauth';
+  }
+  const preset = findMatchingPresetForRecord(record);
+  if (!preset) {
+    // Unmatched preset = user-configured custom URL, conventionally a
+    // 中转网关. Same wording as `anthropic-thirdparty` below.
+    return 'gateway';
+  }
+  // Cloud-managed presets use SDK-side env credentials, not an
+  // app-managed key. Calling them "API Key" misled users into looking
+  // for a key field that isn't there.
+  if (preset.authStyle === 'env_only') return 'cloud_credentials';
+  // Local services. Ollama uses `billingModel: 'free'` (no charging
+  // concept), LiteLLM uses `'self_hosted'` (user-deployed proxy);
+  // both are the same user-facing bucket — 本地服务.
+  if (preset.meta?.billingModel === 'self_hosted' || preset.meta?.billingModel === 'free') {
+    return 'local';
+  }
+  // Subscription-style billing — the canonical "套餐 Token" bucket.
+  if (preset.meta?.billingModel === 'coding_plan' || preset.meta?.billingModel === 'token_plan') {
+    return 'subscription_token';
+  }
+  // Generic anthropic-compatible relay / custom gateway preset.
+  if (preset.key === 'anthropic-thirdparty') return 'gateway';
+  // Fall through: pay-as-you-go API key / free-tier (treated the same
+  // here — user puts a key in the form field).
+  return 'api_key';
+}
+
+/**
+ * Phase 1 Step 2 — "已不在当前推荐目录" badge support.
+ *
+ * Returns `false` when the provider has a non-empty curated catalog AND
+ * `modelId` isn't one of its `defaultModels[].modelId`. The Models page
+ * uses this to surface a row-level hint:
+ *   - DeepSeek catalog upgraded from v3.x to v4 family → user's row of
+ *     `deepseek-v3.2-exp` survives (manual_* protection at apply time)
+ *     but the row no longer maps to a current recommendation. Without
+ *     this badge, the user sees "manual_enabled" and assumes they had
+ *     enabled it themselves; the badge clarifies "the catalog moved
+ *     under you, not the other way around".
+ *   - Volcengine catalog change → same shape.
+ *
+ * Returns `true` (= "in catalog" or "no concept of catalog") when:
+ *   - The model_id IS in the current catalog. No badge needed.
+ *   - The provider has no preset / no catalog defaults. Custom-only
+ *     provider; "out of catalog" doesn't mean anything here.
+ *
+ * **Why OpenRouter is intentionally out of scope at the call site (not
+ * here)**: OpenRouter ships a 3-alias catalog (sonnet / opus / haiku)
+ * but every additional row is *expected* to be search-and-add. Showing
+ * "not in catalog" on every search-added row would be noise. The UI
+ * caller short-circuits via `isOpenRouterProviderRecord` before asking
+ * this function. Keeping the OpenRouter exception at the call site
+ * means this helper stays a pure catalog-membership check, which is
+ * easier to reason about and test.
+ */
+export function isModelInCurrentCatalog(
+  record: { provider_type: string; base_url: string },
+  modelId: string,
+): boolean {
+  const defaults = getCatalogDefaultModelsForRecord(record);
+  if (defaults.length === 0) return true;
+  return defaults.some(m => m.modelId === modelId);
+}
+
+/**
+ * Phase 1 Step 2 — gate for the "已不在当前推荐目录" row badge.
+ *
+ * The badge fires only when **all three** hold:
+ *   1. The provider's catalog is authoritative — i.e. plan whitelist or
+ *      curator-fixed lineup. Outside this set, `defaultModels` is just a
+ *      starter seed (Kimi 1-alias, Moonshot 1-alias, Xiaomi MiMo PAYG
+ *      1-alias, anthropic-thirdparty 3-alias, OpenRouter 3-alias) where
+ *      user-added rows are normal usage, not drift.
+ *   2. The provider is not OpenRouter — its 3-alias catalog is a search-
+ *      and-add bootstrap and every search-added row is *expected* to be
+ *      outside it. (Already excluded by rule 1, but the explicit guard
+ *      documents the intent for future readers.)
+ *   3. The model_id is not in the current `defaultModels` for this
+ *      provider — i.e. the row genuinely sits outside our authoritative
+ *      list.
+ *
+ * Authoritative catalog = `isCatalogOnlyPlanProviderRecord` (any plan
+ * provider) OR `meta.fixedCatalog === true` (declared opt-in for
+ * curator-fixed pay-as-you-go presets, currently only DeepSeek).
+ *
+ * Lifted to a single helper so the call site (Models page row renderer)
+ * gets one boolean and the test surface stays narrow — see
+ * `legacy-catalog-hint.test.ts` for the case matrix.
+ */
+export function shouldShowLegacyCatalogBadge(
+  record: { provider_type: string; base_url: string },
+  modelId: string,
+): boolean {
+  if (isOpenRouterProviderRecord(record)) return false;
+  const preset = findMatchingPresetForRecord(record);
+  if (!preset) return false;
+  const isAuthoritative =
+    isCatalogOnlyPlanProviderRecord(record) ||
+    preset.meta?.fixedCatalog === true;
+  if (!isAuthoritative) return false;
+  return !isModelInCurrentCatalog(record, modelId);
+}
+
+/**
+ * Phase 1 Step 2 收敛 — 单一真相源：这个 provider 是否应该展示「刷新模型」按钮？
+ *
+ * 来自 Codex「Models / Providers 体验收敛」原则：
+ *   "如果服务商本身不支持可靠拉取模型，就不要显示「刷新模型」按钮。"
+ *
+ * 全 preset 决策表见 `docs/research/provider-model-discovery.md` 的
+ * "全 preset 拉取可靠性审计" 段。摘要：
+ *   - **可靠**：ollama（公开 /api/tags）、litellm（标准 /v1/models）、
+ *     anthropic-thirdparty（多数自定义网关支持 /v1/models —— 仅作为
+ *     "首次配置后试一次" 入口）。
+ *   - **不可靠 / 不应该拉**：套餐型（白名单 ≠ 上游全量）、OpenRouter
+ *     （走独立 search/validate）、image providers（混 text/audio/embedding）、
+ *     bedrock/vertex（SDK only）、anthropic-official（/v1/models 分页绑 org
+ *     billing，catalog 是 truth）、PAYG anthropic-compat（kimi/moonshot/
+ *     xiaomi-mimo/deepseek，catalog 都是 1-3 个固定 alias，拉取行为未实测，
+ *     按 Codex 4-category 框架归套餐型）。
+ *
+ * UI 调用点（ModelsSection 行级 / ProviderCard / Refresh All）必须用这个
+ * helper 决定按钮可见性，不要各自判断。
+ */
+export function canReliablyFetchModels(
+  record: { provider_type: string; base_url: string },
+): { reliable: boolean; reasonZh: string; reasonEn: string } {
+  // Plan providers stay blocked from the *write* refresh path:
+  // probe-and-apply would replace plan-curated catalog rows with raw
+  // upstream ids (e.g. GLM auto-refresh would overwrite our `sonnet →
+  // GLM-5-Turbo` alias mapping with a plain `glm-5-turbo` row). Even
+  // though some plan providers (GLM, MiniMax) have a clean readable
+  // /v1/models, the search-and-add path has its own helper
+  // `canSearchUpstreamModels` for that — it's read-only and doesn't
+  // need the same protection.
+  if (isCatalogOnlyPlanProviderRecord(record)) {
+    return {
+      reliable: false,
+      reasonZh: '套餐型服务，模型由套餐白名单定义；如需补 SKU 请用「添加模型」',
+      reasonEn: 'Plan-based provider — model list is defined by your subscription whitelist. Use "Add model" to add SKUs.',
+    };
+  }
+  // OpenRouter: search-and-add is the canonical add path; validate is the
+  // canonical refresh path. Don't surface a generic /v1/models refresh.
+  if (isOpenRouterProviderRecord(record)) {
+    return {
+      reliable: false,
+      reasonZh: 'OpenRouter 通过搜索添加模型，不需要全量刷新',
+      reasonEn: 'OpenRouter uses search-and-add for new models — no bulk refresh needed.',
+    };
+  }
+  const preset = findMatchingPresetForRecord(record);
+  // No preset match — assume custom; allow refresh attempt (the route will
+  // either succeed or fall through to "no models"). This matches the
+  // anthropic-thirdparty experimental classification at the route layer.
+  if (!preset) {
+    return { reliable: true, reasonZh: '', reasonEn: '' };
+  }
+  // Phase 1 Step 2 收敛 round 6 (2026-05-06): empirical probe results
+  // against the dev DB drove this list:
+  //
+  //   - kimi (`https://api.kimi.com/coding/v1/models`): returns 1 model
+  //     (`kimi-for-coding`). Search-add UX is meaningful even with 1
+  //     candidate — saves the user typing.
+  //   - moonshot / xiaomi-mimo: similar PAYG anthropic-compat shape, not
+  //     individually probed but presumed-reliable on the same logic.
+  //     If their /v1/models 404s, the search dialog surfaces the error
+  //     and the manual-fallback link still gets the user there.
+  //   - deepseek (`https://api.deepseek.com/anthropic/v1/models`): 404.
+  //     Block from search-add so the user lands on manual immediately
+  //     instead of seeing a broken search dialog. DeepSeek's catalog is
+  //     the v4 family `meta.fixedCatalog: true` — manual-add is the
+  //     intended path for any additional SKUs.
+  if (preset.key === 'deepseek') {
+    return {
+      reliable: false,
+      reasonZh: 'DeepSeek 不支持通过 /v1/models 拉取列表，请在「添加模型」里手动输入 model id',
+      reasonEn: "DeepSeek does not expose /v1/models — use manual entry in Add model.",
+    };
+  }
+  // Image providers: catalog-only.
+  if (preset.protocol === 'gemini-image' || preset.protocol === 'openai-image') {
+    return {
+      reliable: false,
+      reasonZh: '图像服务商使用内置模型列表',
+      reasonEn: 'Image providers use the built-in catalog.',
+    };
+  }
+  // Cloud direct (Bedrock / Vertex): SDK-only, no plain HTTP probe.
+  if (preset.key === 'bedrock' || preset.key === 'vertex') {
+    return {
+      reliable: false,
+      reasonZh: '该服务商需要云 SDK 才能拉取模型列表',
+      reasonEn: 'This provider needs the cloud SDK to fetch models.',
+    };
+  }
+  // Anthropic-official: /v1/models is paginated + tied to org billing
+  // scope; catalog (sonnet/opus/haiku) is the truth.
+  if (preset.key === 'anthropic-official') {
+    return {
+      reliable: false,
+      reasonZh: '官方 API 使用内置模型列表',
+      reasonEn: 'Official API uses the built-in catalog.',
+    };
+  }
+  // OAuth: no model list endpoint at all.
+  if (preset.key === 'openai-oauth') {
+    return {
+      reliable: false,
+      reasonZh: 'OAuth 登录方式没有模型列表接口',
+      reasonEn: 'OAuth login does not expose a model list endpoint.',
+    };
+  }
+  // ollama / litellm / anthropic-thirdparty / openai-compatible — reliable
+  // (or at least: a refresh attempt is meaningful).
+  return { reliable: true, reasonZh: '', reasonEn: '' };
+}
+
+/**
+ * Phase 1 Step 2 收敛 round 7 (2026-05-06) — gate for the search-and-add
+ * dialog. **Read-only**: opens upstream `/v1/models`, lets the user pick,
+ * writes only the chosen rows via the existing manual-add route. Never
+ * triggers a bulk apply, so the same protections as
+ * `canReliablyFetchModels` (which guards the auto-write path) don't
+ * apply.
+ *
+ * Empirical findings (2026-05-06, against the dev DB):
+ *   - GLM (`https://open.bigmodel.cn/api/anthropic/v1/models`): returns
+ *     ~6 GLM-family SKUs cleanly. Search-add is meaningful.
+ *   - MiniMax (`https://api.minimax.io/anthropic/v1/models`): returns
+ *     ~5 MiniMax-M2.x SKUs cleanly. Search-add is meaningful.
+ *   - Kimi (`https://api.kimi.com/coding/v1/models`): returns 1 SKU
+ *     (`kimi-for-coding`). Marginal but better than typing.
+ *   - Volcengine (Ark): returns 100+ mixed text/audio/embedding/image —
+ *     user explicitly excluded. Stays manual.
+ *   - Bailian (DashScope): same shape as Volcengine.
+ *   - Xiaomi MiMo Token Plan: empirically 404.
+ *   - DeepSeek: empirically 404.
+ *
+ * Anything else is delegated to `canReliablyFetchModels` so we don't
+ * duplicate the per-protocol case analysis. Image / cloud-direct / OAuth
+ * etc. all fall through that helper's negative branches.
+ */
+export function canSearchUpstreamModels(
+  record: { provider_type: string; base_url: string },
+): { reliable: boolean; reasonZh: string; reasonEn: string } {
+  if (isOpenRouterProviderRecord(record)) {
+    return { reliable: true, reasonZh: '', reasonEn: '' };
+  }
+  const preset = findMatchingPresetForRecord(record);
+  // Explicit deny-list — empirically known to fail or return garbage.
+  // Other plan presets (glm-cn / glm-global / minimax-cn / minimax-global)
+  // fall through to reliable=true.
+  // Empirical (2026-05-06):
+  //   - volcengine: Ark mixed 100+ catalog (text/audio/image/embedding/
+  //     deprecated) — clean SKU set untestable per Codex's call
+  //   - bailian: `/v1/models` 404s on the Coding Plan host
+  //     (`coding.dashscope.aliyuncs.com/apps/anthropic`); only
+  //     `/v1/messages` exists. 401-vs-404 confirms not auth-gated.
+  //   - bailian-token-plan-cn: same vendor / different host
+  //     (`token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic`).
+  //     Treated as manual-only by user policy: Token Plan 团队版 key
+  //     is team-tier and not safe to probe with /v1/models from a
+  //     shared client. Add SKUs via the manual dialog only.
+  //   - xiaomi-mimo-token-plan: 404 on /v1/models
+  //   - deepseek: 404 on /v1/models
+  const manualOnlyKeys = new Set([
+    'volcengine',
+    'bailian',
+    'bailian-token-plan-cn',
+    'xiaomi-mimo-token-plan',
+    'deepseek',
+  ]);
+  if (preset && manualOnlyKeys.has(preset.key)) {
+    return {
+      reliable: false,
+      reasonZh: '该服务商的模型列表接口返回结果不适合作搜索来源，请用「添加模型」手动输入',
+      reasonEn: "This provider's /v1/models output isn't suitable as a search source — use Add model to type the id manually.",
+    };
+  }
+  // Plan providers not in the deny-list above (GLM, MiniMax, Xiaomi MiMo
+  // PAYG): fall through and return reliable=true. The search-models
+  // route passes `bypassUnsupportedGate: true` so the prober runs even
+  // though `classifyProvider` would otherwise mark plan presets as
+  // 'unsupported' for the write path.
+  if (isCatalogOnlyPlanProviderRecord(record)) {
+    return { reliable: true, reasonZh: '', reasonEn: '' };
+  }
+  // Everything else: defer to `canReliablyFetchModels` so categories
+  // like image / cloud-direct / Anthropic official / OAuth get the
+  // same negative answer they'd get for the refresh button.
+  return canReliablyFetchModels(record);
+}
+
+/**
+ * Server-safe preset matcher — equivalent to the renderer's
+ * `findMatchingPreset` (in `components/settings/provider-presets.tsx`)
+ * but operates on a plain {provider_type, base_url} record so it can be
+ * called from API routes without React imports.
+ */
+export function findMatchingPresetForRecord(record: {
+  provider_type: string;
+  base_url: string;
+}): VendorPreset | undefined {
+  if (record.base_url) {
+    const exact = VENDOR_PRESETS.find(p => p.baseUrl && p.baseUrl === record.base_url);
+    if (exact) return exact;
+  }
+  if (record.provider_type === 'bedrock') return getPreset('bedrock');
+  if (record.provider_type === 'vertex') return getPreset('vertex');
+  if (record.provider_type === 'openrouter') return getPreset('openrouter');
+  if (record.provider_type === 'gemini-image') {
+    const official = getPreset('gemini-image');
+    if (official && record.base_url && record.base_url !== official.baseUrl) {
+      return getPreset('gemini-image-thirdparty');
+    }
+    return official;
+  }
+  if (record.provider_type === 'openai-image') {
+    const official = getPreset('openai-image');
+    if (official && record.base_url && record.base_url !== official.baseUrl) {
+      return getPreset('openai-image-thirdparty');
+    }
+    return official;
+  }
+  // Generic Anthropic-compat with a custom URL (PipeLLM / Aiberm / DeepSeek
+  // /anthropic / etc.) — fall back to the `anthropic-thirdparty` preset so
+  // they pick up its defaults (sonnet/opus/haiku as enabled baseline).
+  if (record.provider_type === 'anthropic') {
+    return getPreset('anthropic-thirdparty');
+  }
+  return undefined;
 }
 
 /** All valid Protocol union values — used for raw-field validation. */
@@ -941,7 +1652,8 @@ export function inferProtocolFromLegacy(
       'kimi.com', 'moonshot.cn', 'moonshot.ai',  // Kimi/Moonshot
       'minimaxi.com', 'minimax.io',     // MiniMax
       'volces.com', 'volcengine.com',   // Volcengine
-      'dashscope.aliyuncs.com',         // Bailian
+      'dashscope.aliyuncs.com',         // Bailian Coding Plan
+      'maas.aliyuncs.com',              // Bailian Token Plan 团队版
       'xiaomimimo.com',                 // Xiaomi MiMo
       'localhost:11434',                // Ollama
     ];

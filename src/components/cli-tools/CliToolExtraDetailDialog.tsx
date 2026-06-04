@@ -9,7 +9,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Copy, Play } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { useTranslation } from "@/hooks/useTranslation";
 import type { TranslationKey } from "@/i18n";
 import type { CliToolRuntimeInfo, CliToolStructuredDesc } from "@/types";
@@ -51,12 +51,12 @@ export function CliToolExtraDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-2xl max-h-[85vh] flex flex-col gap-0 overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle>{displayName}</DialogTitle>
         </DialogHeader>
 
-        <div className="flex flex-col gap-5 overflow-y-auto flex-1 min-h-0">
+        <div className="flex-1 min-h-0 overflow-y-auto mt-4 flex flex-col gap-5">
           {/* Agent compatibility (from AI assessment in structured_json) */}
           {structured?.agentCompat && Object.values(structured.agentCompat).some(Boolean) && (() => {
             const score = computeAgentScore(structured.agentCompat);
@@ -163,7 +163,7 @@ export function CliToolExtraDetailDialog({
                         onClick={() => copyToClipboard(isZh ? ep.promptZh : ep.promptEn)}
                         title={t('cliTools.copy')}
                       >
-                        <Copy size={12} />
+                        <CodePilotIcon name="copy" size={12} aria-hidden />
                       </Button>
                     </div>
                   </div>
@@ -200,7 +200,7 @@ export function CliToolExtraDetailDialog({
 
         <DialogFooter>
           <Button size="sm" className="gap-1.5" onClick={handleTryTool}>
-            <Play size={14} />
+            <CodePilotIcon name="play" size="sm" aria-hidden />
             {t('cliTools.tryTool' as TranslationKey)}
           </Button>
         </DialogFooter>

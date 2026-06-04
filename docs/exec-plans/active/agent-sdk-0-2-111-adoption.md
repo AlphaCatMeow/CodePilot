@@ -1,5 +1,7 @@
 # Claude Agent SDK 0.2.111 能力采纳
 
+> ⚠️ **Superseded by [refactor-closeout.md](./refactor-closeout.md)** — 不再单独推进，保留作历史参考。SDK 升级已完成；剩余 chip / 限流 UI / WarmQuery / session fork / getContextUsage 等能力按需并入 refactor-closeout 的 **Phase 2（Runtime 与会话执行）** 与 **Phase 5（上下文可视化）**。
+
 > 创建时间：2026-04-17
 > 最后更新：2026-04-17
 > 关联计划：[opus-4-7-upgrade.md](./opus-4-7-upgrade.md)（本计划依赖其 Phase 0 的 SDK bump）

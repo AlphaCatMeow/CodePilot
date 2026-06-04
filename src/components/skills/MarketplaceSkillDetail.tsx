@@ -2,28 +2,38 @@
 
 import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import {
-  DownloadSimple,
-  Trash,
-  CheckCircle,
-  ArrowSquareOut,
-  Lightning,
-  SpinnerGap,
-} from "@/components/ui/icon";
+import { ArrowSquareOut, CheckCircle, SpinnerGap } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { useTranslation } from "@/hooks/useTranslation";
+import type { TranslationKey } from "@/i18n";
 import { InstallProgressDialog } from "./InstallProgressDialog";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { cn } from "@/lib/utils";
 import type { MarketplaceSkill } from "@/types";
+
+/**
+ * Marketplace skill detail — inline panel rendered inside the
+ * MarketplaceBrowser. Replaces the old nested-Dialog pattern (Dialog
+ * inside Dialog) with same-dialog navigation: clicking a card swaps
+ * the browser body from list-grid to this panel; the back button
+ * returns to the list. The marketplace Dialog wrapper stays open
+ * throughout — no stacked overlays, no "弹窗叠弹窗".
+ *
+ * The inner `<InstallProgressDialog>` is intentionally still a
+ * Dialog: it's a transient progress indicator (not navigation), and
+ * stacking it briefly during install is the standard pattern.
+ */
 
 interface MarketplaceSkillDetailProps {
   skill: MarketplaceSkill;
+  onBack: () => void;
   onInstallComplete: () => void;
 }
 
 export function MarketplaceSkillDetail({
   skill,
+  onBack,
   onInstallComplete,
 }: MarketplaceSkillDetailProps) {
   const { t } = useTranslation();
@@ -57,7 +67,7 @@ export function MarketplaceSkillDetail({
 
     fetchReadme();
     return () => { cancelled = true; };
-  }, [skill.source, skill.skillId]);
+  }, [skill]);
 
   const handleInstall = () => {
     setProgressAction("install");
@@ -79,83 +89,92 @@ export function MarketplaceSkillDetail({
     : null;
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="border-b border-border px-6 py-4 shrink-0">
-        <div className="flex items-start gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent/50 shrink-0">
-            <Lightning size={20} className="text-muted-foreground" />
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
-              <h3 className="text-base font-semibold truncate">{skill.name}</h3>
-              {skill.isInstalled && (
-                <Badge
-                  variant="outline"
-                  className="text-[10px] px-1.5 py-0 border-status-success-border text-status-success-foreground shrink-0"
-                >
-                  <CheckCircle size={10} className="mr-0.5" />
-                  {t('skills.installed')}
-                </Badge>
+    <div className="flex h-full flex-col">
+      <div className="shrink-0 px-6 pt-4 pb-3 border-b border-border/50">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onBack}
+          className="-ml-2 mb-2 h-7 gap-1.5"
+        >
+          <CodePilotIcon name="back" size="sm" aria-hidden />
+          {t("skills.marketplaceBack" as TranslationKey)}
+        </Button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <h3 className="text-base font-medium break-all">{skill.name}</h3>
+          {skill.isInstalled && (
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium shrink-0",
+                "bg-status-success-muted text-status-success-foreground",
               )}
-            </div>
-            <div className="flex items-center gap-2 mt-0.5">
-              <span className="text-sm text-muted-foreground truncate">{skill.source}</span>
-              {githubUrl && (
-                <a
-                  href={githubUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
-                >
-                  <ArrowSquareOut size={14} />
-                </a>
-              )}
-              {skill.installs > 0 && (
-                <span className="flex items-center gap-0.5 text-xs text-muted-foreground shrink-0">
-                  <DownloadSimple size={12} />
-                  {skill.installs.toLocaleString()}
-                </span>
-              )}
-            </div>
-          </div>
-          <div className="shrink-0">
-            {skill.isInstalled ? (
-              <Button
-                variant="destructive"
-                size="sm"
-                className="gap-1.5"
-                onClick={handleUninstall}
-              >
-                <Trash size={14} />
-                {t('skills.uninstall')}
-              </Button>
-            ) : (
-              <Button size="sm" className="gap-1.5" onClick={handleInstall}>
-                <DownloadSimple size={14} />
-                {t('skills.install')}
-              </Button>
-            )}
-          </div>
+            >
+              <CheckCircle size={10} />
+              {t("skills.installed")}
+            </span>
+          )}
+        </div>
+        <div className="text-xs text-muted-foreground leading-relaxed pt-1 flex items-center gap-2 flex-wrap">
+          <span className="font-mono break-all">{skill.source}</span>
+          {githubUrl && (
+            <a
+              href={githubUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
+              aria-label="GitHub"
+            >
+              <ArrowSquareOut size={12} />
+            </a>
+          )}
+          {skill.installs > 0 && (
+            <span className="flex items-center gap-0.5 shrink-0">
+              <CodePilotIcon name="download" size={12} aria-hidden />
+              {skill.installs.toLocaleString()}
+            </span>
+          )}
         </div>
       </div>
 
-      {/* Body — SKILL.md content */}
-      <div className="flex-1 overflow-y-auto min-h-0">
-        {readmeLoading ? (
-          <div className="flex items-center justify-center py-12">
-            <SpinnerGap size={20} className="animate-spin text-muted-foreground" />
-          </div>
-        ) : displayContent ? (
-          <div className="prose prose-sm dark:prose-invert max-w-none px-6 py-4">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-              {displayContent}
-            </ReactMarkdown>
-          </div>
+      <section className="flex-1 min-h-0 px-6 py-4 flex flex-col">
+        <h5 className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground mb-1.5 shrink-0">
+          {t("skills.contentHeading" as TranslationKey)}
+        </h5>
+        <div className="flex-1 min-h-0 overflow-y-auto rounded-md bg-muted/40 p-4">
+          {readmeLoading ? (
+            <div className="flex items-center justify-center py-6">
+              <SpinnerGap size={18} className="animate-spin text-muted-foreground" />
+            </div>
+          ) : displayContent ? (
+            <div className="prose prose-sm dark:prose-invert max-w-none text-xs break-words [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_code]:break-words [&_a]:break-all [&_img]:max-w-full">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                {displayContent}
+              </ReactMarkdown>
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground italic">
+              {t("skills.noReadme")}
+            </p>
+          )}
+        </div>
+      </section>
+
+      <div className="shrink-0 flex justify-end px-6 py-3 border-t border-border/50">
+        {skill.isInstalled ? (
+          <Button
+            variant="destructive"
+            size="sm"
+            className="gap-1.5"
+            onClick={handleUninstall}
+          >
+            <CodePilotIcon name="delete" size="sm" aria-hidden />
+            {t("skills.uninstall")}
+          </Button>
         ) : (
-          <div className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-2">
-            <p className="text-sm">{t('skills.noReadme')}</p>
-          </div>
+          <Button size="sm" className="gap-1.5" onClick={handleInstall}>
+            <CodePilotIcon name="download" size="sm" aria-hidden />
+            {t("skills.install")}
+          </Button>
         )}
       </div>
 

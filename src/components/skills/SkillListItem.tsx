@@ -1,6 +1,7 @@
 "use client";
 
-import { Lightning, Trash } from "@/components/ui/icon";
+import { Lock, Trash } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -10,14 +11,29 @@ import {
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 import { useTranslation } from "@/hooks/useTranslation";
+import type { TranslationKey } from "@/i18n";
+
+export type SkillSource = "global" | "project" | "plugin" | "installed" | "sdk";
+export type SkillReadOnlyReason = "sdk" | "file_not_writable" | "out_of_cwd";
 
 export interface SkillItem {
   name: string;
   description: string;
   content: string;
-  source: "global" | "project" | "plugin" | "installed";
+  source: SkillSource;
   installedSource?: "agents" | "claude";
   filePath: string;
+  /**
+   * Whether this skill row is editable in the manager UI. Driven entirely
+   * by `/api/skills` (Phase 2D.1) — the client must not re-derive.
+   */
+  editable?: boolean;
+  /**
+   * Why a row is read-only; only present when `editable === false`.
+   */
+  readOnlyReason?: SkillReadOnlyReason;
+  /** Whether this plugin skill is loaded for the current session. */
+  loaded?: boolean;
 }
 
 interface SkillListItemProps {
@@ -37,8 +53,22 @@ export function SkillListItem({
   const [hovered, setHovered] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
+  // Server-driven: api/skills annotates editable + readOnlyReason. Default
+  // editable=true preserves the pre-2D.1 behavior for any code path that
+  // hasn't been re-fetched yet.
+  const editable = skill.editable !== false;
+  const readOnlyReasonKey: TranslationKey | null =
+    skill.readOnlyReason === "sdk"
+      ? "skills.readOnlyReason.sdk"
+      : skill.readOnlyReason === "file_not_writable"
+        ? "skills.readOnlyReason.fileNotWritable"
+        : skill.readOnlyReason === "out_of_cwd"
+          ? "skills.readOnlyReason.outOfCwd"
+          : null;
+
   const handleDelete = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (!editable) return;
     if (confirmDelete) {
       onDelete(skill);
       setConfirmDelete(false);
@@ -64,14 +94,29 @@ export function SkillListItem({
         setConfirmDelete(false);
       }}
     >
-      <Lightning size={16} className="shrink-0 text-muted-foreground" />
+      <CodePilotIcon name="skill" size="md" className="shrink-0 text-muted-foreground" />
       <div className="flex-1 min-w-0">
         <span className="text-sm font-medium truncate block">/{skill.name}</span>
         <p className="text-xs text-muted-foreground truncate">
           {skill.description}
         </p>
       </div>
-      {(hovered || confirmDelete) && (
+      {/* Read-only badge: surfaces SDK / out-of-cwd / file-not-writable
+          reasons so users understand why delete isn't offered. */}
+      {!editable && readOnlyReasonKey && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              className="shrink-0 text-muted-foreground/70"
+              aria-label={t(readOnlyReasonKey)}
+            >
+              <Lock size={12} />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="right">{t(readOnlyReasonKey)}</TooltipContent>
+        </Tooltip>
+      )}
+      {editable && (hovered || confirmDelete) && (
         <Tooltip>
           <TooltipTrigger asChild>
             <Button

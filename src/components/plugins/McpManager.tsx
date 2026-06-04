@@ -1,26 +1,65 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, forwardRef, useImperativeHandle, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { Plus, List, Code, SpinnerGap, ArrowsClockwise, WifiHigh } from "@/components/ui/icon";
-import { McpServerList } from "@/components/plugins/McpServerList";
+import { List, SpinnerGap } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
+import { McpServerList, type McpRuntimeStatus } from "@/components/plugins/McpServerList";
 import { McpServerEditor } from "@/components/plugins/McpServerEditor";
+import { McpServerDetailDialog } from "@/components/plugins/McpServerDetailDialog";
 import { ConfigEditor } from "@/components/plugins/ConfigEditor";
+import { BuiltInMcpSection } from "@/components/plugins/BuiltInMcpSection";
+import { BUILTIN_MCP_CATALOG } from "@/lib/builtin-mcp-catalog";
 import { useTranslation } from "@/hooks/useTranslation";
 import type { TranslationKey } from "@/i18n";
 import type { MCPServer } from "@/types";
 
-interface McpRuntimeStatus {
-  name: string;
-  status: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled';
-  serverInfo?: { name: string; version: string };
-}
-
 type MCPServerWithSource = MCPServer & { _source?: string };
 
-export function McpManager() {
+interface McpManagerProps {
+  /**
+   * `standalone` (default) renders the full page chrome — title /
+   * description / add button / list+json tabs / runtime-status section.
+   * Used by the legacy `/mcp` redirect surface (kept for one cycle).
+   *
+   * `embedded` strips the page-level chrome and renders only the
+   * built-in catalog + installed-server grid + runtime status. The
+   * unified `/plugins` ExtensionsPage owns the surrounding layout
+   * (title, search, create dropdown, more-menu) and triggers add /
+   * JSON editing through the imperative ref.
+   */
+  variant?: "standalone" | "embedded";
+  /**
+   * Reports the total visible server count to the host page so the
+   * unified filter pill can display "MCP (N)". Sums built-in catalog
+   * + user-installed servers — the count matches what the user sees
+   * on the page (内置 + 已安装), which mirrors Skills/CLI counts that
+   * include every visible row.
+   */
+  onCountChange?: (count: number) => void;
+  /**
+   * Free-text filter from the unified ExtensionsPage search box.
+   * Filters both the built-in catalog (by name + i18n description)
+   * and the user-installed server list (by name + command/url).
+   * Empty string = show everything.
+   */
+  search?: string;
+}
+
+export interface McpManagerHandle {
+  /** Open the editor in add-server mode (used by ExtensionsPage's create dropdown). */
+  addServer: () => void;
+  /** Re-fetch the server list — called after McpJsonConfigDialog saves so the
+   *  installed grid + count pill reflect external edits without a tab switch. */
+  refresh: () => Promise<void>;
+}
+
+export const McpManager = forwardRef<McpManagerHandle, McpManagerProps>(function McpManager(
+  { variant = "standalone", onCountChange, search = "" },
+  ref,
+) {
   const { t } = useTranslation();
   const [servers, setServers] = useState<Record<string, MCPServerWithSource>>({});
   const [loading, setLoading] = useState(true);
@@ -32,6 +71,22 @@ export function McpManager() {
   const [runtimeStatus, setRuntimeStatus] = useState<McpRuntimeStatus[]>([]);
   const [runtimeLoading, setRuntimeLoading] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+
+  // Detail dialog (card click) — shared by built-in cards (read-only)
+  // and user-installed cards (read + edit + delete in same dialog).
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailName, setDetailName] = useState<string | null>(null);
+  const [detailServer, setDetailServer] = useState<MCPServer | null>(null);
+  // Reflect the JSON-tab PUT in flight so the ConfigEditor SaveButton
+  // can render the saving state instead of silently letting users
+  // double-click and fire multiple requests.
+  const [jsonSaving, setJsonSaving] = useState(false);
+
+  function handleOpenDetail(name: string, server: MCPServer) {
+    setDetailName(name);
+    setDetailServer(server);
+    setDetailOpen(true);
+  }
 
   const fetchServers = useCallback(async () => {
     try {
@@ -83,17 +138,73 @@ export function McpManager() {
     fetchRuntimeStatus();
   }, [fetchServers, fetchRuntimeStatus]);
 
-  function handleEdit(name: string, server: MCPServer) {
-    setEditingName(name);
-    setEditingServer(server);
-    setEditorOpen(true);
-  }
-
+  // Add-server flow: open the standalone editor Dialog. Edit flow no
+  // longer routes through here — clicking a card opens the detail
+  // dialog which has its own in-place edit view (see handleOpenDetail
+  // above and McpServerDetailDialog).
   function handleAdd() {
     setEditingName(undefined);
     setEditingServer(undefined);
     setEditorOpen(true);
   }
+
+  // Save handler used by BOTH the add Editor (toolbar entry) and the
+  // detail-dialog edit view (card click). When the latter calls in,
+  // `editingName` is undefined — we infer the rename path from the
+  // current servers map instead.
+  const persistSave = useCallback(async (originalName: string | undefined, name: string, server: MCPServer) => {
+    if (originalName && originalName !== name) {
+      // Rename: preserve _source from the original entry
+      const original = servers[originalName];
+      const updated: Record<string, MCPServerWithSource> = { ...servers };
+      delete updated[originalName];
+      updated[name] = original?._source ? { ...server, _source: original._source } : server;
+      try {
+        await fetch("/api/plugins/mcp", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mcpServers: updated }),
+        });
+        setServers(updated);
+      } catch (err) {
+        console.error("Failed to save MCP server:", err);
+      }
+      return;
+    }
+    if (originalName) {
+      // Edit in-place: preserve _source
+      const original = servers[originalName];
+      const serverWithSource: MCPServerWithSource = original?._source ? { ...server, _source: original._source } : server;
+      const updated = { ...servers, [name]: serverWithSource };
+      try {
+        await fetch("/api/plugins/mcp", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mcpServers: updated }),
+        });
+        setServers(updated);
+      } catch (err) {
+        console.error("Failed to save MCP server:", err);
+      }
+      return;
+    }
+    // Add new
+    try {
+      const res = await fetch("/api/plugins/mcp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, server }),
+      });
+      if (res.ok) {
+        setServers((prev) => ({ ...prev, [name]: server }));
+      } else {
+        const data = await res.json();
+        console.error("Failed to add MCP server:", data.error);
+      }
+    } catch (err) {
+      console.error("Failed to add MCP server:", err);
+    }
+  }, [servers]);
 
   const handlePersistentToggle = useCallback(async (name: string, enabled: boolean) => {
     const updated = { ...servers };
@@ -135,58 +246,15 @@ export function McpManager() {
     }
   }
 
-  async function handleSave(name: string, server: MCPServer) {
-    if (editingName && editingName !== name) {
-      // Rename: preserve _source from the original entry
-      const original = servers[editingName];
-      const updated = { ...servers };
-      delete updated[editingName];
-      updated[name] = original?._source ? { ...server, _source: original._source } : server;
-      try {
-        await fetch("/api/plugins/mcp", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mcpServers: updated }),
-        });
-        setServers(updated);
-      } catch (err) {
-        console.error("Failed to save MCP server:", err);
-      }
-    } else if (editingName) {
-      // Edit in-place: preserve _source
-      const original = servers[editingName];
-      const serverWithSource = original?._source ? { ...server, _source: original._source } : server;
-      const updated = { ...servers, [name]: serverWithSource };
-      try {
-        await fetch("/api/plugins/mcp", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mcpServers: updated }),
-        });
-        setServers(updated);
-      } catch (err) {
-        console.error("Failed to save MCP server:", err);
-      }
-    } else {
-      try {
-        const res = await fetch("/api/plugins/mcp", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, server }),
-        });
-        if (res.ok) {
-          setServers((prev) => ({ ...prev, [name]: server }));
-        } else {
-          const data = await res.json();
-          console.error("Failed to add MCP server:", data.error);
-        }
-      } catch (err) {
-        console.error("Failed to add MCP server:", err);
-      }
-    }
+  // Editor Dialog (toolbar add) save handler — bridges to persistSave
+  // with `editingName` as the "original" key so rename works the same
+  // way it always did. Add-mode passes editingName=undefined.
+  async function handleAddEditorSave(name: string, server: MCPServer) {
+    await persistSave(editingName, name, server);
   }
 
   async function handleJsonSave(jsonStr: string) {
+    setJsonSaving(true);
     try {
       const parsed = JSON.parse(jsonStr) as Record<string, MCPServer>;
       // JSON editor only manages settings.json servers.
@@ -210,15 +278,219 @@ export function McpManager() {
       setServers(merged);
     } catch (err) {
       console.error("Failed to save MCP config:", err);
+    } finally {
+      setJsonSaving(false);
     }
   }
 
   const serverCount = Object.keys(servers).length;
 
+  // Report total visible count to the host page so the unified
+  // ExtensionsPage filter pill can render "MCP (N)". The number sums
+  // built-in catalog + user-installed servers — matches what the user
+  // sees as 内置 (7) + 已安装 (N), and aligns with Skills count
+  // (which already includes read-only plugin/sdk groups). Suppressed
+  // while still loading so a cold mount doesn't briefly ship 7 then
+  // bump to 7+N once installed servers fetch.
+  useEffect(() => {
+    if (loading) return;
+    onCountChange?.(BUILTIN_MCP_CATALOG.length + serverCount);
+  }, [serverCount, loading, onCountChange]);
+
+  // Imperative API for ExtensionsPage's create dropdown + JSON dialog
+  // post-save refresh. Exposed via forwardRef so the parent can trigger
+  // add-server / re-fetch the server list without us rendering our own
+  // page chrome.
+  useImperativeHandle(
+    ref,
+    () => ({
+      addServer: () => handleAdd(),
+      refresh: fetchServers,
+    }),
+    [fetchServers],
+  );
+
+  const isEmbedded = variant === "embedded";
+
+  // Filter user-installed servers by search (name + command/url) so the
+  // ExtensionsPage search box scopes to the MCP tab data. Built-in
+  // catalog filtering happens inside <BuiltInMcpSection> via its own
+  // search prop. Runtime status is intentionally not filtered — it's
+  // a debugging surface, not part of the "browse" list.
+  const query = search.trim().toLowerCase();
+  const filteredServers = useMemo(() => {
+    if (!query) return servers;
+    const out: Record<string, MCPServerWithSource> = {};
+    for (const [name, server] of Object.entries(servers)) {
+      if (name.toLowerCase().includes(query)) { out[name] = server; continue; }
+      const command = (server as { command?: string }).command;
+      const url = (server as { url?: string }).url;
+      if ((command && command.toLowerCase().includes(query)) ||
+          (url && url.toLowerCase().includes(query))) {
+        out[name] = server;
+      }
+    }
+    return out;
+  }, [servers, query]);
+  const filteredServerCount = Object.keys(filteredServers).length;
+
+  // Body shared by both variants — built-in catalog + installed list +
+  // runtime status. Kept in a named const so the standalone branch can
+  // wrap it in the legacy List/JSON Tabs without duplication.
+  const bodyContent = useMemo(
+    () => (
+      <>
+        {error && (
+          <div className="rounded-md bg-destructive/10 p-3 mb-4">
+            <p className="text-sm text-destructive">{error}</p>
+          </div>
+        )}
+
+        <BuiltInMcpSection search={search} />
+
+        {/* When a search filters EVERY catalog row AND every installed
+            server out, render a single empty-state line. We mirror
+            BuiltInMcpSection's match check (name + i18n description)
+            so the empty state only appears when truly nothing
+            matches — not just when one section is empty. */}
+        {query && !loading && filteredServerCount === 0 && (() => {
+          const builtinMatches = BUILTIN_MCP_CATALOG.some((entry) => {
+            const description = t(entry.descriptionKey as TranslationKey).toLowerCase();
+            return entry.name.toLowerCase().includes(query) || description.includes(query);
+          });
+          if (builtinMatches) return null;
+          return (
+            <p className="text-sm text-muted-foreground py-8 text-center">
+              {t('plugins.search.noResults' as TranslationKey)}
+            </p>
+          );
+        })()}
+
+        {/* Hide the 已安装 section entirely when a search filters
+            everything out — otherwise an empty header sits above the
+            runtime status block and reads as broken. */}
+        {(filteredServerCount > 0 || (!query && !loading)) && (
+          <>
+            <header className="mb-3">
+              <div className="flex items-center gap-2">
+                <CodePilotIcon name="disk" size="sm" className="text-muted-foreground" aria-hidden />
+                <h4 className="text-sm font-medium">
+                  {t('mcp.installed.sectionTitle' as TranslationKey)}
+                </h4>
+                <span className="text-xs text-muted-foreground">
+                  ({filteredServerCount}
+                  {query && filteredServerCount !== serverCount ? ` / ${serverCount}` : ""}
+                  )
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
+                {t('mcp.installed.sectionDescription' as TranslationKey)}
+              </p>
+            </header>
+
+            {loading ? (
+              <div className="flex items-center justify-center gap-2 py-12 text-muted-foreground">
+                <SpinnerGap size={16} className="animate-spin" />
+                <p className="text-sm">{t('mcp.loadingServers')}</p>
+              </div>
+            ) : (
+              <McpServerList
+                servers={filteredServers}
+                onOpenDetail={handleOpenDetail}
+                onToggleEnabled={handlePersistentToggle}
+                runtimeStatus={runtimeStatus}
+                activeSessionId={activeSessionId || undefined}
+              />
+            )}
+          </>
+        )}
+
+        {/* Runtime status: live SDK runtime view of external servers. */}
+        <div className="mt-8">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <CodePilotIcon name="mcp" size="md" className="text-muted-foreground" aria-hidden />
+              <h4 className="text-sm font-medium">{t('mcp.runtimeStatus' as TranslationKey)}</h4>
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1 text-xs"
+              onClick={fetchRuntimeStatus}
+              disabled={runtimeLoading}
+            >
+              {runtimeLoading ? <SpinnerGap size={12} className="animate-spin" /> : <CodePilotIcon name="refresh" size={12} aria-hidden />}
+              {t('mcp.refresh' as TranslationKey)}
+            </Button>
+          </div>
+
+          {!activeSessionId ? (
+            <p className="text-xs text-muted-foreground py-4 text-center">
+              {t('mcp.noActiveSession' as TranslationKey)}
+            </p>
+          ) : runtimeStatus.length === 0 ? (
+            <p className="text-xs text-muted-foreground py-4 text-center">
+              {t('mcp.noRuntimeStatus' as TranslationKey)}
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {runtimeStatus.map((s) => (
+                <div key={s.name} className="flex items-center justify-between py-1.5 px-2 rounded-md bg-muted/30">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className={`h-2 w-2 rounded-full shrink-0 ${
+                      s.status === 'connected' ? 'bg-status-success' :
+                      s.status === 'failed' ? 'bg-status-error' :
+                      s.status === 'pending' ? 'bg-primary' :
+                      s.status === 'disabled' ? 'bg-gray-400' :
+                      'bg-status-warning'
+                    }`} />
+                    <span className="text-xs font-medium truncate">{s.name}</span>
+                  </div>
+                  <Badge variant="outline" className="text-[10px] shrink-0">
+                    {s.status}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </>
+    ),
+    // Re-render whenever any of the surfaces below change. We intentionally
+    // skip `t` (locale-pinned) and the handler refs (stable enough).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [error, filteredServers, loading, runtimeStatus, activeSessionId, runtimeLoading, serverCount, filteredServerCount, search, query],
+  );
+
+  if (isEmbedded) {
+    // No header / no list-vs-json tabs / no add button — ExtensionsPage owns those.
+    return (
+      <>
+        {bodyContent}
+        <McpServerEditor
+          open={editorOpen}
+          onOpenChange={setEditorOpen}
+          name={editingName}
+          server={editingServer}
+          onSave={handleAddEditorSave}
+        />
+        <McpServerDetailDialog
+          open={detailOpen}
+          onOpenChange={setDetailOpen}
+          name={detailName}
+          server={detailServer}
+          runtime={detailName ? runtimeStatus.find((s) => s.name === detailName) ?? null : null}
+          onSave={(name, server) => persistSave(name, name, server)}
+          onDelete={handleDelete}
+        />
+      </>
+    );
+  }
+
   return (
     <div className="flex h-full flex-col">
       {/* Fixed header */}
-      <div className="shrink-0 border-b border-border/50 px-6 pt-4 pb-4">
+      <div className="shrink-0 px-6 pt-4 pb-4">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-xl font-semibold">
@@ -234,7 +506,7 @@ export function McpManager() {
             </p>
           </div>
           <Button size="sm" className="gap-1" onClick={handleAdd}>
-            <Plus size={14} />
+            <CodePilotIcon name="plus" size="sm" aria-hidden />
             {t('mcp.addServer')}
           </Button>
         </div>
@@ -243,12 +515,6 @@ export function McpManager() {
       {/* Scrollable content */}
       <div className="flex-1 overflow-y-auto p-6">
 
-      {error && (
-        <div className="rounded-md bg-destructive/10 p-3 mb-4">
-          <p className="text-sm text-destructive">{error}</p>
-        </div>
-      )}
-
       <Tabs value={tab} onValueChange={(v) => setTab(v as "list" | "json")}>
         <TabsList>
           <TabsTrigger value="list" className="gap-1.5">
@@ -256,12 +522,34 @@ export function McpManager() {
             {t('mcp.listTab')}
           </TabsTrigger>
           <TabsTrigger value="json" className="gap-1.5">
-            <Code size={14} />
+            <CodePilotIcon name="code" size="sm" aria-hidden />
             {t('mcp.jsonTab')}
           </TabsTrigger>
         </TabsList>
 
         <TabsContent value="list" className="mt-4">
+          {/* Built-in MCP capabilities — read-only catalog, sits above
+              user-configurable external servers (Phase 2D.2). */}
+          <BuiltInMcpSection />
+
+          {/* User-installed servers — same Settings card chrome and
+              two-col grid as the built-in section above, with a header
+              that mirrors the same name + count layout. */}
+          <header className="mb-3">
+            <div className="flex items-center gap-2">
+              <CodePilotIcon name="disk" size="sm" className="text-muted-foreground" aria-hidden />
+              <h4 className="text-sm font-medium">
+                {t('mcp.installed.sectionTitle' as TranslationKey)}
+              </h4>
+              <span className="text-xs text-muted-foreground">
+                ({serverCount})
+              </span>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
+              {t('mcp.installed.sectionDescription' as TranslationKey)}
+            </p>
+          </header>
+
           {loading ? (
             <div className="flex items-center justify-center gap-2 py-12 text-muted-foreground">
               <SpinnerGap size={16} className="animate-spin" />
@@ -270,8 +558,7 @@ export function McpManager() {
           ) : (
             <McpServerList
               servers={servers}
-              onEdit={handleEdit}
-              onDelete={handleDelete}
+              onOpenDetail={handleOpenDetail}
               onToggleEnabled={handlePersistentToggle}
               runtimeStatus={runtimeStatus}
               activeSessionId={activeSessionId || undefined}
@@ -300,16 +587,17 @@ export function McpManager() {
               2,
             )}
             onSave={handleJsonSave}
+            saving={jsonSaving}
             label={t('mcp.serverConfig')}
           />
         </TabsContent>
       </Tabs>
 
       {/* Runtime Status Section */}
-      <div className="mt-6 border-t pt-4">
+      <div className="mt-8">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <WifiHigh size={16} className="text-muted-foreground" />
+            <CodePilotIcon name="mcp" size="md" className="text-muted-foreground" aria-hidden />
             <h4 className="text-sm font-medium">{t('mcp.runtimeStatus' as TranslationKey)}</h4>
           </div>
           <Button
@@ -319,7 +607,7 @@ export function McpManager() {
             onClick={fetchRuntimeStatus}
             disabled={runtimeLoading}
           >
-            {runtimeLoading ? <SpinnerGap size={12} className="animate-spin" /> : <ArrowsClockwise size={12} />}
+            {runtimeLoading ? <SpinnerGap size={12} className="animate-spin" /> : <CodePilotIcon name="refresh" size={12} aria-hidden />}
             {t('mcp.refresh' as TranslationKey)}
           </Button>
         </div>
@@ -360,9 +648,18 @@ export function McpManager() {
         onOpenChange={setEditorOpen}
         name={editingName}
         server={editingServer}
-        onSave={handleSave}
+        onSave={handleAddEditorSave}
+      />
+      <McpServerDetailDialog
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        name={detailName}
+        server={detailServer}
+        runtime={detailName ? runtimeStatus.find((s) => s.name === detailName) ?? null : null}
+        onSave={(name, server) => persistSave(name, name, server)}
+        onDelete={handleDelete}
       />
       </div>
     </div>
   );
-}
+});

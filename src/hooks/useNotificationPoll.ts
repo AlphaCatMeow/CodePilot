@@ -12,8 +12,45 @@ const PRIORITY_TO_TOAST: Record<string, ToastType> = {
 };
 
 /**
+ * Phase 3 Step 3 — ack a notification_deliveries row by event_id +
+ * channel. Best-effort: any failure is logged and ignored; the
+ * notification has already been shown to the user, the worst case is
+ * the delivery row stays `queued` (which the UI represents as
+ * "shown, ack pending").
+ */
+function ackDelivery(payload: {
+  event_id: string;
+  channel: string;
+  status: 'delivered' | 'error';
+  error?: string;
+}): void {
+  fetch('/api/tasks/notify/ack', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }).catch(() => { /* best effort */ });
+}
+
+interface PolledNotification {
+  id: string;
+  event_id?: string;
+  task_id?: string;
+  session_id?: string;
+  title: string;
+  body: string;
+  priority: 'low' | 'normal' | 'urgent';
+  timestamp: number;
+}
+
+/**
  * Polls GET /api/tasks/notify to drain server-side notification queue
  * and display them as toasts + system notifications via Electron IPC.
+ *
+ * Phase 3 Step 3 — after a successful display, POST /api/tasks/notify/ack
+ * so the UI can show "delivered" instead of perpetual "queued". The
+ * UPSERT semantics (v5 plan) mean repeated acks are idempotent, so
+ * this stays safe even if the renderer + bg-poller both ack the same
+ * event after a window-visibility flip.
  */
 export function useNotificationPoll() {
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -36,30 +73,87 @@ export function useNotificationPoll() {
         const res = await fetch('/api/tasks/notify');
         if (!res.ok) return;
         const data = await res.json();
-        const notifications = data.notifications || [];
+        const notifications: PolledNotification[] = data.notifications || [];
 
         for (const notif of notifications) {
-          // In-app toast for all priorities
-          showToast({
-            type: PRIORITY_TO_TOAST[notif.priority] || 'info',
-            message: notif.body ? `${notif.title}: ${notif.body}` : notif.title,
-          });
+          const eventId = notif.event_id;
 
-          // System notification for normal/urgent via Electron IPC bridge
+          // In-app toast for all priorities (channel: renderer-toast)
+          try {
+            showToast({
+              type: PRIORITY_TO_TOAST[notif.priority] || 'info',
+              message: notif.body ? `${notif.title}: ${notif.body}` : notif.title,
+            });
+            if (eventId) {
+              ackDelivery({ event_id: eventId, channel: 'renderer-toast', status: 'delivered' });
+            }
+          } catch (err) {
+            if (eventId) {
+              ackDelivery({
+                event_id: eventId,
+                channel: 'renderer-toast',
+                status: 'error',
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
+
+          // System notification for normal/urgent via Electron IPC
+          // bridge (channel: electron-native).
           if (notif.priority === 'normal' || notif.priority === 'urgent') {
             if (typeof window !== 'undefined' && window.electronAPI?.notification) {
-              // Electron: use native notification via IPC (supports click-to-focus)
-              window.electronAPI.notification.show({
-                title: notif.title,
-                body: notif.body || '',
-              }).catch(() => {}); // best effort
+              window.electronAPI.notification
+                .show({
+                  title: notif.title,
+                  body: notif.body || '',
+                  // Phase 3 Step 3: thread payload through so the OS
+                  // notification's click handler can route to
+                  // /settings/tasks?focus=… or the chat session.
+                  taskId: notif.task_id,
+                  sessionId: notif.session_id,
+                  event_id: eventId,
+                })
+                .then((ok) => {
+                  if (eventId) {
+                    ackDelivery({
+                      event_id: eventId,
+                      channel: 'electron-native',
+                      status: ok ? 'delivered' : 'error',
+                    });
+                  }
+                })
+                .catch((err) => {
+                  if (eventId) {
+                    ackDelivery({
+                      event_id: eventId,
+                      channel: 'electron-native',
+                      status: 'error',
+                      error: err instanceof Error ? err.message : String(err),
+                    });
+                  }
+                });
             } else if (
               typeof window !== 'undefined' &&
               'Notification' in window &&
               Notification.permission === 'granted'
             ) {
-              // Browser fallback (dev mode)
-              new Notification(notif.title, { body: notif.body || '' });
+              // Browser fallback (dev mode) — counts as electron-native
+              // for ack purposes since it's the same surface in spirit.
+              try {
+                new Notification(notif.title, { body: notif.body || '' });
+                if (eventId) {
+                  ackDelivery({ event_id: eventId, channel: 'electron-native', status: 'delivered' });
+                }
+              } catch (err) {
+                if (eventId) {
+                  ackDelivery({
+                    event_id: eventId,
+                    channel: 'electron-native',
+                    status: 'error',
+                    error: err instanceof Error ? err.message : String(err),
+                  });
+                }
+              }
             }
           }
         }

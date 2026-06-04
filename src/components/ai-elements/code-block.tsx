@@ -21,17 +21,8 @@ import { cn } from "@/lib/utils";
 import { useThemeFamily } from "@/lib/theme/context";
 import { resolveShikiTheme, resolveShikiThemes, SHIKI_DEFAULT_LIGHT, SHIKI_DEFAULT_DARK } from "@/lib/theme/code-themes";
 import type { Icon } from "@phosphor-icons/react";
-import {
-  Check,
-  Copy,
-  CaretDown,
-  CaretUp,
-  FileCode,
-  Terminal,
-  Code,
-  File,
-  Hash,
-} from "@phosphor-icons/react";
+import { Check, CaretDown, CaretUp, Hash, Terminal, Code, File, FileCode } from "@phosphor-icons/react";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import {
   createElement,
   createContext,
@@ -44,6 +35,8 @@ import {
   useState,
 } from "react";
 import { createHighlighter } from "shiki";
+import { usePanel } from "@/hooks/usePanel";
+import type { PreviewSource } from "@/hooks/usePanel";
 
 // ── Collapse/expand constants ──────────────────────────────────────────
 const COLLAPSE_THRESHOLD = 20;
@@ -790,6 +783,16 @@ const CodeBlockDefaultHeader = ({
         )}>{language.toUpperCase()}</span>
       </div>
       <div className="flex items-center gap-1 ml-2 shrink-0">
+        {/* Phase 4.B — Open in Artifact action. Shown only for languages
+            that have a configured preview renderer. The code itself
+            doesn't go through any file scope; it's an inline-* source
+            so the trust-tier pipeline is bypassed (the code is already
+            in the chat). HTML in particular uses inline-html → strict
+            sandbox (no relative resources, no scripts) because we
+            don't have a file scope to authorize. The code-fence
+            Preview is for inspecting the *content*, not for running
+            it as a real page. */}
+        <CodeFencePreviewButton language={contextLanguage} code={contextCode} />
         <button
           onClick={handleCopy}
           type="button"
@@ -808,7 +811,7 @@ const CodeBlockDefaultHeader = ({
             </>
           ) : (
             <>
-              <Copy size={12} />
+              <CodePilotIcon name="copy" size={12} aria-hidden />
               <span>Copy</span>
             </>
           )}
@@ -831,7 +834,7 @@ const CodeBlockDefaultHeader = ({
             </>
           ) : (
             <>
-              <FileCode size={12} />
+              <CodePilotIcon name="file_code" size={12} aria-hidden />
               <span>Markdown</span>
             </>
           )}
@@ -840,6 +843,130 @@ const CodeBlockDefaultHeader = ({
     </div>
   );
 };
+
+/**
+ * Phase 4.B — code-fence "Preview" button. Surfaces only when the
+ * fence's language is one we have a renderer for. The button uses
+ * usePanel (rather than dispatching a window event) so the React
+ * state update flows through AppShell's setPreviewSource — same path
+ * as the file-tree click and DiffSummary card.
+ *
+ * Mapping table:
+ *   html / xml         → inline-html  (strict sandbox; no file scope)
+ *   jsx / tsx          → inline-jsx   (Sandpack)
+ *   json               → inline-json  (tree viewer)
+ *   diff / patch       → inline-diff
+ *   csv                → inline-datatable (papaparse)
+ *   tsv                → inline-datatable (tab-delimited)
+ *   markdown / md / mdx→ inline-markdown
+ *
+ * Other languages render no button — the existing Copy / Markdown
+ * actions are sufficient for code that has no rendered preview form.
+ */
+function CodeFencePreviewButton({
+  language,
+  code,
+}: {
+  language: string;
+  code: string;
+}) {
+  const panel = usePanelOrNull();
+  const source = useMemo(() => previewSourceForCodeFence(language, code), [language, code]);
+  if (!source) return null;
+  if (!panel) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => panel.setPreviewSource(source)}
+      data-codepilot-codefence-preview={language}
+      className="flex items-center gap-1 rounded px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      title={`Open this ${language} in the Artifact preview`}
+    >
+      <CodePilotIcon name="file_code" size={12} aria-hidden />
+      <span>Preview</span>
+    </button>
+  );
+}
+
+/**
+ * usePanel() throws when used outside the PanelContext provider, but
+ * the CodeBlock component is also used in places without a panel
+ * (e.g. the design-system gallery). Wrapping in a safe variant lets
+ * the Preview button gracefully disappear instead of crashing the
+ * surrounding render.
+ */
+function usePanelOrNull() {
+  try {
+    return usePanel();
+  } catch {
+    return null;
+  }
+}
+
+export function previewSourceForCodeFence(
+  language: string,
+  code: string,
+): PreviewSource | null {
+  const lang = language.toLowerCase();
+  switch (lang) {
+    case "html":
+    case "xml":
+      return { kind: "inline-html", html: code, virtualName: "fence.html" };
+    case "jsx":
+      return { kind: "inline-jsx", jsx: code, virtualName: "fence.jsx" };
+    case "tsx":
+      return { kind: "inline-jsx", jsx: code, virtualName: "fence.tsx" };
+    case "json":
+      return { kind: "inline-json", text: code, virtualName: "fence.json" };
+    case "diff":
+    case "patch":
+      return { kind: "inline-diff", diff: code, virtualName: "fence.diff" };
+    case "csv":
+      return parseCsvForFence(code, ",", "fence.csv");
+    case "tsv":
+      return parseCsvForFence(code, "\t", "fence.tsv");
+    case "markdown":
+    case "md":
+    case "mdx":
+      return {
+        kind: "inline-markdown",
+        markdown: code,
+        virtualName: "fence.md",
+      };
+    default:
+      return null;
+  }
+}
+
+function parseCsvForFence(
+  text: string,
+  delim: string,
+  virtualName: string,
+): PreviewSource {
+  // Light CSV parser — good enough for chat-pasted tables. We don't
+  // pull papaparse here because the existing DataTableViewer reads
+  // raw csv text in its csv= prop; we hand it the same. For the
+  // PreviewSource we still produce inline-datatable shape with
+  // rows / header so the panel's existing dispatch path applies.
+  const lines = text.split(/\r?\n/).filter((l) => l.length > 0);
+  if (lines.length === 0) {
+    return {
+      kind: "inline-datatable",
+      header: [],
+      rows: [],
+      virtualName,
+    };
+  }
+  const split = (l: string) => l.split(delim).map((c) => c.trim());
+  const header = split(lines[0]);
+  const rows = lines.slice(1).map(split);
+  return {
+    kind: "inline-datatable",
+    header,
+    rows,
+    virtualName,
+  };
+}
 
 export type CodeBlockCopyButtonProps = ComponentProps<typeof Button> & {
   onCopy?: () => void;
@@ -887,8 +1014,6 @@ export const CodeBlockCopyButton = ({
     []
   );
 
-  const Icon = isCopied ? Check : Copy;
-
   return (
     <Button
       className={cn("shrink-0", className)}
@@ -897,7 +1022,7 @@ export const CodeBlockCopyButton = ({
       variant="ghost"
       {...props}
     >
-      {children ?? <Icon size={14} />}
+      {children ?? (isCopied ? <Check size={14} /> : <CodePilotIcon name="copy" size="sm" aria-hidden />)}
     </Button>
   );
 };

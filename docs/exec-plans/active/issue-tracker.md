@@ -1,7 +1,7 @@
 # Issue Tracker — 统一问题跟踪
 
 > 创建时间：2026-04-13
-> 最后更新：2026-04-15（cc-switch 凭据归属重构 + Electron 端口稳定化 + OAuth retry + Hermes runtime 回归修复 + ignoreErrors / Controller closed / 短别名 fallback / native binary 探测）
+> 最后更新：2026-06-04（合并前对齐提交状态：B-020 MiMo 回退 → 已修 `ea860da`；B-021 Provider 编辑双 X → 已修 `2646f23`，待 Windows 真机；#578 中断后发送 → 已修 `fcce794`，B-022「streaming 期间排队」待专项 smoke；自动权限 / 对话编辑仍 FR）
 > 合并自：`open-issues-2026-03-12.md` + `v0.48-post-release-issues.md` + GitHub Issues 最新盘点
 
 **AI 须知：**
@@ -214,6 +214,48 @@
 - **推荐:** 先做根治（#2），成本不大、一劳永逸；#1 作为 provider-level override 留给有异常慢后端的场景（少数）
 - **下一步:** 下个 hotfix 窗口处理
 
+#### B-020 MiMo 模型配置疑似被回退
+- **状态:** 🟢 已修复（worktree `ea860da`，Phase 4 / #577；待 preview 真机复测）
+- **本轮修复（2026-06-03，`ea860da`）:** MiMo 可设型号不再被 preset / discovery 回退到默认；成功回答后不再追加 provider error（同 #577）。已确认真实 upstream model id 后才改默认，未臆造。
+- **现象:** MiMo 的模型配置不知何时从用户预期的 `2.5 Pro` 被改成了 `V2.5` 和 `V2`；用户认为这是“偷偷改掉”的回归。
+- **影响:** Provider 默认模型 / role model 可能不再指向用户实际购买或可用的 MiMo 模型，导致新用户开箱不可用或老用户发送到错误模型。
+- **需核查:**
+  - `provider-catalog.ts` 中 MiMo preset 的 `model_names` / `roleModels` / default model。
+  - Provider 编辑/连接弹窗是否把真实型号保存到 `role_models_json`。
+  - 旧 DB 行是否被 preset sync / align / discovery 覆盖。
+- **下一步:** preview 真机复测 MiMo 型号选择持久；保留为 provider catalog 回归观察项。
+
+#### B-021 服务商编辑页右上角关闭按钮失效
+- **状态:** 🟡 部分修复 / ⚪ 待 Windows 真机验证（worktree `2646f23`，Phase 5）
+- **本轮修复（2026-06-03，`2646f23`）:** Windows fullscreen 编辑弹窗的应用内 close 按钮让出系统窗口控制区，消除与系统 X 贴脸 / 重叠（对应 preview blocker「双 X 过近」）；"点击无效"若源于系统按钮覆盖应用按钮则一并缓解。**Windows-only，源码 / 回归 guard 已加，待 Windows packaged 真机 smoke 终验点击可关闭。**
+- **现象:** 编辑服务商页面 / 弹窗中，右上角的“×”点击后无法关闭页面。
+- **影响:** 用户进入 Provider 编辑后无法正常退出，属于设置页 P1 体验阻断。
+- **关联历史:** 近期修过 Windows fullscreen 弹窗关闭按钮与系统窗口控制区重叠问题，但本反馈是“点击无效”，需要重新核查事件处理与 Dialog close wiring。
+- **需核查:**
+  - ProviderForm / DialogContent fullscreen 分支的 `onOpenChange` / close button 是否被阻断。
+  - Windows WCO safe-area 调整后是否造成按钮视觉可见但事件落到错误层级。
+  - macOS / Windows 是否表现一致。
+- **下一步:** Windows packaged smoke 终验点击可关闭；macOS 侧已确认无回归。
+
+#### B-022 消息队列疑似回归
+- **状态:** ⚪ 需验证（同源的 #578「中断后发送无响应」已由 worktree `fcce794` 修复；本条「streaming 期间排队」症状待专项 smoke）
+- **本轮进展（2026-06-03，`fcce794`，Phase 2 / #578）:** 中断任务后输入框发送无响应已修（无条件调度 force-abort，清掉卡住的运行锁 / abort controller）。与 B-022 同源——发送入口被未清理的运行锁卡住；但「streaming 期间能否继续排队」未单独验证。
+- **现象:** 以前消息发送后，用户可以继续发送下一条，后续消息会进入队列；现在有用户反馈不行。
+- **影响:** 长任务期间无法连续追加指令，影响核心聊天工作流。
+- **需核查:**
+  - `ChatView` 的 `messageQueue` / `isStreaming` 逻辑是否仍允许 streaming 期间排队。
+  - `MessageInput` disabled 条件是否因为 runtime/provider gate、provider loading、session incompatible 等状态过宽，导致 streaming 期间输入/发送入口被完全禁掉。
+  - `stop` / `force-abort` 修复后是否改变了队列调度顺序。
+- **下一步:** 增加 smoke：发送第一条并保持 streaming，再发送第二条，断言第二条进入队列且第一条完成后自动发送。
+
+#### B-023 MCP 设置页可见但运行时不可调用
+- **Issue:** [#569](https://github.com/op7418/CodePilot/issues/569)
+- **状态:** 🔴 未修复（2026-06-02 用户反馈；2026-06-04 从主分支 tracker 草稿迁入 worktree active 看板，避免合并丢失——GitHub issue 仍是永久记录）
+- **现象:** MCP 列表能自动读取 Claude Code 配置，但运行状态里看不到，模型也无法调用；用户补充：必须把 MCP 再配置到项目路径才会识别。
+- **影响:** MCP 可见性与可调用性不一致——用户以为已启用但模型实际调不到；属"设置页看得到、运行时不可调用"的假承诺（触及 CLAUDE.md 语义验收）。
+- **需核查:** 全局/用户级 Claude Code MCP 配置与 CodePilot runtime 注入 / 运行状态 UI 的来源是否一致；为什么只有配置到项目路径才识别。
+- **下一步:** 合并后排查 runtime MCP 注入来源 vs 运行状态 UI 来源；若不修则降级文案，别让设置页假承诺"已启用"。
+
 ---
 
 #### B-018 macOS 启动 / 新对话时弹 "找不到用于储存 'apple' 的钥匙串" 对话框
@@ -296,6 +338,8 @@
 | [#458](https://github.com/op7418/CodePilot/issues/458) | 多 OpenAI OAuth 账号 | 📋 待评估 | |
 | [#463](https://github.com/op7418/CodePilot/issues/463) | 代码界面可编辑 + 语法高亮 | 🔵 设计如此 | Claude Code 理念：AI 写 100% 代码 |
 | [#246](https://github.com/op7418/CodePilot/issues/246) | 应用内自动更新 | 📋 待实现 | 已有 electron-updater 依赖 |
+| FR-auto-permission | 自动权限系统：Claude Code / Codex 已支持自动权限；后续 CodePilot 也应支持根据请求内容自动分析并完成审批 | 📋 待设计 | 用户要求记录：自动权限会自动分析内容并完成审批；需定义安全边界、可审计日志、可关闭开关 |
+| FR-edit-user-message | 对话编辑：用户停止对话后，可点击自己发出的消息，在“复制”旁增加笔形编辑按钮；编辑后直接再次发送 | 📋 待设计 | 目标是避免复制、粘贴到输入框再发送；需考虑消息重放、后续 assistant 消息处理、队列/停止状态 |
 | [#254](https://github.com/op7418/CodePilot/issues/254) | 会话列表待确认状态指示 | 📋 待实现 | |
 | [#236](https://github.com/op7418/CodePilot/issues/236) | @ 自动补全文件路径 | 📋 待实现 | |
 | [#242](https://github.com/op7418/CodePilot/issues/242) | 多 bot 桥接 | 📋 待实现 | 高复杂度 |

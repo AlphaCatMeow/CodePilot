@@ -8,7 +8,8 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import { Book, CaretDown } from "@phosphor-icons/react";
+import { CaretDown } from "@phosphor-icons/react";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 
 export type SourcesProps = ComponentProps<"div">;
 
@@ -70,7 +71,7 @@ export const Source = ({ href, title, children, ...props }: SourceProps) => (
   >
     {children ?? (
       <>
-        <Book className="h-4 w-4" />
+        <CodePilotIcon name="book" size="md" aria-hidden />
         <span className="block font-medium">{title}</span>
       </>
     )}

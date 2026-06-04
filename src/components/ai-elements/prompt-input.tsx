@@ -55,13 +55,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import {
-  ArrowElbowDownLeft,
-  Image,
-  Plus,
-  Square,
-  X,
-} from "@phosphor-icons/react";
+import { ArrowElbowDownLeft, Square, X } from "@phosphor-icons/react";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { nanoid } from "nanoid";
 import {
   Children,
@@ -177,8 +172,12 @@ export const PromptInputProvider = ({
   const clearInput = useCallback(() => setTextInput(""), []);
 
   // ----- attachments state (global when wrapped)
+  // `size` is preserved on top of FileUIPart so downstream chip
+  // estimators (FileAttachmentsCapsules, MessageInput's pending-token
+  // total) can show "~3.2K" without re-fetching the file. FileUIPart
+  // itself drops byte counts after the conversion to base64/URL.
   const [attachmentFiles, setAttachmentFiles] = useState<
-    (FileUIPart & { id: string })[]
+    (FileUIPart & { id: string; size?: number })[]
   >([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   // oxlint-disable-next-line eslint(no-empty-function)
@@ -198,6 +197,7 @@ export const PromptInputProvider = ({
         mediaType: file.type,
         type: "file" as const,
         url: URL.createObjectURL(file),
+        size: file.size,
       })),
     ]);
   }, []);
@@ -353,7 +353,7 @@ export const PromptInputActionAddAttachments = ({
 
   return (
     <DropdownMenuItem {...props} onSelect={handleSelect}>
-      <Image className="mr-2 size-4" /> {label}
+      <CodePilotIcon name="image" size="md" className="mr-2" aria-hidden /> {label}
     </DropdownMenuItem>
   );
 };
@@ -449,7 +449,13 @@ export const PromptInput = ({
   const formRef = useRef<HTMLFormElement | null>(null);
 
   // ----- Local attachments (only used when no provider)
-  const [items, setItems] = useState<(FileUIPart & { id: string })[]>([]);
+  // Same `size` extension as the provider-scoped state above — the
+  // chat composer's PromptInput is unwrapped (not nested in a
+  // PromptInputProvider) and therefore goes through this *local*
+  // attachments path. Without preserving size here, FileAttachmentsCapsules
+  // can't show the "~3.2K" estimate and AttachmentPendingTracker can't
+  // contribute to Run pending tokens. (Codex P2 finding, April 2026.)
+  const [items, setItems] = useState<(FileUIPart & { id: string; size?: number })[]>([]);
   const files = usingProvider ? controller.attachments.files : items;
 
   // ----- Local referenced sources (always local to PromptInput)
@@ -530,7 +536,7 @@ export const PromptInput = ({
             message: "Too many files. Some were not added.",
           });
         }
-        const next: (FileUIPart & { id: string })[] = [];
+        const next: (FileUIPart & { id: string; size?: number })[] = [];
         for (const file of capped) {
           next.push({
             filename: file.name,
@@ -538,6 +544,7 @@ export const PromptInput = ({
             mediaType: file.type,
             type: "file",
             url: URL.createObjectURL(file),
+            size: file.size,
           });
         }
         return [...prev, ...next];
@@ -1101,7 +1108,7 @@ export const PromptInputActionMenuTrigger = ({
 }: PromptInputActionMenuTriggerProps) => (
   <DropdownMenuTrigger asChild>
     <PromptInputButton className={className} {...props}>
-      {children ?? <Plus className="size-4" />}
+      {children ?? <CodePilotIcon name="plus" size="md" aria-hidden />}
     </PromptInputButton>
   </DropdownMenuTrigger>
 );

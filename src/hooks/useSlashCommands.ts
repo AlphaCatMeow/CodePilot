@@ -2,7 +2,7 @@ import { useCallback, useMemo } from 'react';
 import type { PopoverItem, PopoverMode, SkillKind } from '@/types';
 import { detectPopoverTrigger, resolveItemSelection } from '@/lib/message-input-logic';
 import { BUILT_IN_COMMANDS, COMMAND_PROMPTS } from '@/lib/constants/commands';
-import { COMMAND_ICONS } from '@/lib/constants/command-icons';
+import { COMMAND_ICON_NAMES } from '@/lib/constants/command-icons';
 
 // Re-export for backward compatibility
 export { BUILT_IN_COMMANDS, COMMAND_PROMPTS };
@@ -61,7 +61,7 @@ export function useSlashCommands(opts: {
 
   // Enrich built-in commands with icons (presentation layer enrichment)
   const enrichedBuiltIns = useMemo(
-    () => BUILT_IN_COMMANDS.map(cmd => ({ ...cmd, icon: COMMAND_ICONS[cmd.value] })),
+    () => BUILT_IN_COMMANDS.map(cmd => ({ ...cmd, iconName: COMMAND_ICON_NAMES[cmd.value] })),
     [],
   );
 

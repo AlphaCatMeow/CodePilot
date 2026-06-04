@@ -33,6 +33,9 @@ const zh: Record<TranslationKey, string> = {
   'chatList.importFromCli': '从 Claude Code 导入',
   'chatList.addProjectFolder': '新建项目',
   'chatList.threads': '对话列表',
+  'chatList.projects': '项目',
+  'chatList.assistantSection': '助理',
+  'chatList.newProject': '新建项目',
   'chatList.showMore': '展开更多（{count} 条）',
   'chatList.showLess': '收起',
 
@@ -92,12 +95,28 @@ const zh: Record<TranslationKey, string> = {
 
   // ── Chat view / session page ────────────────────────────────
   'chat.newConversation': '新对话',
+  // Phase 2 Step 3b: inline notice that replaces the silent PATCH
+  // when the session's saved provider isn't reachable under the
+  // current execution engine. User picks a new one in the composer
+  // below; no auto-rewrite of session state.
+  'chat.sessionProviderIncompatible.message': '本会话保存的服务商在当前执行引擎下不可用，请在下方挑一个其它服务商，或在 Settings 切换执行引擎。',
+  // Phase 2 Step 4b: 409 INVALID_SESSION_PROVIDER 横幅 —— 会话指向的
+  // 服务商在你刚按发送之前已经被删除了，后端拒绝继续。给用户解释
+  // 「保存的服务商不在了，请在下方挑一个新的」，picker 已经只显示
+  // 真实存在的 provider，所以挑完再发就会走新 provider。
+  'chat.invalidSessionProvider.message': '本会话保存的服务商「{providerId}」已经被删除，无法继续发送。请在下方挑选其它服务商或返回设置重新连接。',
 
   // ── Settings: General ───────────────────────────────────────
   'settings.title': '设置',
   'settings.description': '管理 CodePilot 和 Claude Code 设置',
+  'settings.overview': '概览',
+  'settings.overviewDesc': '一眼看清当前执行引擎 / 服务商 / 模型 / 助理工作空间 / 系统状态，每块只给一个主入口跳转',
   'settings.general': '通用',
+  'settings.about': '关于',
+  'settings.aboutDesc': 'CodePilot 版本、平台信息、账户、诊断 / 维护、文档与反馈',
   'settings.providers': '服务商',
+  'settings.models': '模型',
+  'settings.runtime': '执行引擎',
   'settings.claudeCli': 'Claude Code',
   'settings.codepilot': 'CodePilot',
   'settings.version': '版本 {version}',
@@ -130,6 +149,8 @@ const zh: Record<TranslationKey, string> = {
   'settings.language': '语言',
   'settings.languageDesc': '选择界面显示语言',
   'settings.usage': '用量统计',
+  'settings.health': '健康检查',
+  'settings.healthDesc': '日常健康概览 — 一眼看清服务商连接、执行引擎、默认模型、模型暴露、工作空间状态',
 
   // ── Settings: Appearance ──────────────────────────────────────
   'settings.appearance': '外观',
@@ -141,6 +162,26 @@ const zh: Record<TranslationKey, string> = {
   'settings.modeLight': '浅色',
   'settings.modeDark': '深色',
   'settings.modeSystem': '跟随系统',
+
+  // ── Settings: Overview (dashboard) ───────────────────────────
+  'overview.gettingStarted': '起步指南',
+  'overview.completed': '{done}/{total} 已完成',
+  'overview.checklistConnectProvider': '连接服务商',
+  'overview.checklistConnectProviderDesc': '至少添加一个 provider，picker 才有可对话的对象。',
+  'overview.checklistEnableModels': '启用模型',
+  'overview.checklistEnableModelsDesc': '在模型页里把你想用的那些打开。',
+  'overview.checklistVerifyRuntime': '验证执行引擎',
+  'overview.checklistVerifyRuntimeDesc': '当前运行环境处于降级路径，请检查并恢复。',
+  'overview.checklistConfigureWorkspace': '配置助理工作空间',
+  'overview.checklistConfigureWorkspaceDesc': '为助理设定一个本地工作目录。',
+  'overview.actionGoConfigure': '去配置',
+  'overview.heatmapTitle': 'Token 用量活跃度',
+  'overview.heatmapTotal': 'Token 总用量',
+  'overview.heatmapMostActive': '最活跃的一天',
+  'overview.heatmapCurrentStreak': '当前连续天数',
+  'overview.heatmapLongestStreak': '最长连续天数',
+  'overview.heatmapEmpty': '尚无用量数据 — 开始一段对话即可看到。',
+  'overview.heatmapViewDetails': '查看完整用量统计',
 
   // ── Settings: Usage Stats ───────────────────────────────────
   'usage.totalTokens': '总 Token',
@@ -173,9 +214,9 @@ const zh: Record<TranslationKey, string> = {
   'cli.cliCardDesc': '',
   'cli.enableClaude': '启用 Claude Code',
   'cli.enableClaudeDesc': '关闭时使用原生 AI SDK 作为后端，开启后使用 Claude Code 作为后端。',
-  'cli.agentRuntime': 'Agent 运行时',
+  'cli.agentRuntime': '执行引擎',
   'cli.agentRuntimeDesc': '选择 CodePilot 执行 Agent 任务的方式',
-  'cli.runtimeNative': '原生 Runtime (AI SDK)',
+  'cli.runtimeNative': 'CodePilot 引擎 (AI SDK)',
   'cli.runtimeSdk': 'Claude Code SDK',
   'cli.cliStatus': '状态',
   'cli.update': '更新',
@@ -231,6 +272,36 @@ const zh: Record<TranslationKey, string> = {
   'provider.notesPlaceholder': '关于此服务商的可选备注...',
   'provider.saving': '保存中...',
   'provider.update': '更新',
+  // 接入方式分类（Step 4 文案收口，2026-05-06）：替代原本直接吐 authStyle 工程值的"Auth Token / API Key"
+  'provider.accessType.subscriptionToken': '套餐 Token',
+  'provider.accessType.apiKey': 'API Key',
+  'provider.accessType.oauth': '授权登录',
+  'provider.accessType.local': '本地服务',
+  'provider.accessType.gateway': '中转网关',
+  'provider.accessType.cloudCredentials': '云账号凭证',
+  // 服务商表单 / 预设连接弹窗的中文校验和错误文案
+  'provider.form.errorNameRequired': '名称不能为空',
+  'provider.form.errorJsonInvalid': '「{field}」必须是合法的 JSON',
+  'provider.form.errorSaveFailed': '保存服务商失败',
+  'provider.form.errorUpdateFailed': '更新服务商失败',
+  'provider.form.errorAddFailed': '添加服务商失败',
+  'provider.form.errorTestEndpoint': '连接测试接口失败',
+  'provider.form.errorTestEndpointHint': '请检查应用是否正在运行',
+  'provider.form.editDesc': '修改服务商连接信息。',
+  'provider.form.addDesc': '为 Claude Code 配置一个新的服务商。',
+  // 高级字段标签
+  'provider.form.headersJson': '自定义请求头（JSON）',
+  'provider.form.envOverridesJson': '环境变量覆盖（JSON）',
+  'provider.form.roleModelsJson': '角色映射（JSON）',
+  // 卡片接入地址脱敏文案：用户曾把 API Key 误粘进 base_url，截图/日志可能泄露
+  'provider.endpoint.suspicious': '自定义地址异常（…{tail}）',
+  'provider.endpoint.suspiciousTooltip': '该字段值不像合法 URL，已遮蔽显示。请在编辑里检查接入地址是否被填成了密钥。',
+  // 已存密钥相关文案
+  'provider.form.keepKeyPlaceholder': '留空则沿用已保存的密钥',
+  'provider.form.clearKeyPlaceholder': '保存后将清空已存密钥',
+  'provider.form.clearKeyAction': '清除已存密钥',
+  'provider.form.clearKeyPending': '保存后将清空已存密钥。',
+  'provider.form.undo': '撤销',
   'provider.envDetected': '从环境变量检测到',
   'provider.default': '默认',
   'provider.setDefault': '设为默认',
@@ -247,6 +318,38 @@ const zh: Record<TranslationKey, string> = {
   'provider.openaiOAuthHint': '使用 ChatGPT Plus/Pro 订阅登录，无需 API Key 即可使用 OpenAI 模型。',
   'provider.addProviderSection': '添加提供商',
   'provider.addProviderDesc': '选择要连接的提供商。大多数预设只需填写 API 密钥。',
+  'provider.connectedServices': '已连接服务',
+  'provider.llmServices': 'LLM 服务商',
+  'provider.imageServices': '图片服务商',
+  'provider.categoryOAuth': '授权登录',
+  'provider.categoryCodePlan': 'Code Plan',
+  'provider.categoryThirdParty': '第三方接入',
+  'provider.imageGeneration': '图片生成',
+  'provider.activeForImage': '当前使用',
+  'provider.useForImage': '设为默认',
+  'provider.modelCount': '{n} 个模型',
+  'provider.modelCountUnknown': '未检测模型',
+  'provider.addService': '添加服务',
+  'provider.addServiceDesc': '通过订阅 / API Key / 第三方中转 / 本地模型 接入新服务',
+  'provider.emptyTitle': '尚未连接任何服务',
+  'provider.emptyDesc': '添加你的第一个 AI 服务，CodePilot 会自动展示它支持的模型与能力。',
+  'provider.refreshModels': '刷新模型',
+  'provider.syncToClaudeCode': '同步到 Claude Code',
+
+  // ── Auto-discover toasts (fired after Add Service success) ──
+  'provider.autoDiscover.loading': '正在发现 {name} 的模型...',
+  'provider.autoDiscover.success': '{name}：发现 {total} 个模型，启用 {enabled} 个，隐藏 {hidden} 个',
+  'provider.autoDiscover.noModels': '{name}：连接成功但上游未返回模型列表',
+  'provider.autoDiscover.unsupported': '{name}：该服务商不支持模型发现，请到 Models 页手动添加',
+  'provider.autoDiscover.probeFailed': '{name}：无法连接上游获取模型列表',
+  'provider.autoDiscover.applyFailed': '{name}：模型已发现但保存失败，请到卡片点击刷新重试',
+  'provider.autoDiscover.upToDate': '{name}：列表已是最新（{total} 个），刷新时间已更新',
+
+  // ── Models page batch refresh (page-top "刷新全部") ──────────
+  'models.refreshAll.progress': '正在刷新 {done}/{total} · {name}',
+  'models.refreshAll.summaryOk': '{ok} 个成功 · 启用 {enabled} · 隐藏 {hidden}',
+  'models.refreshAll.summaryNoChange': '{n} 个无更新',
+  'models.refreshAll.summaryFailed': '{n} 个失败：{names}',
 
   // ── Right panel / Files ─────────────────────────────────────
   'panel.files': '文件',
@@ -266,7 +369,6 @@ const zh: Record<TranslationKey, string> = {
   'filePreview.linesApprox': '约 {count} 行',
   'filePreview.copyPath': '复制路径',
   'filePreview.failedToLoad': '加载文件失败',
-  'filePreview.truncated': '已显示前 {lines} 行（{bytesReadMb} MB / 共 {bytesTotalMb} MB）',
   'filePreview.tooLarge': '文件过大，无法预览（上限 10 MB）',
   'filePreview.binaryNotPreviewable': '二进制文件，无法预览',
   'filePreview.notFound': '文件不存在',
@@ -283,6 +385,40 @@ const zh: Record<TranslationKey, string> = {
   'filePreview.copyContent': '复制内容',
   'filePreview.exportLongScreenshot': '导出长图',
   'filePreview.closePreview': '关闭预览',
+  // ── Phase 4 Phase 1: 外部 / 只读授权 + 磁盘冲突 ───────────────
+  'filePreview.external.chip': '外部 · 只读',
+  'filePreview.external.chipTooltip': '该文件不在当前工作区内，仅以只读模式预览。',
+  'filePreview.external.confirm.title': 'AI 引用了工作区外的文件',
+  'filePreview.external.confirm.body': '确认打开后将以只读模式预览。文件不会自动加载，确认前 CodePilot 不会读取磁盘内容。',
+  'filePreview.external.confirm.confirm': '确认打开',
+  'filePreview.external.confirm.cancel': '取消',
+  'filePreview.conflict.title': '磁盘已更新',
+  'filePreview.conflict.body': '其他写入（AI 或外部程序）刚刚修改了这个文件，你的编辑还未保存。',
+  'filePreview.conflict.reload': '重新载入',
+  'filePreview.conflict.keep': '保留我的编辑',
+  // ── Phase 4 Phase 1.5: HTML 交互沙箱开关 ───────────────────────
+  'filePreview.interactive.enable': '启用脚本',
+  'filePreview.interactive.disable': '已启用脚本',
+  'filePreview.interactive.enableTooltip': '允许沙箱内脚本执行；同时为防外联，会停用所有 https 外部资源（CDN 图片 / 字体 / 远程 CSS）',
+  'filePreview.interactive.disableTooltip': '点击关闭脚本；切换文件会自动重置',
+  'filePreview.interactive.modeStatic': '静态',
+  'filePreview.interactive.modeInteractive': '交互',
+  'filePreview.interactive.modeTooltip': '静态模式只加载图片 / CSS / 字体（含 https 远端），脚本不执行；交互模式允许沙箱内脚本，但同时关闭所有 https 外部资源，避免脚本通过 <img>/<link>/<script> 的 URL 把内容外传',
+  // ── Phase 4 Markdown 数据层 + Artifact 完成批次 ──────────────
+  'filePreview.addToChat.action': '加入对话',
+  'filePreview.addToChat.charsLabel': '字符已选中',
+  'filePreview.presentation.generate': '生成展示版',
+  'filePreview.presentation.refresh': '从源 Markdown 重新生成',
+  'filePreview.sourceBacklink.label': '源',
+  'presentation.pickerTitle': '选一个展示样式',
+  'presentation.cancel': '取消',
+  'presentation.generate': '生成',
+  // ── Phase 4 UX: in-place presentation Select + quiet refresh ─
+  'filePreview.presentation.styleLabel': '样式',
+  'filePreview.quietRefresh.updated': '已更新',
+  'filePreview.external.confirm.openReadOnly': '只读打开',
+  'filePreview.external.confirm.permission': '只读 · 不会写入磁盘',
+  'filePreview.external.confirm.source': '来源：AI 提到的文件',
   'diffSummary.openPreview': '预览',
   'diffSummary.exportLongShot': '导出长图',
 
@@ -477,12 +613,18 @@ const zh: Record<TranslationKey, string> = {
   // ── Common ──────────────────────────────────────────────────
   'common.cancel': '取消',
   'common.confirm': '确定',
+  'common.back': '返回',
   'common.save': '保存',
+  'common.saved': '已保存',
+  'common.saving': '保存中…',
   'common.delete': '删除',
   'common.loading': '加载中...',
   'common.close': '关闭',
   'common.enabled': '已启用',
   'common.disabled': '已禁用',
+  // v11 — clipboard 反馈，由 `lib/clipboard.ts:copyWithToast` 调用
+  'common.copySuccess': '已复制到剪贴板',
+  'common.copyFailed': '复制失败，可以手动复制：',
 
   // ── Prompt dialog (replacement for window.prompt — not supported in Electron) ──
   'prompt.rename.title': '重命名对话',
@@ -960,6 +1102,35 @@ const zh: Record<TranslationKey, string> = {
 
   // ── Assistant Workspace ──────────────────────────────
   'settings.assistant': '助理',
+  'settings.tasks': '定时任务',
+  'settings.tasksDesc': '全局定时任务中心：提醒、AI 任务、来源（用户 / 助理 / 自动化）的统一管理',
+  'tasks.create': '新建任务',
+  'tasks.creating': '创建中…',
+  'tasks.cancel': '取消',
+  'tasks.empty': '当前没有定时任务。',
+  'tasks.createHint': '点击右上角"新建任务"会进入聊天，让 AI 帮你创建。',
+  'tasks.deliveryLog': '执行记录与通知通道',
+  'tasks.kindReminder': '提醒',
+  'tasks.kindReminderDesc': '到点弹通知，prompt 文本就是通知正文，不调用 AI 模型',
+  'tasks.kindAiTask': 'AI 任务',
+  'tasks.kindAiTaskDesc': '到点把 prompt 交给已配置的服务商，AI 回复作为通知正文',
+  'tasks.schedule': '排期',
+  'tasks.nextRun': '下次执行',
+  'tasks.lastRun': '上次执行',
+  'tasks.runNow': '立即运行',
+  'tasks.pause': '暂停',
+  'tasks.resume': '恢复',
+  'tasks.delete': '删除',
+  'tasks.fieldKind': '类型',
+  'tasks.fieldName': '任务名',
+  'tasks.fieldPrompt': '内容',
+  'tasks.fieldScheduleType': '排期方式',
+  'tasks.scheduleOnce': '一次性',
+  'tasks.scheduleInterval': '固定间隔',
+  'tasks.fieldOnceMinutes': '多少分钟后触发',
+  'tasks.fieldIntervalValue': '间隔（如 30m / 2h / 1d）',
+  'tasks.fieldPriority': '优先级',
+  'tasks.createDesc': '创建一个定时任务。提醒类直接弹通知；AI 任务类调用配置的模型生成回复。',
   'assistant.workspaceTitle': '助理工作区',
   'assistant.workspaceDesc': '配置一个目录用于持久化 AI 人格和记忆',
   'assistant.workspacePath': '工作区路径',
@@ -980,7 +1151,14 @@ const zh: Record<TranslationKey, string> = {
   'assistant.startOnboarding': '开始引导',
   'assistant.redoOnboarding': '重新引导',
   'assistant.heartbeatTitle': '心跳检测',
-  'assistant.heartbeatDesc': '启用后，助理每次访问时检查 HEARTBEAT.md。如果没有需要报告的内容，它将保持静默（HEARTBEAT_OK）。如果有需要关注的事项，它会主动告知。',
+  // v10 → v13 — 文案再诚实化。
+  // v10 时心跳确实只在打开助理工作区新对话时触发（autoTrigger 路径），
+  // 文案就声明"不是后台定时任务"。
+  // Phase 3 Step 4 之后心跳改成由后台 scheduled_tasks 调度，前台
+  // useAssistantTrigger 不再启动检查。沿用 v10 文案会让用户以为
+  // 旧的"打开页面卡心跳"行为还在。这里改回口径：按用户配置的间隔
+  // 由后台自动检查 HEARTBEAT.md，无事静默，有事写入助理会话并通知。
+  'assistant.heartbeatDesc': '按你设定的频率由后台自动检查 HEARTBEAT.md。无事时静默（HEARTBEAT_OK）；有需要关注的事项才写入助理会话并发送通知。',
   'assistant.lastHeartbeatLabel': '上次心跳',
   'assistant.heartbeatOk': '一切正常',
   'assistant.heartbeatNeeded': '可执行心跳',
@@ -1065,9 +1243,9 @@ const zh: Record<TranslationKey, string> = {
   'assistant.panel.settings': '设置',
   'assistant.panel.assistantSettings': '助理设置',
   'assistant.panel.editHeartbeat': '编辑 HEARTBEAT.md',
-  // ── Scheduled Tasks ──────────────────────────────────────────────
+  // ── Scheduled Tasks (旧 Phase 2 toast / 状态文案；新 Settings → Tasks
+  // 页文案已经在前面定义并覆盖 `tasks.empty`)
   'tasks.title': '定时任务',
-  'tasks.empty': '没有定时任务。',
   'tasks.created': '任务已创建',
   'tasks.cancelled': '任务已取消',
   'tasks.completed': '任务已完成',
@@ -1087,13 +1265,32 @@ const zh: Record<TranslationKey, string> = {
   'assistant.configured': '已设置',
   'assistant.reconfigure': '重新设置',
   'assistant.personality': '助理人格',
-  'assistant.scheduledTasks': '定时任务',
-  'assistant.noTasks': '没有定时任务。可以让助理创建。',
+  // v12 — `assistant.scheduledTasks` + tasksLink* 三 key 全部退役：
+  // Assistant 页不再展示定时任务入口（v9 删了内联列表，v12 把 link
+  // 卡也删了），全局任务管理在 Settings → Tasks。这些 key 只剩这一处
+  // 引用过；安全删除。
   'assistant.editHeartbeatHint': '编辑工作区中的 HEARTBEAT.md 来自定义检查内容',
+  // Phase 3 Step 4 — heartbeat interval picker (Settings → Assistant)
+  'assistant.heartbeatInterval': '心跳频率',
+  'assistant.heartbeatInterval1h': '每小时',
+  'assistant.heartbeatInterval6h': '每 6 小时',
+  'assistant.heartbeatInterval12h': '每 12 小时',
+  'assistant.heartbeatInterval24h': '每天一次',
+  // Phase 3 Step 4 — TaskRunMarker labels rendered in chat session
+  'chat.taskRunMarker.taskLabel': '定时任务',
+  'chat.taskRunMarker.heartbeatLabel': '心跳触发',
+  'chat.taskRunMarker.running': '执行中',
+  'chat.taskRunMarker.succeeded': '已完成',
+  'chat.taskRunMarker.failed': '失败',
+  'chat.taskRunMarker.waitingForPermission': '等待权限',
+  'chat.taskRunMarker.cancelled': '已放弃',
+  // Phase 3 Step 4b — TaskWaitingForPermissionPanel
+  'chat.taskWaiting.title': '后台任务暂停：需要权限',
+  'chat.taskWaiting.body': '后台执行时遇到需要权限的工具调用，已停在此处保留上下文。本版本不支持从断点继续——可以重跑（创建一条新的执行记录）或放弃。',
+  'chat.taskWaiting.rerun': '重跑此任务',
+  'chat.taskWaiting.abandon': '放弃',
   'assistant.advanced': '高级选项',
   'assistant.editSoulHint': '编辑工作区中的 soul.md 来自定义人格',
-  'assistant.taskDelete': '删除',
-  'assistant.taskNextRun': '下次执行',
 
   // ── Composer ──────────────────────────────────────────────
   'composer.slashCommand': '命令',
@@ -1454,6 +1651,27 @@ const zh: Record<TranslationKey, string> = {
   'chat.empty.assistant.promo': '设置你的个人助理 — 记住你的偏好、管理日程、辅助创作',
   'chat.empty.explanation': '项目对话在代码目录中工作。个人助理跨所有任务工作，无需特定项目。',
 
+  // 新对话欢迎语 — 由 NewChatWelcome.tsx 拼成「{时段问候}{分隔}{问句}」。
+  // 问候随时段变化；问句池随上下文切换（助理 > 具名项目 > 通用）。问句不带
+  // 时间词（「今天」等由问候承载），避免和问候重复。仅 NewChatWelcome.tsx 使用。
+  'chat.newChat.greet.morning': '早上好',
+  'chat.newChat.greet.afternoon': '下午好',
+  'chat.newChat.greet.evening': '晚上好',
+  'chat.newChat.greet.night': '夜深了',
+  'chat.newChat.greet.sep': '，',
+  'chat.newChat.welcome.1': '想做点什么？',
+  'chat.newChat.welcome.2': '想搭点什么？',
+  'chat.newChat.welcome.3': '在琢磨什么？',
+  'chat.newChat.welcome.4': '从哪儿开始？',
+  'chat.newChat.welcome.5': '有什么要深挖的？',
+  'chat.newChat.welcome.6': '需要我做点什么？',
+  'chat.newChat.welcome.project.1': '继续推进 {project}？',
+  'chat.newChat.welcome.project.2': '{project} 接下来做点什么？',
+  'chat.newChat.welcome.project.3': '接着搞 {project} 吧。',
+  'chat.newChat.welcome.assistant.1': '今天想聊点什么？',
+  'chat.newChat.welcome.assistant.2': '需要帮你梳理点什么？',
+  'chat.newChat.welcome.assistant.3': '想从哪儿聊起？',
+
   // Platform
   'platform.openInFileManager': '双击在{fileManager}中打开',
 
@@ -1463,6 +1681,9 @@ const zh: Record<TranslationKey, string> = {
   'error.pushFailed': '推送失败',
   'error.directoryInvalid': '目录已不存在',
   'error.providerUnavailable': '无可用的 API 服务商',
+  'error.invalidDefault': '默认模型在当前执行引擎下不可用',
+  'error.invalidDefaultDesc': '你固定的默认模型（{pinned}）在当前执行引擎下无法执行。可切换执行引擎 / 启用该模型 / 选择其他默认 / 改回 Auto。',
+  'error.invalidDefaultGoRuntime': '前往执行引擎',
   'error.retry': '重试',
   'error.selectDirectory': '选择目录',
   'error.openSetup': '打开设置',
@@ -1548,6 +1769,313 @@ const zh: Record<TranslationKey, string> = {
   'buddy.namePlaceholder': '给你的伙伴起个名字...',
   'buddy.nameHint': '这将是你的伙伴的名字',
   'buddy.reset': '重置伙伴',
+
+  // ─── Recovery block (i18n keys re-added after accidental git checkout) ───
+  // 与 en.ts 保持同序；恢复时未主动复访官方文案，按 key 名 + 组件上下文重写。
+
+  // about.* — AboutSection
+  'about.platform.title': '平台信息',
+  'about.platform.desc': '反馈问题时可复制的版本与运行环境信息',
+  'about.platform.os': '操作系统',
+  'about.platform.channel': '发布渠道',
+  'about.platform.appVersion': '应用版本',
+  'about.support.title': '支持与日志',
+  'about.support.desc': '打开日志文件夹、导出诊断包，或重新进入安装向导',
+  'about.support.openLogs': '打开日志文件夹',
+  'about.support.openLogsFailed': '无法打开日志文件夹',
+  'about.support.openLogsFailedWith': '打开日志文件夹失败：{error}',
+  'about.support.exportDiagnostics': '导出诊断包',
+  'about.support.exportFailed': '诊断包导出失败',
+  'about.support.exportFailedWithLogFolder': '诊断包导出失败，可改用「打开日志文件夹」',
+  'about.support.runSetupWizard': '重新进入安装向导',
+  'about.docs.title': '帮助与链接',
+  'about.docs.desc': 'GitHub 仓库、反馈入口与发布说明',
+  'about.docs.submitFeedback': '提交反馈',
+  'about.docs.releaseNotes': '发布说明',
+
+  // bridge.*
+  'bridge.enabledNotRunningHint': '桥接已启用但服务尚未运行，启动后才能让外部渠道访问 Claude。',
+
+  // gallery.* — GalleryGrid a11y
+  'gallery.openItemAria': '打开作品：{prompt}',
+  'gallery.playVideoAria': '播放视频：{prompt}',
+
+  // mcp.builtin.trigger.* — BuiltInMcpSection pill labels
+  'mcp.builtin.trigger.always': '始终启用',
+  'mcp.builtin.trigger.workspace': '工作目录触发',
+  'mcp.builtin.trigger.keyword': '关键词触发',
+
+  // messageInput.* — ModeIndicator dropdown descriptions
+  'messageInput.modeCodeDesc': '调用工具、修改文件，并在当前工作区直接执行任务。',
+  'messageInput.modePlanDesc': '讨论与规划，不修改文件、不执行工具。',
+
+  // nav.*
+  'nav.plugins': '插件',
+
+  // common.*
+  'common.edit': '编辑',
+
+  // plugins.* — /plugins 页 tab + 搜索 placeholder
+  'plugins.tab.skills': '技能',
+  'plugins.tab.mcp': 'MCP',
+  'plugins.tab.cli': '命令行工具',
+  'plugins.search.placeholder.skills': '搜索技能…',
+  'plugins.search.placeholder.mcp': '搜索 MCP 服务…',
+  'plugins.search.placeholder.cli': '搜索命令行工具…',
+
+  // skills.source.* — 来源标签 / 分组
+  'skills.source.global': '全局',
+  'skills.source.project': '项目',
+  'skills.source.installed': '市场安装',
+  'skills.source.plugin': '插件提供',
+  'skills.source.sdk': 'SDK 内置',
+
+  // skills.readOnlyReason.* — 只读原因
+  'skills.readOnlyReason.sdk': '只读 — 由 SDK 运行时提供',
+  'skills.readOnlyReason.fileNotWritable': '只读 — 文件不可写',
+  'skills.readOnlyReason.outOfCwd': '只读 — 不在当前工作目录内',
+
+  // usage.*
+  'usage.costChart': '每日费用',
+
+  // provider.add.* — Models 页"添加模型"对话框（套餐型 vs 通用）
+  // 标题统一成"为 X 添加模型"——和按钮文案对齐，不再用 SKU 这种工程黑话；
+  // 套餐型 vs 通用的差别完全靠下方描述里的语义解释承担。
+  'provider.add.titlePlan': '为「{name}」添加模型',
+  'provider.add.titleManual': '为「{name}」添加模型',
+  'provider.add.descriptionPlan': '套餐型服务商，模型由套餐白名单定义。如需补充你在控制台里能看到、但这里还没有的模型，可在此手动添加；标记为「手动」，刷新不会覆盖。',
+  'provider.add.descriptionManual': '请输入上游模型 ID，显示名可选，留空则与 ID 相同。手动添加来源标为「手动」，不会被刷新覆盖。',
+
+  // provider.legacy.* — 「已不在当前推荐目录」徽章 + tooltip
+  'provider.legacy.notInCatalogBadge': '已不在当前推荐目录',
+  'provider.legacy.notInCatalogTooltip': '此模型不在当前推荐目录中，保留是为了不影响你已有的配置。如不再使用可手动隐藏此行。',
+
+  // provider.autoDiscover.* — ProviderManager 添加服务成功 toast
+  'provider.autoDiscover.catalogOnly': '已添加 {name}：模型来自套餐白名单。需要更多 SKU 可到 Models 页用「添加模型」补充',
+  'provider.autoDiscover.openrouterAddOnly': '已添加 {name}：默认包含 sonnet/opus/haiku 别名。打开 Models 页用「添加模型」搜索更多',
+
+  // provider.refresh.* — Models 页单卡刷新按钮 tooltip
+  'provider.refresh.catalogOnlyTooltip': '套餐型服务，模型由套餐白名单定义；如需补充自定义 SKU 请用下方「添加模型」',
+
+  // provider.validate.openrouter.* — OpenRouter validate-models toast + per-row 徽章
+  'provider.validate.openrouter.allOk': '已校验 {verified} 个模型，全部仍可用',
+  'provider.validate.openrouter.someMissing': '已校验 {verified} 个，{missing} 个不再上游可用 — 已在卡片上标注',
+  'provider.validate.openrouter.error': '校验失败：{error}',
+  'provider.validate.openrouter.missingBadge': '已不在上游',
+  'provider.validate.openrouter.missingTooltip': 'OpenRouter 上次同步未返回此模型 — 你之前已添加，所以保留；如果确认不再需要可隐藏',
+
+  // provider.search.openrouter.* — OpenRouterSearchDialog
+  'provider.search.openrouter.dialogTitle': '从 OpenRouter 搜索模型',
+  'provider.search.dialogDescription': '从该服务商当前公布的模型列表里选择并添加。如果没找到想要的，可以稍后用「重新加载」更新列表。',
+  'provider.search.openrouter.placeholder': '搜索模型 ID 或名称…',
+  'provider.search.openrouter.fetchError': '获取候选模型失败：{error}',
+  'provider.search.openrouter.noResults': '没有匹配的模型',
+  'provider.search.openrouter.matchCount': '匹配 {count} / {total}',
+  'provider.search.openrouter.totalCount': '共 {total} 个上游模型',
+  'provider.search.openrouter.contextWindow': '{ctx} 上下文',
+  'provider.search.openrouter.pricing': '${prompt} / ${completion} / 1M tokens',
+  'provider.search.openrouter.alreadyAdded': '已添加',
+  'provider.search.openrouter.adding': '正在添加…',
+  'provider.search.openrouter.addButton': '添加',
+  'provider.search.openrouter.addError': '添加失败：{error}',
+  'provider.search.openrouter.manualFallback': '或手动输入 model ID',
+  'provider.search.openrouter.reload': '重新加载',
+  'provider.search.openrouter.reloading': '加载中…',
+  'provider.search.openrouter.fetchErrorFallback': '加载失败时仍可手动输入 model ID 添加。',
+  'provider.search.openrouter.fallbackToManual': '手动输入模型 ID',
+
+  // provider.cleanup.openrouter.* — OpenRouterCleanupDialog + Models 页入口链接
+  'provider.cleanup.openrouter.entryLink': '整理旧版本模型目录',
+  'provider.cleanup.openrouter.entryLinkTooltip': '只处理旧版本自动导入但你还没启用 / 隐藏过的模型；手动添加、编辑、隐藏过的模型都不会动。点击后会先预览要处理的条目，再确认。',
+  'provider.cleanup.openrouter.dialogTitle': '整理 OpenRouter 早期导入的目录',
+  'provider.cleanup.openrouter.description': '老版本会自动把 OpenRouter 上游 300+ 个模型全部写进列表。下面这些行是当时自动导入、还没被你启用/隐藏过的；点「全部隐藏」会把它们设置为隐藏（仍在 DB 里，可在「全部 / 已隐藏」筛选下找到）。manual_enabled / 已编辑的行不会被处理。',
+  'provider.cleanup.openrouter.fetchError': '获取候选行失败：{error}',
+  'provider.cleanup.openrouter.empty': '没有需要整理的行（你已经手动启用 / 隐藏过所有自动导入的模型）',
+  'provider.cleanup.openrouter.previewCount': '将隐藏 {count} 个模型',
+  'provider.cleanup.openrouter.cancel': '取消',
+  'provider.cleanup.openrouter.confirm': '全部隐藏',
+  'provider.cleanup.openrouter.confirming': '正在隐藏…',
+  'provider.cleanup.openrouter.success': '已隐藏 {count} 个早期导入的模型',
+  'provider.cleanup.openrouter.error': '隐藏失败：{error}',
+
+  // models.refreshAll.* — 这里只放新增 key；progress / summaryOk / summaryNoChange / summaryFailed 已在 314 行附近存在
+  'models.refreshAll.summaryValidated': '{providers} 个 OpenRouter 已校验 · 共 {verified} 个模型仍在上游',
+  'models.refreshAll.summaryValidatedSomeMissing': '{providers} 个 OpenRouter 已校验 · {verified} 个仍在上游、{missing} 个不再可用（详见卡片标记）',
+  'models.refreshAll.summarySkippedPlan': '已跳过 {n} 个套餐型服务商（白名单由套餐定义，无需刷新）',
+
+  // ─── Recovery block 2（Chat / Sidebar / Plugins 合并后仍缺失的 key）───
+  // chat list / top bar
+  'chatList.expandSidebar': '展开侧栏',
+  'chatList.collapseSidebar': '收起侧栏',
+  'chatList.moreActions': '更多会话操作',
+
+  // composer / message input
+  'composer.modelLoading': '模型加载中…',
+  'composer.recentModels': '最近使用',
+  'messageInput.placeholderLoading': '正在准备运行环境…',
+  'messageInput.placeholderWithBadges': '补充细节（可选），按 Enter 发送…',
+  'messageInput.placeholderCli': '描述你想用这个工具完成什么…',
+  'messageInput.placeholderDefault': '让 CodePilot 做什么…',
+  'messageInput.actionMenuTooltip': '添加上下文或命令',
+  'messageInput.actionAddContext': '添加文件上下文',
+  'messageInput.actionInsertCommand': '插入命令',
+  'messageInput.actionCallCli': '调用 CLI 工具',
+  'messageInput.removeChipAriaLabel': '移除 {name}',
+  'messageInput.submitAriaLabel': '发送消息',
+  'permission.defaultDesc': '按确认规则执行',
+  'permission.fullAccessDesc': '减少确认，仅用于信任项目',
+  // Phase 2 Step 4c — composer runtime selector (between mode and permission).
+  'runtimeSelector.triggerAria': '切换本会话执行引擎',
+  'runtimeSelector.claudeCode': 'Claude Code',
+  'runtimeSelector.claudeCodeDesc': 'Anthropic 官方 · 完整工具',
+  'runtimeSelector.codepilotRuntime': 'CodePilot',
+  'runtimeSelector.codepilotRuntimeDesc': '兼容 OpenAI 服务商',
+  'runtimeSelector.codexRuntime': 'Codex',
+  'runtimeSelector.codexRuntimeDesc': 'Codex 账号 · 原生模型',
+  'runtimeSelector.pinnedBadge': '本会话已切换',
+  // Step 4c R6 — transcript marker when user flips RuntimeSelector mid-chat.
+  'runtimeSwitchMarker.changedFromTo': '已切换执行引擎：{from} → {to}',
+  'runtimeSwitchMarker.switchedTo': '已切换到 {to}',
+  'runtimeSwitchMarker.followGlobal': '跟随全局',
+
+  // context usage / run status
+  'context.unknownCapacity': '容量未知',
+  'context.unknownCapacityHint': '当前模型未提供上下文长度，仅统计已使用 tokens。',
+  'runStatus.loading': '运行状态加载中…',
+  'runStatus.notConfigured': '未配置',
+  'runStatus.runtimeFallback': '已降级',
+  'runStatus.modePinnedInvalid': '固定不可用',
+  'runStatus.modePinned': '已固定',
+  'runStatus.contextPrefix': '上下文',
+  'runStatus.pendingSuffix': '待加',
+  'runStatus.fixIssue': '前往修复',
+  'runStatus.triggerLabel': '查看本次运行状态',
+  'runStatus.title': '本次运行',
+  'runStatus.settings': '设置',
+  'runStatus.switch': '切换',
+  'runStatus.modeAuto': '自动',
+  'runStatus.modify': '修改',
+  'runStatus.permissionFullAccess': '完全访问',
+  'runStatus.permissionDefault': '默认权限',
+  'runStatus.runtime': '执行引擎',
+  'runStatus.model': '模型',
+  'runStatus.defaultMode': '默认',
+  'runStatus.permission': '权限',
+  'runStatus.context': '上下文',
+  'runStatus.contextCapacityUnknown': '容量未知',
+  'runStatus.contextUsed': '已用',
+  'runStatus.contextInput': '输入',
+  'runStatus.contextOutput': '输出',
+  'runStatus.contextCache': '缓存',
+  // Phase 6 — 10-part context breakdown (rendered by ContextBreakdownList).
+  // Mirrors ContextBreakdownKind enum, mapped via LABEL_KEY in the component.
+  'runStatus.breakdownSystemPrompt': '系统提示',
+  'runStatus.breakdownTools': '工具',
+  'runStatus.breakdownRules': '规则',
+  'runStatus.breakdownSkills': 'Skills',
+  'runStatus.breakdownMcp': 'MCP',
+  'runStatus.breakdownMemory': 'Memory',
+  'runStatus.breakdownFilesAttachments': '文件与附件',
+  'runStatus.breakdownConversation': '对话历史',
+  'runStatus.breakdownPendingNextTurn': '本次待加入',
+  'runStatus.breakdownCacheOrPrevious': '缓存 / 上轮',
+  'runStatus.issuesHeader': '需要处理',
+
+  // run checkpoint
+  'runCheckpoint.noProvider.title': '没有可用服务商',
+  'runCheckpoint.noProvider.description': '发送前需要先添加或启用一个可用服务商。',
+  'runCheckpoint.noProvider.action': '前往服务商',
+  'runCheckpoint.pinnedInvalid.title': '默认模型在当前执行环境下不可用',
+  'runCheckpoint.pinnedInvalid.description': '当前会话已自动切换到可用模型；如需固定一个新的默认模型，请到设置 → 模型。',
+  'runCheckpoint.pinnedInvalid.action': '修改默认模型',
+  'runCheckpoint.runtimeFallback.title': '执行引擎已降级',
+  'runCheckpoint.runtimeFallback.description': '当前选择的执行引擎不可用，本次会改用可用的执行方式。',
+  'runCheckpoint.runtimeFallback.action': '查看执行引擎',
+  'runCheckpoint.contextCost.title': '这次会加入较多上下文',
+  'runCheckpoint.contextCost.description': '本次附加的上下文较多，可能明显影响这次运行。发送前请确认。',
+  'runCheckpoint.contextCost.action': '已了解，继续发送',
+  'runCheckpoint.permissionElevation.title': '当前是完全访问权限',
+  'runCheckpoint.permissionElevation.description': '这条消息会在更少确认的权限下运行。仅建议在信任项目中使用。',
+  'runCheckpoint.permissionElevation.action': '已了解，继续发送',
+
+  // task checkpoint
+  'taskCheckpoint.summary': '{completed}/{total} 个任务已完成',
+  'taskCheckpoint.expand': '展开任务清单',
+  'taskCheckpoint.minimize': '收起任务清单',
+
+  // workspace sidebar / file tree
+  'workspaceSidebar.toggle': '工作区侧栏',
+  'workspaceSidebar.collapse': '收起工作区侧栏',
+  'workspaceSidebar.closeTabNamed': '关闭 {name}',
+  'workspaceSidebar.tab.git': 'Git',
+  'workspaceSidebar.tab.widget': '看板',
+  'workspaceSidebar.tab.files': '文件',
+  'workspaceSidebar.pinFiles': '固定到工作区侧栏',
+  'fileTree.addToChat': '添加到对话',
+
+  // plugins page actions
+  'common.preview': '预览',
+  'plugins.create.newSkill': '新建技能',
+  'plugins.create.addMcp': '添加 MCP 服务',
+  'plugins.create.addCli': '添加 CLI 工具',
+  'plugins.more.mcpJson': 'MCP JSON 配置',
+  'plugins.more.mcpJson.description': '直接编辑 MCP JSON 配置，保存后会更新外部 MCP 服务列表。',
+  'plugins.search.noResults': '没有匹配结果',
+
+  // built-in MCP catalog
+  'mcp.builtin.sectionTitle': '内置能力',
+  'mcp.builtin.sectionDescription': 'CodePilot 自带这些 MCP 能力。是否注入取决于本次消息；这里展示并不代表当前消息已经全部启用。',
+  'mcp.builtin.toolCount': '个工具',
+  'mcp.builtin.triggerHeading': '触发条件',
+  'mcp.builtin.toolsHeading': '工具',
+  'mcp.builtin.notify.description': '发送通知、任务提醒和 Buddy 相关更新。',
+  'mcp.builtin.memory.description': '搜索、读取和查看工作区记忆。',
+  'mcp.builtin.memory.triggerHint': '当前对话有工作目录时可用。',
+  'mcp.builtin.imageGen.description': '生成图片，或处理图片生成类请求。',
+  'mcp.builtin.imageGen.triggerHint': '消息涉及绘图、生成图片或图像处理时启用。',
+  'mcp.builtin.media.description': '把媒体文件导入素材库或对话上下文。',
+  'mcp.builtin.media.triggerHint': '消息涉及图片、视频、音频或素材导入时启用。',
+  'mcp.builtin.widget.description': '加载生成式 UI 和看板组件能力。',
+  'mcp.builtin.widget.triggerHint': '消息涉及组件、看板、可视化或 Artifact 时启用。',
+  'mcp.builtin.cliTools.description': '列出、安装、添加、删除和更新 CLI 工具。',
+  'mcp.builtin.cliTools.triggerHint': '消息涉及命令行工具、CLI 安装或工具调用时启用。',
+  'mcp.builtin.dashboard.description': '固定、列出、刷新、更新或移除看板组件。',
+  'mcp.builtin.dashboard.triggerHint': '消息涉及看板、固定组件或仪表盘时启用。',
+
+  // MCP management
+  'mcp.reconnectPreviewTooltip': '实验性重连；如果失败，请检查服务配置后重试。',
+  'mcp.toolCount': '{count} 个工具',
+  'mcp.installed.sectionTitle': '已安装',
+  'mcp.installed.sectionDescription': '你添加的外部 MCP 服务。',
+  'mcp.editorDescription': '配置此外部 MCP 服务的启动方式、URL、环境变量和请求头。',
+  'mcp.claudeJsonNotice': '直接编辑 MCP JSON 配置，保存后会更新外部 MCP 服务列表。',
+  'mcp.editor.editMode': '编辑模式',
+  'mcp.editor.serverConfig': '服务配置',
+  'mcp.editor.error.nameRequired': '服务器名称必填',
+  'mcp.editor.error.jsonNotObject': 'JSON 配置必须是对象',
+  'mcp.editor.error.jsonInvalid': 'JSON 格式无效',
+  'mcp.editor.error.commandRequired': 'Stdio 模式需要填写启动命令',
+  'mcp.editor.error.urlRequired': 'HTTP 模式需要填写 URL',
+  'mcp.editor.error.envNotObject': '环境变量必须是对象',
+  'mcp.editor.error.envInvalidJson': '环境变量 JSON 格式无效',
+  'mcp.editor.error.headersNotObject': '请求头必须是对象',
+  'mcp.editor.error.headersInvalidJson': '请求头 JSON 格式无效',
+  'mcp.detail.deleteConfirm.title': '删除 MCP 服务？',
+  'mcp.detail.deleteConfirm.description': '这会移除此 MCP 服务配置。需要时可以重新添加。',
+  'mcp.detail.commandHeading': '启动命令',
+  'mcp.detail.disabled': '已停用',
+  'mcp.detail.toolsHeading': '可用工具',
+  'mcp.detail.toolsUnavailable': '暂未获取到工具列表',
+
+  // skills marketplace / details
+  'skills.marketplaceDescription': '浏览并安装可用的技能扩展。',
+  'skills.marketplaceBack': '返回技能市场',
+  'skills.contentHeading': '内容',
+  'skills.filePathHeading': '文件路径',
+  'skills.noContentBody': '这个技能暂时没有可显示的内容。',
+
+  // onboarding
+  'wizard.startChatting': '开始对话',
 };
 
 export default zh;

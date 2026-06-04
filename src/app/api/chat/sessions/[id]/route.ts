@@ -1,6 +1,8 @@
 import { NextRequest } from 'next/server';
-import { deleteSession, getSession, updateSessionWorkingDirectory, updateSessionTitle, updateSessionMode, updateSessionModel, updateSessionProviderId, clearSessionMessages, updateSdkSessionId, updateSessionPermissionProfile } from '@/lib/db';
+import { deleteSession, getSession, updateSessionWorkingDirectory, updateSessionTitle, updateSessionMode, updateSessionModel, updateSessionProviderId, clearSessionMessages, updateSdkSessionId, updateSessionPermissionProfile, updateSessionRuntime } from '@/lib/db';
 import { autoApprovePendingForSession } from '@/lib/bridge/permission-broker';
+import { clearRuntimeSessionRef } from '@/lib/runtime/session-store';
+import { isRuntimeId, RUNTIME_IDS } from '@/lib/runtime/runtime-id';
 
 export async function GET(
   _request: NextRequest,
@@ -41,11 +43,55 @@ export async function PATCH(
     if (body.mode) {
       updateSessionMode(id, body.mode);
     }
-    // Track whether provider or model actually changed — if so, the old
-    // sdk_session_id is stale and must be cleared to prevent resume failures
-    // against a different provider/model (fixes #343, #346).
+    // Track whether provider, model, or runtime_pin actually changed — if so,
+    // the old sdk_session_id is stale and must be cleared to prevent resume
+    // failures against a different provider/model/runtime (fixes #343, #346;
+    // Step 4c extends to runtime_pin since SDK sessions can't survive a
+    // runtime swap either).
     const modelChanged = body.model !== undefined && body.model !== session.model;
     const providerChanged = body.provider_id !== undefined && body.provider_id !== session.provider_id;
+    let runtimePinChanged = false;
+    // Phase 5 review round 4 (2026-05-13) — accept any registered
+    // RuntimeId (claude_code / codepilot_runtime / codex_runtime / …)
+    // via the canonical isRuntimeId guard. The earlier hard-coded
+    // whitelist hard-rejected codex_runtime even though RUNTIME_IDS
+    // includes it, so the composer's PATCH from RuntimeSelector
+    // silently 400'd and the session ended up with provider_id =
+    // codex_account + runtime_pin = codepilot_runtime — exactly the
+    // mismatch Codex caught in round 4 review.
+    if (body.runtime_pin !== undefined) {
+      if (body.runtime_pin !== '' && !isRuntimeId(body.runtime_pin)) {
+        return Response.json(
+          {
+            error: `runtime_pin must be "" or one of: ${RUNTIME_IDS.join(', ')}`,
+          },
+          { status: 400 },
+        );
+      }
+      runtimePinChanged = body.runtime_pin !== (session.runtime_pin || '');
+      if (runtimePinChanged) {
+        updateSessionRuntime(id, body.runtime_pin);
+      }
+    }
+
+    // Phase 5 review round 4 (2026-05-13) — provider/runtime coherence
+    // guard. codex_account models flow ONLY through Codex Runtime;
+    // persisting (provider_id=codex_account, runtime_pin=other) is a
+    // contradiction that the composer's split picker is too easy to
+    // produce (provider PATCH fires from the model picker, runtime
+    // PATCH fires from the RuntimeSelector — separate user actions).
+    // Force runtime_pin to codex_runtime when picking codex_account,
+    // so the chat send route resolves a coherent (provider, runtime)
+    // pair without needing the client to remember the linkage.
+    let coherenceForcedRuntime: 'codex_runtime' | null = null;
+    if (body.provider_id === 'codex_account' && body.runtime_pin === undefined) {
+      const currentPin = session.runtime_pin || '';
+      if (currentPin !== 'codex_runtime') {
+        updateSessionRuntime(id, 'codex_runtime');
+        coherenceForcedRuntime = 'codex_runtime';
+        runtimePinChanged = true;
+      }
+    }
 
     if (body.model !== undefined) {
       updateSessionModel(id, body.model);
@@ -57,18 +103,26 @@ export async function PATCH(
       updateSdkSessionId(id, body.sdk_session_id);
     }
 
-    // Server-side guard: when provider or model changed and the caller didn't
-    // explicitly set sdk_session_id in the same request, force-clear it so the
-    // next chat message starts a fresh SDK session instead of trying to resume
-    // the old one (which would fail with a different provider/model).
-    if ((modelChanged || providerChanged) && body.sdk_session_id === undefined) {
+    // Server-side guard: when provider, model, or runtime_pin changed and the
+    // caller didn't explicitly set sdk_session_id in the same request,
+    // force-clear it so the next chat message starts a fresh SDK session
+    // instead of trying to resume the old one (which would fail with a
+    // different provider/model/runtime).
+    //
+    // Phase 0.5 Slice C (2026-05-13) — clear through the runtime session
+    // store abstraction so future Codex Runtime adds its clearing path
+    // here without poking sdk_session_id directly. Only the claude_code
+    // ref is cleared; other runtimes (none today; codex_runtime later)
+    // keep their refs across this operation per the cross-runtime
+    // metadata invariant.
+    if ((modelChanged || providerChanged || runtimePinChanged) && body.sdk_session_id === undefined) {
       if (session.sdk_session_id) {
         console.log(
-          `[session-api] Provider/model changed for session ${id}, clearing stale sdk_session_id`,
-          { modelChanged, providerChanged, oldSdkSessionId: session.sdk_session_id.slice(0, 8) + '...' }
+          `[session-api] Provider/model/runtime changed for session ${id}, clearing stale sdk_session_id`,
+          { modelChanged, providerChanged, runtimePinChanged, oldSdkSessionId: session.sdk_session_id.slice(0, 8) + '...' }
         );
       }
-      updateSdkSessionId(id, '');
+      clearRuntimeSessionRef(id, 'claude_code');
     }
     if (body.permission_profile !== undefined) {
       if (body.permission_profile !== 'default' && body.permission_profile !== 'full_access') {
@@ -90,7 +144,14 @@ export async function PATCH(
     }
 
     const updated = getSession(id);
-    return Response.json({ session: updated });
+    // Phase 5 review round 4 — surface the coherence force-set so the
+    // client can show a small toast ("session switched to Codex Runtime"),
+    // mirroring the explicit transcript marker pattern used by the
+    // existing RuntimeSelector mid-chat switch.
+    return Response.json({
+      session: updated,
+      ...(coherenceForcedRuntime ? { coherence: { forcedRuntimePin: coherenceForcedRuntime } } : {}),
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to update session';
     return Response.json({ error: message }, { status: 500 });

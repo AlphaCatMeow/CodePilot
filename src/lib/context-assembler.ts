@@ -27,8 +27,6 @@ export interface ContextAssemblyConfig {
   systemPromptAppend?: string;
   /** Conversation history (for widget keyword detection in resume context) */
   conversationHistory?: Array<{ role: string; content: string }>;
-  /** Whether this is an image agent mode call */
-  imageAgentMode?: boolean;
   /** Whether this is an auto-trigger turn (heartbeat, onboarding hook, etc.) */
   autoTrigger?: boolean;
 }
@@ -47,7 +45,7 @@ export interface AssembledContext {
 // ── Main function ────────────────────────────────────────────────────
 
 export async function assembleContext(config: ContextAssemblyConfig): Promise<AssembledContext> {
-  const { session, entryPoint, userPrompt, systemPromptAppend, conversationHistory, imageAgentMode, autoTrigger } = config;
+  const { session, entryPoint, userPrompt, systemPromptAppend, conversationHistory, autoTrigger } = config;
   const t0 = Date.now();
 
   let workspacePrompt = '';

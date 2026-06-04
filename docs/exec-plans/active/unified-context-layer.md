@@ -1,5 +1,7 @@
 # 统一上下文层 + 浮窗助理 + 产品架构演进
 
+> ⏸ **本轮重构暂缓**（见 [refactor-closeout.md](./refactor-closeout.md) "暂缓清单"）— Phase 1-3 已完成；Phase 4（浮窗助理）+ Phase 5（代码任务通知）不主动推进。Phase 5 的"通知可达"最小闭环若启动，将走 refactor-closeout 的 **Phase 3**。
+
 > 创建时间：2026-03-24
 > 最后更新：2026-03-24
 

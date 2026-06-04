@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { GitCommit } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useTranslation } from "@/hooks/useTranslation";
@@ -62,7 +62,7 @@ export function GitCommitSection({ cwd, dirty, onCommitSuccess }: GitCommitSecti
         disabled={!dirty || committing}
         onClick={handleCommit}
       >
-        <GitCommit size={14} className="mr-1.5" />
+        <CodePilotIcon name="git_commit" size="sm" className="mr-1.5" aria-hidden />
         {committing ? t('git.loading') : t('git.commitAll')}
       </Button>
       {error && (

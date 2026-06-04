@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useCallback, useEffect } from 'react';
-import { Plus, X } from '@/components/ui/icon';
+import { X } from '@/components/ui/icon';
+import { CodePilotIcon } from '@/components/ui/semantic-icon';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -111,7 +112,7 @@ export function TagManager({
             onClick={() => setAdding(true)}
             className="h-5 w-5"
           >
-            <Plus size={12} />
+            <CodePilotIcon name="plus" size={12} aria-hidden />
           </Button>
         )}
       </div>

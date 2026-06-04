@@ -1,5 +1,7 @@
 # 上下文共享与存储迁移
 
+> ⚠️ **Superseded by [refactor-closeout.md](./refactor-closeout.md)** — 不再单独推进，保留作历史参考。`message_parts` / `session_runtime_state` / 压缩摘要并入 refactor-closeout 的 **Phase 5（上下文可视化）**；session-level runtime 持久化并入 **Phase 2（Runtime 与会话执行）**。
+
 > 原始调研：`docs/research/context-storage-migration-plan.md`
 > 创建时间：2026-02-26
 > 最后更新：2026-03-04

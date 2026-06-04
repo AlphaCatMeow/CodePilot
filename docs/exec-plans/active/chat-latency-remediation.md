@@ -1,5 +1,7 @@
 # Chat Latency Remediation
 
+> ⚠️ **Superseded by [refactor-closeout.md](./refactor-closeout.md)** — 不再单独推进，保留作历史参考。模式入口收敛 / MCP 持久开关 / 首包延迟优化按需并入 refactor-closeout 的 **Phase 2（Runtime 与会话执行）** 与 **Phase 3（助理、定时任务、心跳通知）**。
+
 > 创建时间：2026-03-21
 > 最后更新：2026-03-21
 

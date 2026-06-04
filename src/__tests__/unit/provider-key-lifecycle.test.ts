@@ -196,12 +196,20 @@ describe('Provider key lifecycle — Codex follow-ups', () => {
         });
 
         it('renders an explicit clear / undo action in the UI', () => {
+          // Step 4 copy round (2026-05-06): the visible strings now flow
+          // through i18n (`provider.form.clearKeyAction` /
+          // `provider.form.undo`), so this static check matches either
+          // the i18n key reference OR the legacy hardcoded literal —
+          // PresetConnectDialog still ships the bilingual literal pair
+          // because it has its own `isZh` branch, while ProviderForm
+          // routes the same affordance through `t(...)`. Both forms are
+          // valid evidence the action is present.
           assert.ok(
-            source.match(/Clear stored key|清除已存密钥/),
+            source.match(/provider\.form\.clearKeyAction|Clear stored key|清除已存密钥/),
             'should render a "Clear stored key" / "清除已存密钥" action',
           );
           assert.ok(
-            source.match(/Undo|撤销/),
+            source.match(/provider\.form\.undo|Undo|撤销/),
             'should render an "Undo" / "撤销" action to restore the keep-existing state',
           );
         });

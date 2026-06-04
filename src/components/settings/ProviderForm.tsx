@@ -23,6 +23,7 @@ import {
 import { SpinnerGap, CaretDown, CaretUp } from "@/components/ui/icon";
 import type { ApiProvider } from "@/types";
 import { useTranslation } from "@/hooks/useTranslation";
+import type { TranslationKey } from "@/i18n";
 
 const PROVIDER_PRESETS: Record<string, { base_url: string; extra_env: string; protocol: string }> = {
   anthropic: { base_url: "https://api.anthropic.com", extra_env: "{}", protocol: "anthropic" },
@@ -186,19 +187,25 @@ export function ProviderForm({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
-      setError("Name is required");
+      setError(t('provider.form.errorNameRequired' as TranslationKey));
       return;
     }
 
-    // Validate JSON fields
-    for (const [label, val] of [
-      ["Extra environment variables", extraEnv],
-      ["Headers", headersJson],
-      ["Role models", roleModelsJson],
+    // Validate JSON fields. Field labels reuse the same i18n keys as the
+    // labels rendered in the form so the error message reads as "<the
+    // field you just looked at> must be valid JSON".
+    // `envOverridesJson` is also a JSON textarea but was missing from the
+    // original validation list — invalid input would silently fail at the
+    // backend instead of being caught here.
+    for (const [labelKey, val] of [
+      ['provider.extraEnvVars', extraEnv],
+      ['provider.form.headersJson', headersJson],
+      ['provider.form.envOverridesJson', envOverridesJson],
+      ['provider.form.roleModelsJson', roleModelsJson],
     ] as const) {
       if (val && val.trim()) {
         try { JSON.parse(val); } catch {
-          setError(`${label} must be valid JSON`);
+          setError(t('provider.form.errorJsonInvalid' as TranslationKey, { field: t(labelKey as TranslationKey) }));
           return;
         }
       }
@@ -237,7 +244,7 @@ export function ProviderForm({
       });
       onOpenChange(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save provider");
+      setError(err instanceof Error ? err.message : t('provider.form.errorSaveFailed' as TranslationKey));
     } finally {
       setSaving(false);
     }
@@ -254,15 +261,17 @@ export function ProviderForm({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-[28rem] overflow-hidden">
-        <DialogHeader>
-          <DialogTitle>
+      <DialogContent fullscreen>
+        <div className="min-h-full flex items-center justify-center px-6 py-16">
+        <div className="w-full max-w-md">
+        <DialogHeader className="mb-6">
+          <DialogTitle className="text-xl">
             {mode === "edit" ? t('provider.editProvider') : t('provider.addProvider')}
           </DialogTitle>
           <DialogDescription>
             {mode === "edit"
-              ? "Update the API provider configuration."
-              : "Configure a new API provider for Claude Code."}
+              ? t('provider.form.editDesc' as TranslationKey)
+              : t('provider.form.addDesc' as TranslationKey)}
           </DialogDescription>
         </DialogHeader>
 
@@ -320,9 +329,9 @@ export function ProviderForm({
               type="password"
               placeholder={
                 clearStoredKey
-                  ? "Stored key will be cleared on save"
+                  ? t('provider.form.clearKeyPlaceholder' as TranslationKey)
                   : showStoredKeyPlaceholder
-                  ? "Leave empty to keep current key"
+                  ? t('provider.form.keepKeyPlaceholder' as TranslationKey)
                   : "sk-ant-..."
               }
               value={apiKey}
@@ -341,7 +350,7 @@ export function ProviderForm({
                 {clearStoredKey ? (
                   <>
                     <span className="text-amber-500">
-                      The stored key will be cleared on save.{" "}
+                      {t('provider.form.clearKeyPending' as TranslationKey)}{" "}
                     </span>
                     <Button
                       type="button"
@@ -349,7 +358,7 @@ export function ProviderForm({
                       className="h-auto p-0 text-[11px] text-amber-500 underline hover:no-underline"
                       onClick={() => setClearStoredKey(false)}
                     >
-                      Undo
+                      {t('provider.form.undo' as TranslationKey)}
                     </Button>
                   </>
                 ) : (
@@ -359,7 +368,7 @@ export function ProviderForm({
                     className="h-auto p-0 text-[11px] text-muted-foreground underline hover:no-underline"
                     onClick={() => setClearStoredKey(true)}
                   >
-                    Clear stored key
+                    {t('provider.form.clearKeyAction' as TranslationKey)}
                   </Button>
                 )}
               </p>
@@ -379,7 +388,7 @@ export function ProviderForm({
           </Button>
 
           {showAdvanced && (
-            <div className="space-y-4 border-t border-border/50 pt-4">
+            <div className="space-y-4 pt-2">
               <div className="space-y-2">
                 <Label htmlFor="provider-extra-env" className="text-xs text-muted-foreground">
                   {t('provider.extraEnvVars')} (JSON)
@@ -396,7 +405,7 @@ export function ProviderForm({
 
               <div className="space-y-2">
                 <Label htmlFor="provider-headers-json" className="text-xs text-muted-foreground">
-                  Headers (JSON)
+                  {t('provider.form.headersJson' as TranslationKey)}
                 </Label>
                 <Textarea
                   id="provider-headers-json"
@@ -410,7 +419,7 @@ export function ProviderForm({
 
               <div className="space-y-2">
                 <Label htmlFor="provider-env-overrides" className="text-xs text-muted-foreground">
-                  Env Overrides (JSON)
+                  {t('provider.form.envOverridesJson' as TranslationKey)}
                 </Label>
                 <Textarea
                   id="provider-env-overrides"
@@ -424,7 +433,7 @@ export function ProviderForm({
 
               <div className="space-y-2">
                 <Label htmlFor="provider-role-models" className="text-xs text-muted-foreground">
-                  Role Models (JSON)
+                  {t('provider.form.roleModelsJson' as TranslationKey)}
                 </Label>
                 <Textarea
                   id="provider-role-models"
@@ -473,6 +482,8 @@ export function ProviderForm({
             </Button>
           </DialogFooter>
         </form>
+        </div>
+        </div>
       </DialogContent>
     </Dialog>
   );

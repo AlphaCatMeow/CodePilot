@@ -4,6 +4,10 @@ import path from "path";
 import os from "os";
 import crypto from "crypto";
 import type { SkillKind } from "@/types";
+import {
+  deriveSkillEditability,
+  type SkillReadOnlyReason,
+} from "@/lib/skills-editability";
 
 interface SkillFile {
   name: string;
@@ -13,6 +17,19 @@ interface SkillFile {
   kind: SkillKind;
   installedSource?: "agents" | "claude";
   filePath: string;
+  /**
+   * Whether the UI is allowed to edit/delete this skill via the Skills
+   * manager. Computed server-side (Phase 2D.1, 2026-04-30) so the client
+   * does not have to re-derive path ownership or fs permissions.
+   */
+  editable?: boolean;
+  /**
+   * Why a skill is read-only. Only present when `editable === false`.
+   *   - "sdk":              injected by the Agent SDK; not owned by CodePilot
+   *   - "file_not_writable": fs.access W_OK rejected the file
+   *   - "out_of_cwd":        project skill whose path is outside the active cwd
+   */
+  readOnlyReason?: SkillReadOnlyReason;
 }
 
 type InstalledSource = "agents" | "claude";
@@ -275,8 +292,15 @@ function scanDirectory(
       const name = prefix ? `${prefix}:${baseName}` : baseName;
       const filePath = fullPath;
       const content = fs.readFileSync(filePath, "utf-8");
+      // Plugin / global / project commands frequently use YAML front
+      // matter (`---\ndescription: ...\n---`). Try that first; only
+      // fall back to first-line / heading parsing when there's no
+      // front matter at all (Phase 2D.1 P5, 2026-05-01).
+      const fm = parseSkillFrontMatter(content);
       const firstLine = content.split("\n")[0]?.trim() || "";
-      const description = firstLine.startsWith("#")
+      const description = fm.description
+        ? fm.description
+        : firstLine.startsWith("#")
         ? firstLine.replace(/^#+\s*/, "")
         : firstLine || `Skill: /${name}`;
       skills.push({ name, description, content, source, kind: "slash_command", filePath });
@@ -411,7 +435,15 @@ export async function GET(request: NextRequest) {
       // SDK capabilities not available, skip
     }
 
-    return NextResponse.json({ skills: all });
+    // Phase 2D.1 (2026-04-30): annotate every skill with editability
+    // semantics so the UI doesn't have to re-derive path / permission
+    // logic. The reason field is what the manager renders as a tooltip.
+    const annotated = all.map((skill) => ({
+      ...skill,
+      ...deriveSkillEditability(skill, cwd),
+    }));
+
+    return NextResponse.json({ skills: annotated });
   } catch (error) {
     console.error('[skills] Error:', error);
     return NextResponse.json(

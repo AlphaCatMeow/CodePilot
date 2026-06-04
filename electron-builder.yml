@@ -41,7 +41,9 @@ extraResources:
     filter: ["*.json"]
   - from: build/
     to: .
-    filter: ["icon.*"]
+    # icon.* = Dock/app/window icons; trayTemplate*.png = macOS menubar template
+    # (16x16 + @2x retina). Both land at process.resourcesPath root.
+    filter: ["icon.*", "trayTemplate*.png"]
 afterPack: scripts/after-pack.js
 afterSign: scripts/after-sign.js
 asarUnpack:
@@ -57,19 +59,18 @@ mac:
   entitlementsInherit: build/entitlements.mac.inherit.plist
   notarize: false
   target:
-    - target: dmg
-      arch: [x64, arm64]
-    - target: zip
-      arch: [x64, arm64]
+    - dmg
+    - zip
 win:
   icon: build/icon.ico
   target:
-    - target: nsis
-      arch: [x64, arm64]
+    - nsis
 nsis:
   oneClick: false
   perMachine: false
-  allowToChangeInstallationDirectory: false
+  # Let users pick the install location — Windows feedback: the installer
+  # offered no path choice. Requires oneClick:false (kept above).
+  allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
   deleteAppDataOnUninstall: false

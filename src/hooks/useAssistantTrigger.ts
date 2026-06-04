@@ -73,8 +73,17 @@ interface UseAssistantTriggerOpts {
   workingDirectory?: string;
   isStreaming: boolean;
   mode: string;
-  currentModel: string;
-  currentProviderId: string;
+  /**
+   * Runtime-filtered resolved pair from useProviderModels. Auto-trigger
+   * uses these (not the raw currentModel/currentProviderId) so welcome /
+   * heartbeat messages flow through the same runtime gate as user-typed
+   * sends — otherwise a stale saved provider would silently route past
+   * the gate via env-default re-resolution at /api/chat.
+   */
+  resolvedModel: string;
+  resolvedProviderId: string;
+  noCompatibleProvider: boolean;
+  fetchState: 'idle' | 'loaded' | 'failed';
   initialMessages: Message[];
   handleModeChange: (mode: string) => void;
   buildThinkingConfig: () => { type: string } | undefined;
@@ -87,8 +96,10 @@ export function useAssistantTrigger({
   workingDirectory,
   isStreaming,
   mode,
-  currentModel,
-  currentProviderId,
+  resolvedModel,
+  resolvedProviderId,
+  noCompatibleProvider,
+  fetchState,
   initialMessages,
   handleModeChange,
   buildThinkingConfig,
@@ -118,6 +129,14 @@ export function useAssistantTrigger({
   const checkAssistantTrigger = useCallback(async () => {
     // Don't trigger if already streaming or already triggered in this mount
     if (isStreaming || assistantTriggerFiredRef.current) return;
+    // Don't trigger before the runtime-filtered picker feed has loaded —
+    // resolved pair would be the raw saved values, defeating the gate.
+    if (fetchState !== 'loaded') return;
+    // Don't trigger when no provider is compatible with the active runtime.
+    // Welcome / heartbeat would post a stale provider/model that the
+    // backend would silently re-resolve to env defaults.
+    if (noCompatibleProvider) return;
+    if (!resolvedProviderId || !resolvedModel) return;
 
     try {
       const res = await fetch('/api/settings/workspace');
@@ -169,16 +188,27 @@ export function useAssistantTrigger({
       // Onboarding is now handled by the frontend Wizard component (OnboardingWizard.tsx).
       if (needsOnboarding) return;
 
-      // Auto-trigger for:
-      // 1. Buddy welcome: no buddy + empty session → adoption prompt (takes priority)
-      // 2. Heartbeat: server says overdue + has buddy + empty session → full HEARTBEAT.md check
-      // Buddy welcome takes priority: heartbeat defers until buddy exists.
-      // Once buddy is hatched and user opens a new empty session, heartbeat fires.
+      // Codex P1 — heartbeat is no longer triggered from the foreground.
+      // Earlier rev: chat mount checked `data.needsHeartbeat` and called
+      // startStream({content: '心跳检查', autoTrigger: true}) which ran a
+      // FULL streamClaude turn through /api/chat with every tool the
+      // chat had access to (codepilot_list_tasks, Search, memory_recent,
+      // shell). Since headless / chat had no idle/tool/total timeout
+      // back then, a tool-loop in the heartbeat could leave the
+      // assistant session "running" indefinitely. Worse, it fired
+      // every time a chat mounted, not on a real interval.
+      //
+      // The fix is hard: we don't trigger heartbeat from any UI surface
+      // anymore. Heartbeat is owned exclusively by the background
+      // scheduler (`source='assistant_heartbeat'` task in
+      // scheduled_tasks, fired by `executeDueTask` when next_run + the
+      // stale-check guard both pass). Page mounts only READ state.
+      //
+      // Buddy welcome stays — it's a one-shot adoption flow, not a
+      // recurring background check, and its prompt is plain text with
+      // no tools.
       const needsBuddyWelcome = state.onboardingComplete && !state.buddy && initialMessages.length === 0;
-      // Only trigger heartbeat when buddy exists — avoids collision with buddy-welcome
-      const needsHeartbeat = !!data.needsHeartbeat && !!state.buddy && initialMessages.length === 0;
-
-      if (!needsBuddyWelcome && !needsHeartbeat) return;
+      if (!needsBuddyWelcome) return;
 
       // Mark fired so we don't re-trigger on focus/re-render
       assistantTriggerFiredRef.current = true;
@@ -221,16 +251,19 @@ export function useAssistantTrigger({
         return;
       }
 
-      // Use autoTrigger: the message is invisible (no user bubble, no title update)
-      const triggerMsg = needsBuddyWelcome
-        ? '请做自我介绍并引导用户领养伙伴。'
-        : '心跳检查';
+      // Use autoTrigger: the message is invisible (no user bubble, no title update).
+      // Only buddy welcome reaches this point; heartbeat is scheduler-only.
+      const triggerMsg = '请做自我介绍并引导用户领养伙伴。';
       startStream({
         sessionId,
         content: triggerMsg,
         mode,
-        model: currentModel,
-        providerId: currentProviderId,
+        // Use the runtime-filtered resolved pair, not the raw saved
+        // currentModel/currentProviderId — same contract as ChatView's
+        // user-typed send path.
+        model: resolvedModel,
+        providerId: resolvedProviderId,
+        workingDirectory,
         autoTrigger: true,
         thinking: buildThinkingConfig(),
         onModeChanged: (sdkMode) => {
@@ -248,7 +281,7 @@ export function useAssistantTrigger({
     } catch (e) {
       console.error('[useAssistantTrigger] Assistant auto-trigger failed:', e);
     }
-  }, [sessionId, workingDirectory, isStreaming, mode, currentModel, currentProviderId, handleModeChange, buildThinkingConfig, initialMessages, sendMessageRef, initMetaRef]);
+  }, [sessionId, workingDirectory, isStreaming, mode, resolvedModel, resolvedProviderId, noCompatibleProvider, fetchState, handleModeChange, buildThinkingConfig, initialMessages, sendMessageRef, initMetaRef]);
 
   // Fire with a small delay to let the session fully initialize
   useEffect(() => {

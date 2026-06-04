@@ -44,10 +44,27 @@ function subscribeToHash(callback: () => void) {
   return () => window.removeEventListener("hashchange", callback);
 }
 
-export function BridgeLayout() {
+interface BridgeLayoutProps {
+  /**
+   * `embedded` mounts BridgeLayout inside another shell (currently the
+   * `/settings/bridge` route). In embedded mode:
+   *   - The page-level `<h1>` + description are hidden (the host shell
+   *     already provides identity).
+   *   - The inner sub-nav drives only local state — URL writes are
+   *     suppressed so they don't compete with the host route's path.
+   *   - The hash is read once on mount but never mirrored back.
+   */
+  embedded?: boolean;
+}
+
+export function BridgeLayout({ embedded = false }: BridgeLayoutProps = {}) {
   const hashSection = useSyncExternalStore(subscribeToHash, getSectionFromHash, () => "bridge" as Section);
-  const [overrideSection, setOverrideSection] = useState<Section | null>(null);
-  const activeSection = overrideSection ?? hashSection;
+  const [overrideSection, setOverrideSection] = useState<Section | null>(
+    embedded ? "bridge" : null,
+  );
+  const activeSection = embedded
+    ? (overrideSection ?? "bridge")
+    : (overrideSection ?? hashSection);
 
   const { t } = useTranslation();
 
@@ -62,31 +79,46 @@ export function BridgeLayout() {
 
   const handleSectionChange = useCallback((section: Section) => {
     setOverrideSection(section);
-    window.history.replaceState(null, "", `/bridge#${section}`);
-    queueMicrotask(() => setOverrideSection(null));
-  }, []);
+    if (!embedded) {
+      window.history.replaceState(null, "", `/bridge#${section}`);
+      // Standalone path also clears the override so subsequent hash
+      // changes (browser back/forward) take effect; embedded path keeps
+      // the override sticky since hash isn't the source of truth.
+      queueMicrotask(() => setOverrideSection(null));
+    }
+  }, [embedded]);
 
   return (
     <div className="flex h-full flex-col">
-      <div className="border-b border-border/50 px-6 pt-4 pb-4">
-        <h1 className="text-xl font-semibold">{t('bridge.title')}</h1>
-        <p className="text-sm text-muted-foreground">
-          {t('bridge.description')}
-        </p>
-      </div>
+      {!embedded && (
+        <div className="px-4 pt-3 pb-3 md:px-6 md:pt-4 md:pb-4">
+          <h1 className="text-xl font-semibold">{t('bridge.title')}</h1>
+          <p className="text-sm text-muted-foreground">
+            {t('bridge.description')}
+          </p>
+        </div>
+      )}
 
-      <div className="flex min-h-0 flex-1">
-        <nav className="flex w-52 shrink-0 flex-col gap-1 border-r border-border/50 p-3">
+      <div className="flex min-h-0 flex-1 max-md:flex-col">
+        <nav
+          className={cn(
+            "shrink-0 flex",
+            "md:w-52 md:flex-col md:gap-1 md:border-r md:border-border/50 md:p-3",
+            "max-md:flex-row max-md:gap-1 max-md:overflow-x-auto max-md:border-b max-md:border-border/50 max-md:px-3 max-md:py-2",
+          )}
+        >
           {sidebarItems.map((item) => (
             <Button
               key={item.id}
               variant="ghost"
               onClick={() => handleSectionChange(item.id)}
               className={cn(
-                "justify-start gap-3 px-3 py-2 text-sm font-medium text-left w-full",
+                "gap-2 text-sm font-medium",
+                "md:justify-start md:px-3 md:py-2 md:w-full",
+                "max-md:shrink-0 max-md:px-3 max-md:py-1.5 max-md:rounded-full",
                 activeSection === item.id
-                  ? "bg-accent text-accent-foreground"
-                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                  : "text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
               )}
             >
               <item.icon size={16} className="shrink-0" />
@@ -95,7 +127,7 @@ export function BridgeLayout() {
           ))}
         </nav>
 
-        <div className="flex-1 overflow-auto p-6">
+        <div className="flex-1 overflow-auto p-4 md:p-6">
           {activeSection === "bridge" && <BridgeSection />}
           {activeSection === "telegram" && <TelegramBridgeSection />}
           {activeSection === "feishu" && <FeishuBridgeSection />}

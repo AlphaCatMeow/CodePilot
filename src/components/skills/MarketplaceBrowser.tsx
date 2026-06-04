@@ -1,11 +1,27 @@
 "use client";
 
+/**
+ * Skill marketplace — two-view inline navigation (2026-05-02 update).
+ *
+ * The browser owns a single state slot (`openSkill`): when null, render
+ * the search + grid list; when set, render `<MarketplaceSkillDetail>`
+ * inline (back button + name + readme + install). The previous version
+ * opened the detail as a nested Dialog inside the marketplace Dialog,
+ * which stacked overlays ("弹窗叠弹窗") — replaced with same-dialog
+ * navigation here.
+ *
+ * Wrapper Dialog (in `src/app/plugins/page.tsx`) holds a fixed
+ * `h-[80vh]` so the dialog itself never changes height when search
+ * results shrink/grow or the user navigates between views.
+ */
+
 import { useState, useEffect, useCallback, useRef } from "react";
 import { Input } from "@/components/ui/input";
-import { MagnifyingGlass, SpinnerGap, Storefront } from "@/components/ui/icon";
+import { CheckCircle, SpinnerGap } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { useTranslation } from "@/hooks/useTranslation";
-import { MarketplaceSkillCard } from "./MarketplaceSkillCard";
 import { MarketplaceSkillDetail } from "./MarketplaceSkillDetail";
+import { cn } from "@/lib/utils";
 import type { MarketplaceSkill } from "@/types";
 
 interface MarketplaceBrowserProps {
@@ -16,7 +32,7 @@ export function MarketplaceBrowser({ onInstalled }: MarketplaceBrowserProps) {
   const { t } = useTranslation();
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<MarketplaceSkill[]>([]);
-  const [selected, setSelected] = useState<MarketplaceSkill | null>(null);
+  const [openSkill, setOpenSkill] = useState<MarketplaceSkill | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
@@ -60,79 +76,126 @@ export function MarketplaceBrowser({ onInstalled }: MarketplaceBrowserProps) {
   }, [search, doSearch]);
 
   const handleInstallComplete = useCallback(() => {
-    // Refresh results to update installed status
     doSearch(search);
     onInstalled();
+    setOpenSkill(null);
   }, [search, doSearch, onInstalled]);
 
+  // Detail view: same dialog, replace body. Back button returns to
+  // the list. The wrapper Dialog (h-[80vh]) means the height stays
+  // constant during this transition.
+  if (openSkill) {
+    return (
+      <MarketplaceSkillDetail
+        skill={openSkill}
+        onBack={() => setOpenSkill(null)}
+        onInstallComplete={handleInstallComplete}
+      />
+    );
+  }
+
   return (
-    <div className="flex flex-1 min-h-0">
-      {/* Left: search + results */}
-      <div className="w-64 shrink-0 flex flex-col overflow-hidden pl-4">
-        <div className="px-2 pt-4 pb-2">
-          <div className="relative">
-            <MagnifyingGlass
-              size={14}
-              className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground"
-            />
-            <Input
-              placeholder={t('skills.marketplaceSearch')}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-7 h-8 text-sm"
-            />
-          </div>
-        </div>
-        <div className="flex-1 overflow-y-auto min-h-0">
-          <div className="p-1">
-            {loading && results.length === 0 && (
-              <div className="flex items-center justify-center py-8">
-                <SpinnerGap size={20} className="animate-spin text-muted-foreground" />
-              </div>
-            )}
-            {error && (
-              <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground px-3">
-                <p className="text-xs text-center text-status-error-foreground">{t('skills.marketplaceError')}</p>
-                <p className="text-[10px] text-center">{error}</p>
-              </div>
-            )}
-            {!loading && !error && results.length === 0 && (
-              <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground">
-                <Storefront size={32} className="opacity-40" />
-                <p className="text-xs">{t('skills.searchNoResults')}</p>
-              </div>
-            )}
-            {results.map((skill) => (
-              <MarketplaceSkillCard
-                key={skill.id}
-                skill={skill}
-                selected={selected?.id === skill.id}
-                onSelect={() => setSelected(skill)}
-              />
-            ))}
-          </div>
+    <div className="flex h-full flex-col">
+      {/* Search — pinned at top so the input stays put when results
+          load / change. Body below it is the only scroll region. */}
+      <div className="shrink-0 px-6 pt-4 pb-3">
+        <div className="relative max-w-md">
+          <CodePilotIcon
+            name="search"
+            size="sm"
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"
+            aria-hidden
+          />
+          <Input
+            placeholder={t("skills.marketplaceSearch")}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-9 h-9 text-sm"
+          />
         </div>
       </div>
 
-      {/* Divider */}
-      <div className="shrink-0 w-px bg-border/50" />
-
-      {/* Right: detail */}
-      <div className="flex-1 min-w-0 overflow-hidden">
-        {selected ? (
-          <MarketplaceSkillDetail
-            key={selected.id}
-            skill={selected}
-            onInstallComplete={handleInstallComplete}
-          />
-        ) : (
-          <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
-            <Storefront size={48} className="opacity-30" />
-            <div className="text-center">
-              <p className="text-sm font-medium">{t('skills.marketplaceHint')}</p>
-              <p className="text-xs">{t('skills.marketplaceHintDesc')}</p>
-            </div>
+      <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-5">
+        {/* States */}
+        {loading && results.length === 0 ? (
+          <div className="flex items-center justify-center py-12">
+            <SpinnerGap size={20} className="animate-spin text-muted-foreground" />
           </div>
+        ) : error ? (
+          <div className="rounded-lg border border-border/50 bg-card p-10 flex flex-col items-center text-center gap-3">
+            <p className="text-sm font-medium text-status-error-foreground">
+              {t("skills.marketplaceError")}
+            </p>
+            <p className="text-xs text-muted-foreground max-w-md">{error}</p>
+          </div>
+        ) : results.length === 0 ? (
+          <div className="rounded-lg border border-border/50 bg-card p-10 flex flex-col items-center text-center gap-3">
+            <CodePilotIcon name="marketplace" size="xl" className="opacity-40 text-muted-foreground" aria-hidden />
+            <p className="text-sm font-medium">{t("skills.searchNoResults")}</p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {results.map((skill) => (
+              <MarketplaceCard
+                key={skill.id}
+                skill={skill}
+                onOpen={() => setOpenSkill(skill)}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MarketplaceCard({
+  skill,
+  onOpen,
+}: {
+  skill: MarketplaceSkill;
+  onOpen: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      aria-label={`${skill.name} — ${skill.source}`}
+      // Clickable marketplace card — same hover wash as other clickable
+      // cards. Non-clickable cards (external MCP servers) stay flat.
+      className="rounded-lg bg-card border border-border/50 p-5 cursor-pointer transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-sm font-medium truncate min-w-0 max-w-full">
+          {skill.name}
+        </span>
+        {skill.isInstalled && (
+          <span
+            className={cn(
+              "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium",
+              "bg-status-success-muted text-status-success-foreground",
+            )}
+          >
+            <CheckCircle size={10} />
+            {t("skills.installed")}
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-3 text-xs text-muted-foreground mt-2">
+        <span className="font-mono truncate min-w-0">{skill.source}</span>
+        {skill.installs > 0 && (
+          <span className="flex items-center gap-0.5 shrink-0">
+            <CodePilotIcon name="download" size={12} aria-hidden />
+            {skill.installs.toLocaleString()}
+          </span>
         )}
       </div>
     </div>

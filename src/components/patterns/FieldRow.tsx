@@ -13,7 +13,7 @@ export function FieldRow({ label, description, children, separator, className }:
   return (
     <div className={cn(
       "flex items-center justify-between gap-4",
-      separator && "border-t border-border/30 pt-4",
+      separator && "border-t border-border/50 pt-4",
       className
     )}>
       <div className="space-y-0.5 flex-1 min-w-0">

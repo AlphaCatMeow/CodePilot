@@ -12,8 +12,7 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog';
 import { useTranslation } from '@/hooks/useTranslation';
-
-const ANNOUNCEMENT_KEY = 'codepilot:announcement:v0.48-agent-engine';
+import { ANNOUNCEMENT_KEY } from './feature-announcement-key';
 
 export function FeatureAnnouncementDialog() {
   const [open, setOpen] = useState(false);
@@ -55,7 +54,7 @@ export function FeatureAnnouncementDialog() {
 
   const handleGoToSettings = () => {
     handleDismiss();
-    router.push('/settings#cli');
+    router.push('/settings/runtime');
   };
 
   return (

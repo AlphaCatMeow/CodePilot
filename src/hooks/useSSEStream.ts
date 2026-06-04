@@ -41,6 +41,20 @@ export interface SSECallbacks {
   onModeChanged: (mode: string) => void;
   onTaskUpdate: (sessionId: string) => void;
   onRewindPoint: (sdkUserMessageId: string) => void;
+  /**
+   * Phase 5 Phase 4 (2026-05-13) — explicit file-change channel.
+   * Codex Runtime emits this for fs/changed + fileChange item events;
+   * stream-session-manager hands the paths to `dispatchFileChanged`
+   * so PreviewPanel auto-refreshes via the existing
+   * `codepilot:file-changed` window event channel (same channel the
+   * ClaudeCode SDK tool_result path already uses).
+   *
+   * SDK path doesn't emit this event — file changes from ClaudeCode
+   * write/edit tools still flow through `isWriteTool` inspection
+   * inside the onToolResult handler. The channels converge at
+   * `dispatchFileChanged` in stream-session-manager.
+   */
+  onFileChanged?: (paths: string[]) => void;
   onThinking?: (delta: string) => void;
   onKeepAlive: () => void;
   onError: (accumulated: string) => void;
@@ -295,6 +309,24 @@ function handleSSEEvent(
       return accumulated;
     }
 
+    case 'file_changed': {
+      // Phase 5 Phase 4 (2026-05-13). Codex Runtime emits this with a
+      // JSON payload `{ paths: string[] }`. Stream-session-manager
+      // forwards to dispatchFileChanged so PreviewPanel quiet-refreshes.
+      try {
+        const payload = JSON.parse(event.data) as { paths?: unknown };
+        if (Array.isArray(payload.paths)) {
+          const paths = payload.paths.filter((p): p is string => typeof p === 'string');
+          if (paths.length > 0) callbacks.onFileChanged?.(paths);
+        }
+      } catch {
+        // Malformed payload — drop silently (the event channel is
+        // best-effort; missing a refresh is worse than crashing the
+        // stream, so we tolerate parse errors here).
+      }
+      return accumulated;
+    }
+
     case 'task_update': {
       try {
         const taskData = JSON.parse(event.data);
@@ -343,7 +375,7 @@ function handleSSEEvent(
               if (a.url) {
                 links.push(`[${a.label}](${a.url})`);
               } else if (a.action === 'open_settings') {
-                links.push(`[${a.label}](/settings#providers)`);
+                links.push(`[${a.label}](/settings/providers)`);
               } else if (a.action === 'new_conversation') {
                 links.push(`[${a.label}](/chat)`);
               }

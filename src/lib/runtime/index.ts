@@ -11,7 +11,12 @@ export { registerRuntime, getRuntime, getAllRuntimes, getAvailableRuntimes, reso
 import { registerRuntime } from './registry';
 import { nativeRuntime } from './native-runtime';
 import { sdkRuntime } from './sdk-runtime';
+import { codexRuntime } from '@/lib/codex/runtime';
 
 // Register built-in runtimes
 registerRuntime(nativeRuntime);
 registerRuntime(sdkRuntime);
+// Phase 5 Phase 3 (2026-05-13) — Codex Runtime. `isAvailable()` gates
+// the runtime registry resolver, so chat sends only route here when
+// `codex` binary is on PATH (or CODEX_BIN env override is set).
+registerRuntime(codexRuntime);

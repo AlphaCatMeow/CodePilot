@@ -12,6 +12,12 @@
 
 import { consumeSSEStream } from '@/hooks/useSSEStream';
 import { transferPendingToMessage } from '@/lib/image-ref-store';
+import { dispatchFileChanged } from '@/lib/file-changed-event';
+import {
+  extractWritePath,
+  isWriteTool,
+  resolveToolPath,
+} from '@/lib/file-write-tools';
 import type {
   ToolUseInfo,
   ToolResultInfo,
@@ -30,6 +36,11 @@ import type {
 
 interface ActiveStream {
   sessionId: string;
+  /** Absolute working directory for the session. Stashed so the
+   *  onToolResult handler can resolve relative tool paths into the
+   *  same absolute form PreviewPanel uses, which is what the
+   *  codepilot:file-changed listener matches against. */
+  workingDirectory: string | null;
   abortController: AbortController;
   snapshot: SessionStreamSnapshot;
   idleCheckTimer: ReturnType<typeof setInterval> | null;
@@ -79,6 +90,18 @@ export interface StartStreamParams {
   onInitMeta?: (meta: { tools?: unknown; slash_commands?: unknown; skills?: unknown }) => void;
   /** Display-only content for user message (e.g. /skillName instead of expanded prompt) */
   displayOverride?: string;
+  /**
+   * Phase 2 — Context Accounting Runtime Contract (2026-05-20). Names of
+   * Agent Skills selected via MessageInput badges. Used by the Context
+   * Accounting producer to look up real `SKILL.md` filesizes (replaces
+   * the previous regex on the prompt text that missed badge dispatch).
+   */
+  selectedSkills?: readonly string[];
+  /** Session's working directory. When provided, the stream resolves
+   *  relative tool paths to absolute before dispatching the
+   *  codepilot:file-changed event, so the PreviewPanel listener (which
+   *  carries absolute filePaths) can match against them. */
+  workingDirectory?: string | null;
 }
 
 // ==========================================
@@ -89,6 +112,11 @@ const GLOBAL_KEY = '__streamSessionManager__' as const;
 const LISTENERS_KEY = '__streamSessionListeners__' as const;
 const STREAM_IDLE_TIMEOUT_MS = 330_000;
 const GC_DELAY_MS = 5 * 60 * 1000; // 5 minutes
+// stopStream: how long to wait for a graceful interrupt before force-aborting.
+// The force-abort is scheduled UNCONDITIONALLY (not behind the interrupt
+// request's .finally) so a hung /api/chat/interrupt can't strand the stream in
+// 'active' and lock the composer's isStreaming gate (GitHub #578).
+const STREAM_FORCE_ABORT_MS = 2000;
 
 function getStreamsMap(): Map<string, ActiveStream> {
   if (!(globalThis as Record<string, unknown>)[GLOBAL_KEY]) {
@@ -108,6 +136,116 @@ function getListenersMap(): Map<string, Set<StreamEventListener>> {
 // ==========================================
 // Helpers
 // ==========================================
+
+/**
+ * Build the persisted `messages.content` JSON for a completed turn.
+ *
+ * Phase 5b smoke round 10 (2026-05-16) — extracted into a pure helper
+ * so the active-stream completion path and the persistence path share
+ * one definition, and so we can unit-test all four corner cases:
+ *
+ *   text only          → return `accumulated.trim()` (no JSON envelope)
+ *   thinking only      → blocks: [thinking]
+ *   tool-only          → blocks: [tool_use+tool_result pairs + orphan
+ *                                 tool_results]
+ *   any combination    → blocks include text + thinking + tool pairs
+ *
+ * The pre-fix guard `(hasTools || hasThinking) && (messageContent ||
+ * hasThinking)` returned null when only tools were present without any
+ * text, which is exactly the GPT-Image / imageView shape: tool_use +
+ * tool_result with media, no continuation prose. Net result: the
+ * stream completed, but `finalMessageContent: null` meant
+ * stream-session-manager never appended the assistant message to
+ * the current chat, and the user had to switch sessions for the
+ * DB re-fetch to pick it up.
+ *
+ * Orphan results (matched tool_result with no matching tool_use in
+ * the array) used to be dropped on persistence even though
+ * MessageItem.pairTools() can render them. The new helper walks the
+ * remaining tool_results AFTER pairing and writes each one as a
+ * standalone tool_result block.
+ *
+ * `tool_result.content` is forced to string defensively — the SSE
+ * boundary in `codex/runtime.ts:stringifyToolResultContent` is the
+ * primary normalisation, but a non-string here would still break the
+ * MessageContentBlock type contract.
+ *
+ * Returns null only when EVERY signal is empty (no text, no thinking,
+ * no tools at all). Caller treats null as "no assistant message
+ * worth persisting", which is correct for that case.
+ */
+export function buildFinalMessageContent(args: {
+  accumulated: string;
+  thinking: string;
+  toolUses: readonly ToolUseInfo[];
+  toolResults: readonly ToolResultInfo[];
+}): string | null {
+  const text = args.accumulated.trim();
+  const thinking = args.thinking;
+  const toolUses = args.toolUses;
+  const toolResults = args.toolResults;
+
+  const hasText = text.length > 0;
+  const hasThinking = thinking.length > 0;
+  const hasTools = toolUses.length > 0 || toolResults.length > 0;
+
+  if (!hasText && !hasThinking && !hasTools) return null;
+
+  // Pure text turn — keep the lightweight string form for
+  // back-compat with MessageItem's "plain text" fast path.
+  if (hasText && !hasThinking && !hasTools) return text;
+
+  const blocks: Array<Record<string, unknown>> = [];
+  if (hasThinking) {
+    blocks.push({ type: 'thinking', thinking });
+  }
+  if (hasText) {
+    blocks.push({ type: 'text', text });
+  }
+  const consumedResultIds = new Set<string>();
+  for (const tu of toolUses) {
+    blocks.push({ type: 'tool_use', id: tu.id, name: tu.name, input: tu.input });
+    const tr = toolResults.find(r => r.tool_use_id === tu.id && !consumedResultIds.has(r.tool_use_id));
+    if (tr) {
+      consumedResultIds.add(tr.tool_use_id);
+      blocks.push({
+        type: 'tool_result',
+        tool_use_id: tr.tool_use_id,
+        content: normalizeContentToString(tr.content),
+        ...(tr.is_error ? { is_error: true } : {}),
+        ...(tr.media && tr.media.length > 0 ? { media: tr.media } : {}),
+      });
+    }
+  }
+  // Phase 5b smoke round 10 — orphan tool_results (no matching
+  // tool_use in this turn) still need to land in the persisted
+  // content. MessageItem.pairTools() already renders orphan results;
+  // dropping them at this layer is what made "tool completed but no
+  // image" survive into history even though the stream had it.
+  for (const tr of toolResults) {
+    if (consumedResultIds.has(tr.tool_use_id)) continue;
+    blocks.push({
+      type: 'tool_result',
+      tool_use_id: tr.tool_use_id,
+      content: normalizeContentToString(tr.content),
+      ...(tr.is_error ? { is_error: true } : {}),
+      ...(tr.media && tr.media.length > 0 ? { media: tr.media } : {}),
+    });
+  }
+  return JSON.stringify(blocks);
+}
+
+/** Defensive — content SHOULD be string by the time it reaches the
+ *  persistence layer (SSE boundary stringifies). Belt and braces. */
+function normalizeContentToString(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return '';
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
 
 function buildSnapshot(stream: ActiveStream): SessionStreamSnapshot {
   return {
@@ -198,6 +336,7 @@ export function startStream(params: StartStreamParams): void {
 
   const stream: ActiveStream = {
     sessionId: params.sessionId,
+    workingDirectory: params.workingDirectory ?? null,
     abortController,
     snapshot: {
       sessionId: params.sessionId,
@@ -306,6 +445,9 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
         ...(params.thinking ? { thinking: params.thinking } : {}),
         ...(params.context1m ? { context_1m: true } : {}),
         ...(params.displayOverride ? { displayOverride: params.displayOverride } : {}),
+        ...(params.selectedSkills && params.selectedSkills.length > 0
+          ? { selectedSkills: params.selectedSkills }
+          : {}),
       }),
       signal: stream.abortController.signal,
     });
@@ -317,7 +459,34 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
           detail: { initialCard: err.initialCard ?? 'provider' },
         }));
       }
-      throw new Error(err?.error || 'Failed to send message');
+      // Phase 2 Step 4b — `INVALID_SESSION_PROVIDER` 409: chat route
+      // refuses to send because the session points at a deleted
+      // provider. Surface as a typed window event ChatView listens
+      // for, so the user gets an inline banner ("your saved provider
+      // was deleted — pick another in the composer below") instead
+      // of a generic toast.
+      //
+      // **Step 4b review**: also tag the thrown Error with a `code`
+      // marker AND mark the stream so the catch block at the bottom
+      // of this function knows to take the SILENT error path —
+      // otherwise the `**Error:** Session points at...` text would
+      // get serialized into `finalMessageContent` and render as an
+      // assistant bubble in the transcript, contradicting the "red
+      // banner is the only signal" UX. Generic Error is still
+      // thrown so external callers' onError still fires — they just
+      // can no longer rely on stream.snapshot carrying error text.
+      if (err?.code === 'INVALID_SESSION_PROVIDER' && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('chat-invalid-session-provider', {
+          detail: {
+            sessionId: params.sessionId,
+            sessionProviderId: err.sessionProviderId ?? '',
+            reason: err.reason ?? 'provider-missing',
+          },
+        }));
+      }
+      const e = new Error(err?.error || 'Failed to send message');
+      if (err?.code) (e as Error & { code?: string }).code = err.code;
+      throw e;
     }
 
     const reader = response.body?.getReader();
@@ -370,6 +539,26 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
         emit(stream, 'snapshot-updated');
         // Refresh file tree after each tool completes
         window.dispatchEvent(new Event('refresh-file-tree'));
+        // Phase 4: dispatch codepilot:file-changed when this tool_result
+        // belongs to a write/edit tool and is not an error. Lookup the
+        // matching tool_use by id to read the name + input, then resolve
+        // any relative path against the session's workingDirectory so the
+        // PreviewPanel listener (which keys on absolute paths) matches.
+        // Errored tool_results are ignored — failed writes don't change
+        // the file on disk and the listener shouldn't refetch.
+        if (!res.is_error) {
+          const matchingUse = stream.toolUsesArray.find((u) => u.id === res.tool_use_id);
+          if (matchingUse && isWriteTool(matchingUse.name)) {
+            const rawPath = extractWritePath(matchingUse.input);
+            if (rawPath) {
+              const absolutePath = resolveToolPath(rawPath, stream.workingDirectory);
+              dispatchFileChanged({
+                paths: [absolutePath],
+                source: 'ai-tool',
+              });
+            }
+          }
+        }
       },
       onToolOutput: (data) => {
         markActive();
@@ -483,6 +672,25 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
         markActive();
         stream.rewindPoints = [...stream.rewindPoints, { userMessageId: sdkUserMessageId }];
       },
+      onFileChanged: (paths) => {
+        // Phase 5 Phase 4 (2026-05-13). Codex Runtime emits explicit
+        // file-changed SSE events from fs/changed + fileChange item
+        // lifecycle. ClaudeCode SDK doesn't emit this — its file
+        // changes flow through onToolResult+isWriteTool above. Both
+        // paths converge here at `dispatchFileChanged`, so PreviewPanel
+        // / file-tree / artifact refresh logic is runtime-agnostic.
+        markActive();
+        if (paths.length === 0) return;
+        // Resolve any relative path against the active session's
+        // working directory — Codex sometimes reports relative paths
+        // from `fs/changed`. PreviewPanel listener keys on absolute
+        // paths.
+        const absolute = paths.map((p) => resolveToolPath(p, stream.workingDirectory));
+        dispatchFileChanged({
+          paths: absolute,
+          source: 'ai-tool',
+        });
+      },
       onKeepAlive: () => {
         markActive();
       },
@@ -500,41 +708,18 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
     // Flush any pending throttled text update before building final content
     flushTextThrottle();
 
-    // Stream completed successfully — build final message content
+    // Stream completed successfully — build final message content via
+    // the shared helper that handles text-only / thinking-only /
+    // tool-only / mixed turns + orphan tool results.
     const accumulated = result.accumulated;
-    const finalToolUses = stream.toolUsesArray;
-    const finalToolResults = stream.toolResultsArray;
-    const hasTools = finalToolUses.length > 0 || finalToolResults.length > 0;
-
-    let messageContent = accumulated.trim();
-    // Combine all thinking phases for persistence
     const allThinking = [stream.fullThinking, stream.accumulatedThinking]
       .filter(s => s.trim()).join('\n\n---\n\n');
-    const hasThinking = allThinking.length > 0;
-    if ((hasTools || hasThinking) && (messageContent || hasThinking)) {
-      const contentBlocks: Array<Record<string, unknown>> = [];
-      // Include thinking block if present — rendered as collapsed Reasoning in MessageItem
-      if (hasThinking) {
-        contentBlocks.push({ type: 'thinking', thinking: allThinking });
-      }
-      if (accumulated.trim()) {
-        contentBlocks.push({ type: 'text', text: accumulated.trim() });
-      }
-      for (const tu of finalToolUses) {
-        contentBlocks.push({ type: 'tool_use', id: tu.id, name: tu.name, input: tu.input });
-        const tr = finalToolResults.find(r => r.tool_use_id === tu.id);
-        if (tr) {
-          contentBlocks.push({
-            type: 'tool_result',
-            tool_use_id: tr.tool_use_id,
-            content: tr.content,
-            ...(tr.is_error ? { is_error: true } : {}),
-            ...(tr.media && tr.media.length > 0 ? { media: tr.media } : {}),
-          });
-        }
-      }
-      messageContent = JSON.stringify(contentBlocks);
-    }
+    const messageContent = buildFinalMessageContent({
+      accumulated,
+      thinking: allThinking,
+      toolUses: stream.toolUsesArray,
+      toolResults: stream.toolResultsArray,
+    });
 
     // Update snapshot with completion info
     stream.snapshot = {
@@ -542,7 +727,7 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
       phase: 'completed',
       completedAt: Date.now(),
       tokenUsage: result.tokenUsage,
-      finalMessageContent: messageContent || null,
+      finalMessageContent: messageContent,
       statusText: undefined,
       pendingPermission: null,
       permissionResolved: null,
@@ -674,12 +859,24 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
     } else {
       // Non-abort error
       const errMsg = error instanceof Error ? error.message : 'Unknown error';
+      // Phase 2 Step 4b review — silent error path for
+      // `INVALID_SESSION_PROVIDER`: the inline banner ChatView shows
+      // (driven by the window event we dispatched in the !response.ok
+      // branch above) is the canonical user-facing surface for this
+      // failure mode. Building a `**Error:** Session points at a
+      // provider that no longer exists.` assistant bubble on top of
+      // the banner triples the noise (banner + error bubble + leftover
+      // optimistic user message). ChatView removes the optimistic user
+      // message itself; here we just keep `finalMessageContent: null`
+      // so no error bubble lands in the transcript.
+      const errorCode = (error as Error & { code?: string })?.code;
+      const silentError = errorCode === 'INVALID_SESSION_PROVIDER';
       stream.snapshot = {
         ...buildSnapshot(stream),
         phase: 'error',
         completedAt: Date.now(),
         error: errMsg,
-        finalMessageContent: buildFinalContent(`**Error:** ${errMsg}`),
+        finalMessageContent: silentError ? null : buildFinalContent(`**Error:** ${errMsg}`),
         statusText: undefined,
         pendingPermission: null,
         permissionResolved: null,
@@ -700,25 +897,73 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
 // Stop
 // ==========================================
 
+/** Minimal stream surface stopStreamWith needs — lets the stop logic be
+ *  unit-tested with a fake stream + spy deps, without the (un-injectable)
+ *  module-level streams map. */
+interface StoppableStream {
+  snapshot: { phase: string };
+  abortController: Pick<AbortController, 'abort'>;
+}
+
+interface StopStreamDeps {
+  /** Best-effort graceful interrupt. MUST be bounded by the caller (so a hung
+   *  endpoint can't leak) and swallow its own errors. */
+  requestInterrupt: () => void;
+  /** Schedule the force-abort safety net (tracked on the stream's timers). */
+  scheduleForceAbort: (fn: () => void, ms: number) => void;
+}
+
+/**
+ * Pure/DI core of stopStream. The force-abort safety net is scheduled FIRST
+ * and UNCONDITIONALLY — never gated behind the interrupt request.
+ *
+ * Regression (GitHub #578): the old code scheduled the force-abort inside the
+ * interrupt fetch's `.finally()`. A hung `/api/chat/interrupt` never settles,
+ * so `.finally` never ran, the abort was never scheduled, `phase` stayed
+ * 'active' forever, and the composer's `isStreaming` gate (= phase==='active')
+ * locked the user out of sending after an interrupt.
+ */
+export function stopStreamWith(
+  stream: StoppableStream | undefined,
+  deps: StopStreamDeps,
+  forceAbortMs: number,
+): void {
+  if (!stream || stream.snapshot.phase !== 'active') return;
+  // 1) Safety net FIRST — independent of (and before) the interrupt request,
+  //    so a hung or throwing interrupt can't prevent the fallback abort.
+  deps.scheduleForceAbort(() => {
+    if (stream.snapshot.phase === 'active') {
+      stream.abortController.abort();
+    }
+  }, forceAbortMs);
+  // 2) Best-effort graceful interrupt — stops the backend faster than the
+  //    force-abort when it works; purely an optimization now.
+  deps.requestInterrupt();
+}
+
 export function stopStream(sessionId: string): void {
   const stream = getStreamsMap().get(sessionId);
-  if (stream && stream.snapshot.phase === 'active') {
-    // Try graceful interrupt first, fallback to abort
-    fetch('/api/chat/interrupt', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sessionId }),
-    }).catch(() => {
-      // Interrupt failed, force abort
-    }).finally(() => {
-      // Always abort after a short delay to ensure cleanup
-      streamTimeout(stream, () => {
-        if (stream.snapshot.phase === 'active') {
-          stream.abortController.abort();
-        }
-      }, 2000);
-    });
-  }
+  stopStreamWith(
+    stream,
+    {
+      requestInterrupt: () => {
+        fetch('/api/chat/interrupt', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionId }),
+          // Bounded so a hung endpoint can't leak a pending request; the
+          // scheduled force-abort is the real fallback.
+          signal: AbortSignal.timeout(STREAM_FORCE_ABORT_MS),
+        }).catch(() => {
+          // Interrupt failed/timed out — force-abort already scheduled.
+        });
+      },
+      scheduleForceAbort: (fn, ms) => {
+        if (stream) streamTimeout(stream, fn, ms);
+      },
+    },
+    STREAM_FORCE_ABORT_MS,
+  );
 }
 
 // ==========================================
@@ -878,6 +1123,7 @@ export function seedSnapshotPatch(
   // the ChatView that reads it will re-subscribe on mount (its own useEffect).
   const placeholder: ActiveStream = {
     sessionId,
+    workingDirectory: null,
     abortController: new AbortController(),
     idleCheckTimer: null,
     lastEventTime: Date.now(),

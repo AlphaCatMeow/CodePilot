@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/hooks/useTranslation";
+import { OverviewHeatmap } from "./OverviewHeatmap";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -172,6 +173,7 @@ const RANGE_OPTIONS = [
   { label: "7D", days: 7 },
   { label: "30D", days: 30 },
   { label: "90D", days: 90 },
+  { label: "365D", days: 365 },
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -219,6 +221,10 @@ export function UsageStatsSection() {
 
   // Derive chart data: pivot daily rows into { date, model1: N, model2: N, ... }
   const { chartData, models } = deriveChartData(data?.daily ?? [], days);
+  // Derive cost-by-day series — same date scaffold as the bar chart so
+  // the two share the same x-axis tick density.
+  const costData = deriveCostData(data?.daily ?? [], days);
+  const isZh = t('nav.chats') === '对话';
 
   const summary = data?.summary;
   const totalTokens = summary
@@ -232,7 +238,11 @@ export function UsageStatsSection() {
     : undefined;
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="max-w-4xl mx-auto space-y-8">
+      {/* Page title — matches other Settings sub-pages. */}
+      <div>
+        <h2 className="text-xl font-semibold tracking-tight">{t('settings.usage')}</h2>
+      </div>
       {/* Day range selector */}
       <div className="flex items-center gap-2">
         {RANGE_OPTIONS.map((opt) => (
@@ -280,8 +290,8 @@ export function UsageStatsSection() {
         />
       </div>
 
-      {/* Bar chart */}
-      <div className="rounded-lg border border-border/50 p-4">
+      {/* Bar chart — daily token usage by model */}
+      <div className="rounded-lg border border-border/50 bg-card p-5">
         <h3 className="mb-4 text-sm font-medium">{t('usage.dailyChart')}</h3>
 
         {loading && (
@@ -365,6 +375,75 @@ export function UsageStatsSection() {
           </ResponsiveContainer>
         )}
       </div>
+
+      {/* Daily cost chart — fed by the same range selector. Useful to
+          spot expensive days quickly without doing the math from token
+          counts × per-model price. */}
+      <div className="rounded-lg border border-border/50 bg-card p-5">
+        <h3 className="mb-4 text-sm font-medium">{t('usage.costChart')}</h3>
+
+        {loading && (
+          <div className="flex h-48 items-center justify-center text-sm text-muted-foreground">
+            {t('usage.loading')}
+          </div>
+        )}
+
+        {!loading && !error && costData.length === 0 && (
+          <div className="flex h-48 flex-col items-center justify-center gap-2 text-muted-foreground">
+            <p className="text-sm">{t('usage.noData')}</p>
+          </div>
+        )}
+
+        {!loading && !error && costData.length > 0 && (
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={costData} margin={{ top: 4, right: 4, left: -8, bottom: 0 }}>
+              <CartesianGrid
+                strokeDasharray="3 3"
+                vertical={false}
+                stroke="var(--color-border)"
+                opacity={0.5}
+              />
+              <XAxis
+                dataKey="date"
+                tick={{ fontSize: 11, fill: "var(--color-muted-foreground)" }}
+                tickLine={false}
+                axisLine={false}
+              />
+              <YAxis
+                tickFormatter={(v: number) => formatCost(v)}
+                tick={{ fontSize: 11, fill: "var(--color-muted-foreground)" }}
+                tickLine={false}
+                axisLine={false}
+                width={64}
+              />
+              <Tooltip
+                content={(props: { active?: boolean; payload?: ReadonlyArray<RechartsPayloadItem>; label?: string | number }) => {
+                  if (!props.active || !props.payload?.length) return null;
+                  const v = props.payload[0]?.value ?? 0;
+                  return (
+                    <div className="rounded-lg border border-border/50 bg-popover px-3 py-2 text-xs shadow-md">
+                      <p className="mb-1 font-medium text-popover-foreground">{props.label}</p>
+                      <p className="text-popover-foreground/80 font-mono">{formatCost(v)}</p>
+                    </div>
+                  );
+                }}
+                cursor={{ fill: "var(--color-accent)", opacity: 0.3 }}
+              />
+              <Bar
+                dataKey="cost"
+                fill="var(--color-chart-2)"
+                radius={[3, 3, 0, 0]}
+                maxBarSize={40}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+
+      {/* 365-day activity heatmap — same component the Overview page
+          uses; here we hide the "View details" link since this IS the
+          details page. */}
+      <OverviewHeatmap isZh={isZh} hideViewDetails />
     </div>
   );
 }
@@ -383,12 +462,37 @@ function StatCard({
   sub?: string;
 }) {
   return (
-    <div className="rounded-lg border border-border/50 p-4 transition-shadow hover:shadow-sm">
+    <div className="rounded-lg border border-border/50 bg-card p-5">
       <p className="text-xs text-muted-foreground">{label}</p>
       <p className="mt-1 text-xl font-semibold tabular-nums">{value}</p>
       {sub && <p className="mt-0.5 text-[11px] text-muted-foreground">{sub}</p>}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Cost derive — sum cost per day, fill missing dates with zeros.
+// ---------------------------------------------------------------------------
+
+function deriveCostData(
+  daily: UsageStatsResponse["daily"],
+  days: number,
+): Array<{ date: string; cost: number }> {
+  const byDate = new Map<string, number>();
+  for (const row of daily) {
+    byDate.set(row.date, (byDate.get(row.date) ?? 0) + (row.cost || 0));
+  }
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const result: Array<{ date: string; cost: number }> = [];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - i);
+    const key = getLocalDateString(d);
+    result.push({ date: shortDate(key), cost: byDate.get(key) ?? 0 });
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------

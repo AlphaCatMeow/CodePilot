@@ -8,13 +8,8 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { cn } from "@/lib/utils";
-import {
-  Folder,
-  FolderOpen,
-  File,
-  CaretRight,
-  Plus,
-} from "@phosphor-icons/react";
+import { CaretRight } from "@phosphor-icons/react";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import {
   createContext,
   useCallback,
@@ -28,7 +23,15 @@ interface FileTreeContextType {
   togglePath: (path: string) => void;
   selectedPath?: string;
   onSelect?: (path: string) => void;
-  onAdd?: (path: string) => void;
+  /**
+   * Add affordance — invoked from the per-row hover "+" button. The
+   * nodeType lets the consumer route file vs. directory adds to
+   * different downstream pipelines (file → attachment, directory →
+   * mention chip).
+   */
+  onAdd?: (path: string, nodeType: 'file' | 'directory') => void;
+  /** Localised label used by the "+" button's `title` and `aria-label`. */
+  addLabel?: string;
   /**
    * Separate selected-folder channel from selectedPath so folder and file
    * selection can coexist without one stomping the other. Folder
@@ -58,7 +61,9 @@ export type FileTreeProps = HTMLAttributes<HTMLDivElement> & {
   defaultExpanded?: Set<string>;
   selectedPath?: string;
   onSelect?: (path: string) => void;
-  onAdd?: (path: string) => void;
+  onAdd?: (path: string, nodeType: 'file' | 'directory') => void;
+  /** Localised label for per-row "+" buttons. */
+  addLabel?: string;
   selectedFolderPath?: string;
   onSelectFolder?: (folderPath: string) => void;
   onExpandedChange?: (expanded: Set<string>) => void;
@@ -70,6 +75,7 @@ export const FileTree = ({
   selectedPath,
   onSelect,
   onAdd,
+  addLabel,
   selectedFolderPath,
   onSelectFolder,
   onExpandedChange,
@@ -95,8 +101,8 @@ export const FileTree = ({
   );
 
   const contextValue = useMemo(
-    () => ({ expandedPaths, onAdd, onSelect, selectedPath, togglePath, selectedFolderPath, onSelectFolder }),
-    [expandedPaths, onAdd, onSelect, selectedPath, togglePath, selectedFolderPath, onSelectFolder]
+    () => ({ expandedPaths, onAdd, addLabel, onSelect, selectedPath, togglePath, selectedFolderPath, onSelectFolder }),
+    [expandedPaths, onAdd, addLabel, onSelect, selectedPath, togglePath, selectedFolderPath, onSelectFolder]
   );
 
   return (
@@ -139,7 +145,7 @@ export const FileTreeFolder = ({
   children,
   ...props
 }: FileTreeFolderProps) => {
-  const { expandedPaths, togglePath, selectedFolderPath, onSelectFolder } =
+  const { expandedPaths, togglePath, selectedFolderPath, onSelectFolder, onAdd, addLabel } =
     useContext(FileTreeContext);
   const isExpanded = expandedPaths.has(path);
   const isSelected = selectedFolderPath === path;
@@ -152,6 +158,14 @@ export const FileTreeFolder = ({
     // new-item flow.
     onSelectFolder?.(path);
   }, [togglePath, onSelectFolder, path]);
+
+  const handleAddFolder = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onAdd?.(path, 'directory');
+    },
+    [onAdd, path],
+  );
 
   const folderContextValue = useMemo(
     () => ({ isExpanded, name, path }),
@@ -169,7 +183,7 @@ export const FileTreeFolder = ({
           <CollapsibleTrigger asChild>
             <div
               className={cn(
-                "flex w-full cursor-pointer items-center gap-1 rounded px-2 py-1 text-left transition-colors hover:bg-muted/50",
+                "group/folder flex w-full cursor-pointer items-center gap-1 rounded px-2 py-1 text-left transition-colors hover:bg-muted/50",
                 isSelected && "bg-muted",
               )}
               role="button"
@@ -192,12 +206,23 @@ export const FileTreeFolder = ({
               </span>
               <FileTreeIcon>
                 {isExpanded ? (
-                  <FolderOpen size={16} className="text-muted-foreground" />
+                  <CodePilotIcon name="folder_open" size="md" className="text-muted-foreground" aria-hidden />
                 ) : (
-                  <Folder size={16} className="text-muted-foreground" />
+                  <CodePilotIcon name="folder" size="md" className="text-muted-foreground" aria-hidden />
                 )}
               </FileTreeIcon>
               <FileTreeName>{name}</FileTreeName>
+              {onAdd && (
+                <button
+                  type="button"
+                  className="ml-auto flex size-5 shrink-0 items-center justify-center rounded opacity-0 transition-opacity hover:bg-muted group-hover/folder:opacity-100 focus-visible:opacity-100"
+                  onClick={handleAddFolder}
+                  title={addLabel ?? 'Add to chat'}
+                  aria-label={addLabel ?? 'Add to chat'}
+                >
+                  <CodePilotIcon name="plus" size={12} className="text-muted-foreground" aria-hidden />
+                </button>
+              )}
             </div>
           </CollapsibleTrigger>
           <CollapsibleContent>
@@ -233,7 +258,7 @@ export const FileTreeFile = ({
   children,
   ...props
 }: FileTreeFileProps) => {
-  const { selectedPath, onSelect, onAdd } = useContext(FileTreeContext);
+  const { selectedPath, onSelect, onAdd, addLabel } = useContext(FileTreeContext);
   const isSelected = selectedPath === path;
 
   const handleClick = useCallback(() => {
@@ -252,7 +277,7 @@ export const FileTreeFile = ({
   const handleAdd = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
-      onAdd?.(path);
+      onAdd?.(path, 'file');
     },
     [onAdd, path]
   );
@@ -276,17 +301,18 @@ export const FileTreeFile = ({
         {children ?? (
           <>
             <FileTreeIcon>
-              {icon ?? <File size={16} className="text-muted-foreground" />}
+              {icon ?? <CodePilotIcon name="file" size="md" className="text-muted-foreground" aria-hidden />}
             </FileTreeIcon>
             <FileTreeName>{name}</FileTreeName>
             {onAdd && (
               <button
                 type="button"
-                className="ml-auto flex size-5 shrink-0 items-center justify-center rounded opacity-0 transition-opacity hover:bg-muted group-hover/file:opacity-100"
+                className="ml-auto flex size-5 shrink-0 items-center justify-center rounded opacity-0 transition-opacity hover:bg-muted group-hover/file:opacity-100 focus-visible:opacity-100"
                 onClick={handleAdd}
-                title="Add to chat"
+                title={addLabel ?? 'Add to chat'}
+                aria-label={addLabel ?? 'Add to chat'}
               >
-                <Plus size={12} className="text-muted-foreground" />
+                <CodePilotIcon name="plus" size={12} className="text-muted-foreground" aria-hidden />
               </button>
             )}
           </>

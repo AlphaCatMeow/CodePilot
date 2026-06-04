@@ -5,6 +5,13 @@ import type { TranslationKey } from '@/i18n';
 import type { PlannerItem } from '@/types';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 
 const ASPECT_RATIOS = ['1:1', '16:9', '9:16', '3:2', '2:3', '4:3', '3:4', '4:5', '5:4', '21:9'];
 const RESOLUTIONS = ['1K', '2K', '4K'];
@@ -21,7 +28,7 @@ export function BatchPlanRow({ item, index, onUpdate, onRemove, disabled }: Batc
   const { t } = useTranslation();
 
   return (
-    <div className="group rounded-lg border border-border/60 bg-background p-3 space-y-2 hover:border-border transition-colors">
+    <div className="group rounded-lg border border-border/60 bg-background p-3 space-y-2">
       <div className="flex items-start gap-2">
         <span className="mt-1 text-xs text-muted-foreground font-mono shrink-0 w-6 text-right">
           #{index + 1}
@@ -39,37 +46,43 @@ export function BatchPlanRow({ item, index, onUpdate, onRemove, disabled }: Batc
 
           {/* Controls Row */}
           <div className="flex items-center gap-2 mt-1.5">
-            {/* Aspect Ratio — native select for compact inline use */}
-            {/* eslint-disable-next-line no-restricted-syntax */}
-            <select
+            {/* Aspect Ratio + Resolution — shadcn Select (uniform with
+                the rest of the app and styles correctly under dark
+                mode; native <select> picks up OS chrome). */}
+            <Select
               value={item.aspectRatio}
-              onChange={e => onUpdate(index, { aspectRatio: e.target.value })}
-              className="rounded-md border border-border/40 bg-transparent px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+              onValueChange={(value) => onUpdate(index, { aspectRatio: value })}
               disabled={disabled}
             >
-              {ASPECT_RATIOS.map(r => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-            </select>
-
-            {/* Resolution — native select for compact inline use */}
-            {/* eslint-disable-next-line no-restricted-syntax */}
-            <select
+              <SelectTrigger className="h-7 text-xs px-2 w-auto gap-1 border-border/40 bg-transparent">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {ASPECT_RATIOS.map(r => (
+                  <SelectItem key={r} value={r} className="text-xs">{r}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
               value={item.resolution}
-              onChange={e => onUpdate(index, { resolution: e.target.value })}
-              className="rounded-md border border-border/40 bg-transparent px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50"
+              onValueChange={(value) => onUpdate(index, { resolution: value })}
               disabled={disabled}
             >
-              {RESOLUTIONS.map(r => (
-                <option key={r} value={r}>{r}</option>
-              ))}
-            </select>
+              <SelectTrigger className="h-7 text-xs px-2 w-auto gap-1 border-border/40 bg-transparent">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {RESOLUTIONS.map(r => (
+                  <SelectItem key={r} value={r} className="text-xs">{r}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
 
             {/* Tags */}
             {item.tags.length > 0 && (
               <div className="flex items-center gap-1 overflow-hidden">
                 {item.tags.map((tag, i) => (
-                  <span key={i} className="inline-block rounded-full bg-purple-500/10 text-purple-600 dark:text-purple-400 px-1.5 py-0 text-[10px]">
+                  <span key={i} className="inline-flex items-center rounded-full bg-primary/10 text-primary px-2 py-0.5 text-[10px] font-medium">
                     {tag}
                   </span>
                 ))}

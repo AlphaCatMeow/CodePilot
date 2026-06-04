@@ -201,8 +201,7 @@ interface MediaBlock {
 
 `needsMediaMcp`（`claude-client.ts`）：
 - 匹配：`生成图片|画一|图像|图片|素材|保存.*素材|import.*library|save.*library|codepilot_import_media|codepilot_generate_image`
-- **设计 Agent 模式（`imageAgentMode=true`）不触发**——避免与旧链路冲突
-- `imageAgentMode` 精确判断：检测 `systemPromptAppend` 包含 `image-gen-request` 字符串（设计 Agent prompt 的特征），而非任意非空 `systemPromptAppend`
+- **历史说明（2026-04-30 起失效）**：早期有一条 `imageAgentMode` 旁路用于 Design Agent 模式，避免与旧 image-gen-request 链路冲突。Phase 2D.0 已移除整套触发器（i18n key、ImageGenContext、imageAgentMode flag、IMAGE_AGENT_SYSTEM_PROMPT），因为它从未真正暴露给用户。媒体 MCP 现在只受关键词门控；旧的 image-gen-request 渲染（`ImageGenConfirmation`）保留以渲染历史消息
 
 ### 自动审批
 

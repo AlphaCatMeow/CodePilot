@@ -24,32 +24,42 @@ export function FilesTabPanel({ files, refreshingDocs, onRefreshDocs }: FilesTab
   const { t } = useTranslation();
 
   return (
-    <div className="space-y-2">
-      {Object.entries(FILE_LABELS).map(([key, label]) => {
-        const file = files[key];
-        return (
-          <div key={key} className="flex items-center justify-between text-sm">
-            <span className="font-mono text-xs">{label}</span>
-            <div className="flex items-center gap-2">
-              {file?.exists ? (
-                <>
-                  <span className="text-xs text-muted-foreground">
-                    {t('assistant.fileChars', { count: String(file.chars) })}
-                  </span>
-                  <span className="h-2 w-2 rounded-full bg-status-success" />
-                  <span className="text-xs text-status-success-foreground">{t('assistant.fileExists')}</span>
-                </>
-              ) : (
-                <>
-                  <span className="h-2 w-2 rounded-full bg-status-warning" />
-                  <span className="text-xs text-status-warning-foreground">{t('assistant.fileMissing')}</span>
-                </>
-              )}
-            </div>
-          </div>
-        );
-      })}
-      <div className="flex items-center justify-end mt-3">
+    <div className="space-y-3">
+      {/* Inset-divider sub-card per `docs/design.md` § Sub-card —
+          rounded-md bg-muted/40 + px-3.5 + divide-y. Replaces the flat
+          `space-y-2` row list and individual hand-rolled `border-border/30`
+          row borders. */}
+      <div className="rounded-md bg-muted/40">
+        <div className="px-3.5 divide-y divide-border/50">
+          {Object.entries(FILE_LABELS).map(([key, label]) => {
+            const file = files[key];
+            return (
+              <div key={key} className="flex items-center justify-between py-2.5 text-sm">
+                <span className="font-mono text-xs">{label}</span>
+                <div className="flex items-center gap-2">
+                  {file?.exists ? (
+                    <>
+                      <span className="text-xs text-muted-foreground">
+                        {t('assistant.fileChars', { count: String(file.chars) })}
+                      </span>
+                      <span className="inline-flex items-center gap-1 rounded-full bg-status-success-muted px-2 py-0.5 text-[10px] font-medium text-status-success-foreground">
+                        <span className="size-1.5 rounded-full bg-status-success-foreground" />
+                        {t('assistant.fileExists')}
+                      </span>
+                    </>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-status-warning-muted px-2 py-0.5 text-[10px] font-medium text-status-warning-foreground">
+                      <span className="size-1.5 rounded-full bg-status-warning-foreground" />
+                      {t('assistant.fileMissing')}
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+      <div className="flex items-center justify-end">
         <Button
           variant="outline"
           size="sm"
@@ -80,30 +90,33 @@ export function TaxonomyTabPanel({ taxonomy }: TaxonomyTabPanelProps) {
   const { t } = useTranslation();
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
       <p className="text-xs text-muted-foreground">{t('assistant.taxonomyDesc')}</p>
       {taxonomy.length === 0 ? (
         <p className="text-xs text-muted-foreground italic">{t('assistant.taxonomyEmpty')}</p>
       ) : (
-        <div className="space-y-1.5">
-          {taxonomy.map(cat => (
-            <div key={cat.id} className="flex items-center justify-between text-xs border border-border/30 rounded px-2 py-1.5">
-              <div>
-                <span className="font-medium">{cat.label}</span>
-                <span className="text-muted-foreground ml-2">{t('assistant.taxonomyRole')}: {cat.role}</span>
+        // Inset-divider sub-card pattern. Replaces individual /30 rows.
+        <div className="rounded-md bg-muted/40">
+          <div className="px-3.5 divide-y divide-border/50">
+            {taxonomy.map(cat => (
+              <div key={cat.id} className="flex items-center justify-between gap-2 py-2.5 text-xs">
+                <div className="min-w-0">
+                  <span className="font-medium">{cat.label}</span>
+                  <span className="text-muted-foreground ml-2">{t('assistant.taxonomyRole')}: {cat.role}</span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <span className="text-muted-foreground">{t('assistant.taxonomySource')}: {cat.source}</span>
+                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                    cat.confidence > 0.7 ? 'bg-status-success-muted text-status-success-foreground' :
+                    cat.confidence > 0.4 ? 'bg-status-warning-muted text-status-warning-foreground' :
+                    'bg-status-error-muted text-status-error-foreground'
+                  }`}>
+                    {Math.round(cat.confidence * 100)}%
+                  </span>
+                </div>
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-muted-foreground">{t('assistant.taxonomySource')}: {cat.source}</span>
-                <span className={`px-1.5 py-0.5 rounded text-[10px] ${
-                  cat.confidence > 0.7 ? 'bg-status-success-muted text-status-success-foreground' :
-                  cat.confidence > 0.4 ? 'bg-status-warning-muted text-status-warning-foreground' :
-                  'bg-status-error-muted text-status-error-foreground'
-                }`}>
-                  {Math.round(cat.confidence * 100)}%
-                </span>
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
     </div>
@@ -126,16 +139,16 @@ export function IndexTabPanel({ indexStats, reindexing, onReindex }: IndexTabPan
       <p className="text-xs text-muted-foreground">{t('assistant.indexDesc')}</p>
       {indexStats ? (
         <div className="grid grid-cols-2 gap-2 text-xs">
-          <div className="border border-border/30 rounded px-2 py-1.5">
+          <div className="rounded-md bg-muted/40 px-3 py-2">
             <span className="text-muted-foreground">{t('assistant.indexFiles', { count: String(indexStats.fileCount) })}</span>
           </div>
-          <div className="border border-border/30 rounded px-2 py-1.5">
+          <div className="rounded-md bg-muted/40 px-3 py-2">
             <span className="text-muted-foreground">{t('assistant.indexChunks', { count: String(indexStats.chunkCount) })}</span>
           </div>
-          <div className="border border-border/30 rounded px-2 py-1.5">
+          <div className="rounded-md bg-muted/40 px-3 py-2">
             <span className="text-muted-foreground">{t('assistant.indexStale', { count: String(indexStats.staleCount) })}</span>
           </div>
-          <div className="border border-border/30 rounded px-2 py-1.5">
+          <div className="rounded-md bg-muted/40 px-3 py-2">
             <span className="text-muted-foreground">
               {t('assistant.indexLastIndexed')}: {indexStats.lastIndexed ? new Date(indexStats.lastIndexed).toLocaleString() : 'never'}
             </span>

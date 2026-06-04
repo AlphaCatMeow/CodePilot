@@ -22,6 +22,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   shell: {
     openPath: (folderPath: string) => ipcRenderer.invoke('shell:open-path', folderPath),
   },
+  app: {
+    getLogPath: () => ipcRenderer.invoke('app:get-log-path') as Promise<string | null>,
+  },
   dialog: {
     openFolder: (options?: { defaultPath?: string; title?: string }) =>
       ipcRenderer.invoke('dialog:open-folder', options),
@@ -82,10 +85,31 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
   },
   notification: {
-    show: (options: { title: string; body: string; onClick?: unknown }) =>
+    // Phase 3 Step 3: payload extended with task / session / event IDs
+    // so the click → router.push round-trip can route to the right
+    // /settings/tasks?focus=… or chat session.
+    show: (options: {
+      title: string;
+      body: string;
+      onClick?: unknown;
+      taskId?: string;
+      sessionId?: string;
+      event_id?: string;
+    }) =>
       ipcRenderer.invoke('notification:show', options),
-    onClick: (callback: (action: { type: string; payload: string }) => void) => {
-      const listener = (_event: unknown, action: { type: string; payload: string }) => callback(action);
+    onClick: (
+      callback: (
+        action:
+          | { type: string; payload: string }
+          | { taskId?: string; sessionId?: string; event_id?: string },
+      ) => void,
+    ) => {
+      const listener = (
+        _event: unknown,
+        action:
+          | { type: string; payload: string }
+          | { taskId?: string; sessionId?: string; event_id?: string },
+      ) => callback(action);
       ipcRenderer.on('notification:click', listener);
       return () => { ipcRenderer.removeListener('notification:click', listener); };
     },

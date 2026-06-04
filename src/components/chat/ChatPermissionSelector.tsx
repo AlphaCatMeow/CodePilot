@@ -3,6 +3,8 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { useTranslation } from '@/hooks/useTranslation';
+import type { TranslationKey } from '@/i18n';
+import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -19,8 +21,10 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { Button } from '@/components/ui/button';
-import { Lock, LockOpen, CaretDown } from '@/components/ui/icon';
+import { CaretDown } from '@/components/ui/icon';
+// LockOpen removed — both lock/lock-open render via CodePilotIcon
+// `permission` alias; the open state just gets a red color override.
+import { CodePilotIcon } from '@/components/ui/semantic-icon';
 
 interface ChatPermissionSelectorProps {
   sessionId?: string;
@@ -73,19 +77,27 @@ export function ChatPermissionSelector({
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <Button
-            variant="outline"
-            size="sm"
+            variant="ghost"
+            size="xs"
             className={cn(
-              'rounded-md px-2.5 h-7 text-xs font-medium border transition-all gap-1',
+              'h-7 rounded-md',
               isFullAccess
-                ? 'bg-status-error-muted text-status-error-foreground border-status-error-foreground/30'
-                : 'text-muted-foreground border-border/60 hover:text-foreground hover:border-foreground/30 hover:bg-accent/50'
+                // full_access is a dangerous override — keep the chip
+                // visible at full weight. Override ghost's hover so the
+                // chip doesn't flash to neutral accent.
+                ? 'text-xs font-medium border-status-error-foreground/30 bg-status-error-muted text-status-error-foreground hover:bg-status-error-muted hover:text-status-error-foreground'
+                // Default permission sits at the same muted-foreground
+                // grey as the mode select beside it; the only weight
+                // difference is `font-normal` (vs the mode select's
+                // `font-medium`). Going faded was too much — the user
+                // still needs to read the label without squinting.
+                : 'text-xs font-normal text-muted-foreground',
             )}
           >
             {isFullAccess ? (
-              <LockOpen size={14} className="text-status-error-foreground" />
+              <CodePilotIcon name="permission" size={12} className="text-status-error-foreground" aria-hidden />
             ) : (
-              <Lock size={14} />
+              <CodePilotIcon name="permission" size={12} aria-hidden />
             )}
             <span>
               {isFullAccess ? t('permission.fullAccess') : t('permission.default')}
@@ -93,14 +105,24 @@ export function ChatPermissionSelector({
             <CaretDown size={10} className="opacity-60" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-[140px]">
-          <DropdownMenuItem onClick={() => handleSelect('default')}>
-            <Lock size={14} />
-            <span>{t('permission.default')}</span>
+        <DropdownMenuContent align="start" className="min-w-[240px]">
+          <DropdownMenuItem onClick={() => handleSelect('default')} className="items-start py-2">
+            <CodePilotIcon name="permission" size="sm" className="mt-0.5" aria-hidden />
+            <div className="flex flex-col items-start gap-0.5">
+              <span>{t('permission.default')}</span>
+              <span className="text-[11px] text-muted-foreground leading-tight">
+                {t('permission.defaultDesc' as TranslationKey)}
+              </span>
+            </div>
           </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => handleSelect('full_access')}>
-            <LockOpen size={14} className="text-status-error-foreground" />
-            <span>{t('permission.fullAccess')}</span>
+          <DropdownMenuItem onClick={() => handleSelect('full_access')} className="items-start py-2">
+            <CodePilotIcon name="permission" size="sm" className="mt-0.5 text-status-error-foreground" aria-hidden />
+            <div className="flex flex-col items-start gap-0.5">
+              <span className="text-status-error-foreground">{t('permission.fullAccess')}</span>
+              <span className="text-[11px] text-status-error-foreground/70 leading-tight">
+                {t('permission.fullAccessDesc' as TranslationKey)}
+              </span>
+            </div>
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>

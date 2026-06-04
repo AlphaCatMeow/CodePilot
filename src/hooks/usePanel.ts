@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext } from "react";
+import type { PreviewTrust } from "@/lib/preview-source";
 
 export type PanelContent = "files" | "tasks";
 
@@ -18,13 +19,73 @@ export type PreviewViewMode = "source" | "rendered" | "edit";
  * breadcrumb / copy fallback text. The file variant uses the path's
  * basename for display.
  *
+ * The file variant carries a Phase-4 `trust` tier:
+ *   - workspace        : path under sessionWorkingDirectory; loads with
+ *                        baseDir, editable.
+ *   - user-selected    : path outside workspace, user has authorized
+ *                        opening; loads without workspace baseDir,
+ *                        defaults readonly.
+ *   - agent-referenced : path outside workspace, named by an AI tool;
+ *                        PreviewPanel must render a confirm card and
+ *                        delay fetch until the user accepts (which
+ *                        transitions the source to user-selected).
+ *
+ * `trust` is optional for back-compat with callers and persisted state
+ * pre-Phase-4 — consumers that read it should default a missing value
+ * to 'workspace'. New code (this commit onward) sets it explicitly.
+ *
  * Callers should use `setPreviewSource({ kind, ... })`. The legacy
  * `setPreviewFile(path)` API is preserved as an adapter that produces
- * `{ kind: 'file', filePath: path }`.
+ * `{ kind: 'file', filePath: path, trust: 'workspace', baseDir: workingDirectory }`.
  */
 export type PreviewSource =
-  | { kind: "file"; filePath: string }
-  | { kind: "inline-html"; html: string; virtualName?: string }
+  | {
+      kind: "file";
+      filePath: string;
+      trust?: PreviewTrust;
+      /** baseDir for /api/files/preview scoping. workspace tier sets
+       *  this to workingDirectory; user-selected / agent-referenced
+       *  leave it undefined so the route falls back to homeDir. */
+      baseDir?: string;
+      /** When true, edit / save / autosave are disabled in PreviewPanel. */
+      readonly?: boolean;
+      /**
+       * Phase 4 — optional anchor to scroll to after the file loads.
+       * Three accepted forms:
+       *   `#L12`         → line 12, source/edit view
+       *   `:12` / `:12:5`→ same, Codex-style suffix
+       *   `#slug`        → heading slug, rendered view (Markdown only)
+       *
+       * The panel parses this via `parseAnchor()` from
+       * `src/lib/markdown/anchor.ts`. Invalid anchors are ignored.
+       */
+      anchor?: string;
+      /**
+       * Phase 4 UX — Markdown presentation style applied in-place to
+       * the rendered view. NOT an artifact: the file is still the
+       * source of truth; the template only changes typography/colors
+       * via a CSS class on the body wrapper. Persists with the tab
+       * so each Markdown opens with the user's last choice for that
+       * file. Missing = `article` (the polished default).
+       */
+      presentationTemplate?: import("@/lib/markdown/presentation-templates").MarkdownPresentationStyle;
+    }
+  | { kind: "inline-html"; html: string; virtualName?: string;
+      /**
+       * Phase 4 — optional "source backlink" for HTML artifacts
+       * generated from a Markdown file. PreviewPanel renders this
+       * as a chip in the header and a "Refresh from source" action.
+       */
+      sourceBacklink?: PreviewSourceBacklink;
+      /**
+       * Phase 4 P1.2 — CSP mode for the injected meta. `strict`
+       * (default) applies the Round 4 Static baseline: no scripts,
+       * no egress, https only for img/style/font/media. `navigate`
+       * is the special case for the localhost-artifact redirector
+       * which needs meta-refresh navigation to work; everything
+       * else (fetch / nested frame / worker) stays closed.
+       */
+      cspMode?: "strict" | "navigate" }
   | {
       kind: "inline-jsx";
       jsx: string;
@@ -37,20 +98,81 @@ export type PreviewSource =
       rows: unknown[][];
       header: string[];
       virtualName?: string;
-    };
+    }
+  /**
+   * Phase 4.B — JSON tree viewer. Used by the code-block Preview action
+   * for ```json fences. `text` is the raw JSON; the viewer parses it
+   * and falls back to a syntax-highlighted text view on parse error.
+   */
+  | { kind: "inline-json"; text: string; virtualName?: string }
+  /**
+   * Phase 4.B — unified diff viewer. Used by ```diff fences. The
+   * viewer parses hunks line-by-line and color-codes +/- prefixes.
+   */
+  | { kind: "inline-diff"; diff: string; virtualName?: string }
+  /**
+   * Phase 4.B — Markdown content rendered inline without a file source.
+   * Used by ```md/```markdown fences and by the Markdown→HTML
+   * presentation pipeline when the user previews the source markdown.
+   */
+  | { kind: "inline-markdown"; markdown: string; virtualName?: string };
+
+/**
+ * Source backlink metadata attached to inline-html sources that were
+ * generated FROM a Markdown file. PreviewPanel uses this to render
+ * the source-of-truth chip + a "Refresh from source" affordance, so
+ * the user always knows the Markdown is the authoritative copy and
+ * the HTML is a derived view.
+ *
+ * Phase 4 P2.2 — the backlink carries the original trust tier and
+ * baseDir of the source file so the refresh action can re-fetch
+ * through the same scope the user originally authorized. Without
+ * this, refreshing a presentation generated from an external
+ * user-selected Markdown would 403 against the current chat's
+ * workspace baseDir.
+ */
+export interface PreviewSourceBacklink {
+  /** Absolute path to the source Markdown file */
+  sourcePath: string;
+  /** Optional heading slug or `#L12` line marker — the chip surfaces
+   *  this so the user knows which section the artifact was rendered
+   *  from. */
+  sourceAnchor?: string;
+  /** Identifier for the template used. Lets the refresh action
+   *  re-generate with the same look. */
+  templateId?: string;
+  /** Trust tier of the source file at generation time. The refresh
+   *  action uses this to decide which scope to pass to /api/files/
+   *  preview — `workspace` re-uses `sourceBaseDir`; `user-selected`
+   *  intentionally omits baseDir so the route falls back to homeDir
+   *  (matching the original fetch). */
+  sourceTrust?: PreviewTrust;
+  /** baseDir associated with the source at generation time. Only
+   *  populated for the `workspace` tier. */
+  sourceBaseDir?: string;
+  /** Whether the source was readonly at generation time. */
+  sourceReadonly?: boolean;
+}
+
+export type { PreviewTrust };
 
 export interface PanelContextValue {
-  // --- New independent panel states ---
+  // --- Left sidebar (chat list / nav) state ---
+  // Lives in AppShell but exposed here so the in-sidebar collapse
+  // button and the UnifiedTopBar reopen button can both flip it.
+  chatListOpen: boolean;
+  setChatListOpen: (open: boolean) => void;
+
+  // --- Right-side panel states ---
+  // Phase 2 (2026-04-30): gitPanelOpen / dashboardPanelOpen / previewOpen
+  // were removed — those surfaces moved into the Workspace Sidebar
+  // (Git + Widget fixed Tabs, Markdown / Artifact / file preview as
+  // dynamic Tabs). fileTreeOpen stays as the lightweight file tree's
+  // independent topbar entry; assistantPanelOpen is its own concern.
   fileTreeOpen: boolean;
   setFileTreeOpen: (open: boolean) => void;
-  gitPanelOpen: boolean;
-  setGitPanelOpen: (open: boolean) => void;
-  previewOpen: boolean;
-  setPreviewOpen: (open: boolean) => void;
   terminalOpen: boolean;
   setTerminalOpen: (open: boolean) => void;
-  dashboardPanelOpen: boolean;
-  setDashboardPanelOpen: (open: boolean) => void;
   assistantPanelOpen: boolean;
   setAssistantPanelOpen: (open: boolean) => void;
   isAssistantWorkspace: boolean;

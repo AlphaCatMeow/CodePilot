@@ -1,15 +1,25 @@
 import { cn } from '@/lib/utils';
+import type { CSSProperties } from 'react';
 
 interface CodePilotLogoProps {
   className?: string;
+  /** Inline size (px). When omitted, the SVG fills its container. Used
+   *  by the RuntimeSelector trigger / dropdown items where the icon
+   *  sits next to small text and needs a concrete pixel size. */
+  size?: number;
+  style?: CSSProperties;
 }
 
-export function CodePilotLogo({ className }: CodePilotLogoProps) {
+export function CodePilotLogo({ className, size, style }: CodePilotLogoProps) {
+  const sized: CSSProperties | undefined = size != null
+    ? { width: size, height: size, ...style }
+    : style;
   return (
     <svg
       viewBox="-150 -150 300 300"
       xmlns="http://www.w3.org/2000/svg"
       className={cn("rounded-full", className)}
+      style={sized}
     >
       {/* Background: gray in light, dark in dark mode */}
       <rect

@@ -1,22 +1,24 @@
 'use client';
 
-import { useCallback } from 'react';
-import { Terminal, NotePencil, Brain, GlobeSimple, Lightning, Folder, File } from '@/components/ui/icon';
+import { NotePencil, GlobeSimple, Folder, File } from '@/components/ui/icon';
+import { CodePilotIcon } from '@/components/ui/semantic-icon';
 import { useTranslation } from '@/hooks/useTranslation';
 import type { TranslationKey } from '@/i18n';
 import type { PopoverItem, PopoverMode } from '@/types';
 import {
   CommandList,
-  CommandListSearch,
   CommandListItems,
   CommandListItem,
   CommandListGroup,
-  CommandListFooter,
-  CommandListFooterAction,
 } from '@/components/patterns';
 
 export type { PopoverItem, PopoverMode } from '@/types';
 
+// Codex-style attached card: drops the in-popover search bar and the
+// "manage shortcut" footer per April 2026 feedback. Filtering is driven
+// from textarea content (handleInputChange in useSlashCommands), and
+// keyboard nav comes from MessageInput's textarea handleKeyDown — the
+// popover is purely presentational here.
 interface SlashCommandPopoverProps {
   popoverMode: PopoverMode;
   popoverRef: React.RefObject<HTMLDivElement | null>;
@@ -24,17 +26,9 @@ interface SlashCommandPopoverProps {
   aiSuggestions: PopoverItem[];
   aiSearchLoading: boolean;
   selectedIndex: number;
-  popoverFilter: string;
-  inputValue: string;
-  triggerPos: number | null;
-  searchInputRef: React.RefObject<HTMLInputElement | null>;
   allDisplayedItems: PopoverItem[];
   onInsertItem: (item: PopoverItem) => void;
   onSetSelectedIndex: (index: number) => void;
-  onSetPopoverFilter: (filter: string) => void;
-  onSetInputValue: (value: string) => void;
-  onClosePopover: () => void;
-  onFocusTextarea: () => void;
 }
 
 export function SlashCommandPopover({
@@ -44,17 +38,9 @@ export function SlashCommandPopover({
   aiSuggestions,
   aiSearchLoading,
   selectedIndex,
-  popoverFilter,
-  inputValue,
-  triggerPos,
-  searchInputRef,
   allDisplayedItems,
   onInsertItem,
   onSetSelectedIndex,
-  onSetPopoverFilter,
-  onSetInputValue,
-  onClosePopover,
-  onFocusTextarea,
 }: SlashCommandPopoverProps) {
   const { t } = useTranslation();
 
@@ -62,35 +48,6 @@ export function SlashCommandPopover({
   const slashCommandItems = filteredItems.filter(item => !item.builtIn && item.kind !== 'agent_skill');
   const agentSkillItems = filteredItems.filter(item => !item.builtIn && item.kind === 'agent_skill');
   let globalIdx = 0;
-
-  const handleSearchKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      onSetSelectedIndex((selectedIndex + 1) % allDisplayedItems.length);
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      onSetSelectedIndex((selectedIndex - 1 + allDisplayedItems.length) % allDisplayedItems.length);
-    } else if (e.key === 'Enter' || e.key === 'Tab') {
-      e.preventDefault();
-      if (allDisplayedItems[selectedIndex]) {
-        onInsertItem(allDisplayedItems[selectedIndex]);
-      }
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      onClosePopover();
-      onFocusTextarea();
-    }
-  }, [selectedIndex, allDisplayedItems, onSetSelectedIndex, onInsertItem, onClosePopover, onFocusTextarea]);
-
-  const handleFilterChange = useCallback((val: string) => {
-    onSetPopoverFilter(val);
-    onSetSelectedIndex(0);
-    // Sync textarea: replace the filter portion after /
-    if (triggerPos !== null) {
-      const before = inputValue.slice(0, triggerPos + 1);
-      onSetInputValue(before + val);
-    }
-  }, [triggerPos, inputValue, onSetPopoverFilter, onSetSelectedIndex, onSetInputValue]);
 
   const renderItem = (item: PopoverItem, idx: number) => (
     <CommandListItem
@@ -104,16 +61,16 @@ export function SlashCommandPopover({
         item.nodeType === 'directory'
           ? <Folder size={16} className="shrink-0 text-muted-foreground" />
           : <File size={16} className="shrink-0 text-muted-foreground" />
-      ) : item.builtIn && item.icon ? (
-        (() => { const ItemIcon = item.icon; return <ItemIcon size={16} className="shrink-0 text-muted-foreground" />; })()
+      ) : item.builtIn && item.iconName ? (
+        <CodePilotIcon name={item.iconName} size="md" className="shrink-0 text-muted-foreground" aria-hidden />
       ) : item.kind === 'agent_skill' ? (
-        <Brain size={16} className="shrink-0 text-muted-foreground" />
+        <CodePilotIcon name="skill" size="md" className="shrink-0 text-muted-foreground" />
       ) : item.kind === 'slash_command' ? (
         <NotePencil size={16} className="shrink-0 text-muted-foreground" />
       ) : !item.builtIn ? (
         <GlobeSimple size={16} className="shrink-0 text-muted-foreground" />
       ) : (
-        <Terminal size={16} className="shrink-0 text-muted-foreground" />
+        <CodePilotIcon name="terminal" size="md" className="shrink-0 text-muted-foreground" />
       )}
       <span className="font-mono text-xs truncate">{item.display || item.label}</span>
       {(item.descriptionKey || item.description) && (
@@ -134,17 +91,8 @@ export function SlashCommandPopover({
 
   return (
     <div ref={popoverRef}>
-      <CommandList className="w-full max-w-2xl">
-        <CommandListSearch
-          inputRef={searchInputRef}
-          placeholder={popoverMode === 'file'
-            ? t('composer.searchFiles' as TranslationKey)
-            : undefined}
-          value={popoverFilter}
-          onChange={handleFilterChange}
-          onKeyDown={handleSearchKeyDown}
-        />
-        <CommandListItems className="max-h-48">
+      <CommandList className="w-full">
+        <CommandListItems className="max-h-72">
           {popoverMode === 'file' ? (
             <CommandListGroup label={t('globalSearch.files' as TranslationKey)}>
               {filteredItems.map((item, i) => renderItem(item, i))}
@@ -175,11 +123,10 @@ export function SlashCommandPopover({
                   })}
                 </CommandListGroup>
               )}
-              {/* AI Suggested section */}
               {(aiSuggestions.length > 0 || aiSearchLoading) && (
                 <CommandListGroup>
                   <div className="px-3 py-1.5 text-xs font-medium text-muted-foreground flex items-center gap-1.5">
-                    <Brain size={14} />
+                    <CodePilotIcon name="assistant" size="sm" />
                     {t('messageInput.aiSuggested')}
                     {aiSearchLoading && (
                       <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
@@ -194,15 +141,6 @@ export function SlashCommandPopover({
             </>
           )}
         </CommandListItems>
-        {/* Footer: manage skills (skill mode only) */}
-        {popoverMode === 'skill' && (
-          <CommandListFooter>
-            <CommandListFooterAction onClick={() => { onClosePopover(); window.location.href = '/skills'; }}>
-              <Lightning size={14} />
-              {t('composer.manageSkills' as TranslationKey)}
-            </CommandListFooterAction>
-          </CommandListFooter>
-        )}
       </CommandList>
     </div>
   );

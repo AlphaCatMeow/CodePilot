@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Folder, DotOutline, ArrowRight, Plus } from "@/components/ui/icon";
+import { DotOutline, ArrowRight } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useRouter } from "next/navigation";
@@ -83,7 +84,7 @@ export function GitWorktreeSection({ cwd, onDeriveWorktree }: GitWorktreeSection
             key={wt.path}
             className={`flex items-center gap-2 px-3 py-1.5 ${current ? 'bg-muted/30' : 'hover:bg-muted/20'}`}
           >
-            <Folder size={14} className={current ? 'text-foreground shrink-0' : 'text-muted-foreground shrink-0'} />
+            <CodePilotIcon name="folder" size="sm" className={current ? 'text-foreground shrink-0' : 'text-muted-foreground shrink-0'} aria-hidden />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1">
                 <span className={`text-[12px] truncate ${current ? 'font-medium' : ''}`}>
@@ -120,7 +121,7 @@ export function GitWorktreeSection({ cwd, onDeriveWorktree }: GitWorktreeSection
           className="w-full text-xs"
           onClick={onDeriveWorktree}
         >
-          <Plus size={14} className="mr-1.5" />
+          <CodePilotIcon name="plus" size="sm" className="mr-1.5" aria-hidden />
           {t('git.deriveWorktree')}
         </Button>
       </div>

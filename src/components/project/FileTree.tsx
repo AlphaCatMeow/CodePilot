@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { ArrowsClockwise, MagnifyingGlass, FileCode, Code, File } from "@/components/ui/icon";
-import { Button } from "@/components/ui/button";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { FileTreeNode } from "@/types";
@@ -12,12 +11,13 @@ import {
   FileTreeFile,
 } from "@/components/ai-elements/file-tree";
 import { useTranslation } from "@/hooks/useTranslation";
+import type { TranslationKey } from "@/i18n";
 import type { ReactNode } from "react";
 
 interface FileTreeProps {
   workingDirectory: string;
   onFileSelect: (path: string) => void;
-  onFileAdd?: (path: string) => void;
+  onFileAdd?: (path: string, nodeType: 'file' | 'directory') => void;
   /** Path of the currently-selected folder (for highlight + create target). */
   selectedFolderPath?: string;
   /** Called when the user clicks a folder row — selects the folder + toggles. */
@@ -50,19 +50,19 @@ function getFileIcon(extension?: string): ReactNode {
     case "lua":
     case "php":
     case "zig":
-      return <FileCode size={16} className="text-muted-foreground" />;
+      return <CodePilotIcon name="file_code" size="md" className="text-muted-foreground" aria-hidden />;
     case "json":
     case "yaml":
     case "yml":
     case "toml":
-      return <Code size={16} className="text-muted-foreground" />;
+      return <CodePilotIcon name="code" size="md" className="text-muted-foreground" aria-hidden />;
     case "md":
     case "mdx":
     case "txt":
     case "csv":
-      return <File size={16} className="text-muted-foreground" />;
+      return <CodePilotIcon name="file" size="md" className="text-muted-foreground" aria-hidden />;
     default:
-      return <File size={16} className="text-muted-foreground" />;
+      return <CodePilotIcon name="file" size="md" className="text-muted-foreground" aria-hidden />;
   }
 }
 
@@ -259,10 +259,13 @@ export function FileTree({ workingDirectory, onFileSelect, onFileAdd, selectedFo
 
   return (
     <div className="flex flex-col h-full min-h-0">
-      {/* Search + Refresh */}
-      <div className="flex items-center gap-1.5 px-4 py-2 shrink-0">
-        <div className="relative flex-1 min-w-0">
-          <MagnifyingGlass size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+      {/* Search row — full-width, dedicated. The Refresh button used to
+          live here on the right; it moved up to the action icons row in
+          FileTreePanel, which now dispatches `filetree-refresh` window
+          events that the effect below catches. */}
+      <div className="px-3 pb-2 shrink-0">
+        <div className="relative">
+          <CodePilotIcon name="search" size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" aria-hidden />
           <Input
             placeholder={t('fileTree.filterFiles')}
             value={searchQuery}
@@ -270,23 +273,13 @@ export function FileTree({ workingDirectory, onFileSelect, onFileAdd, selectedFo
             className="h-7 pl-7 text-xs"
           />
         </div>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          onClick={fetchTree}
-          disabled={loading}
-          className="h-7 w-7 shrink-0"
-        >
-          <ArrowsClockwise size={12} className={cn(loading && "animate-spin")} />
-          <span className="sr-only">{t('fileTree.refresh')}</span>
-        </Button>
       </div>
 
       {/* Tree */}
       <div className="flex-1 overflow-auto">
         {loading && tree.length === 0 ? (
           <div className="flex items-center justify-center py-8">
-            <ArrowsClockwise size={16} className="animate-spin text-muted-foreground" />
+            <CodePilotIcon name="refresh" size="md" className="animate-spin text-muted-foreground" aria-hidden />
           </div>
         ) : tree.length === 0 ? (
           <p className="py-4 text-center text-xs text-muted-foreground">
@@ -299,6 +292,7 @@ export function FileTree({ workingDirectory, onFileSelect, onFileAdd, selectedFo
             // eslint-disable-next-line @typescript-eslint/no-explicit-any -- AI Elements FileTree onSelect type conflicts with HTMLAttributes.onSelect
             onSelect={onFileSelect as any}
             onAdd={onFileAdd}
+            addLabel={t('fileTree.addToChat' as TranslationKey)}
             selectedPath={selectedFilePath}
             selectedFolderPath={selectedFolderPath}
             onSelectFolder={onSelectFolder}

@@ -460,7 +460,7 @@ export function ConnectionStatus() {
               </div>
 
               {isElectron && (
-                <div className="pt-2 border-t">
+                <div className="pt-3">
                   <Button
                     onClick={() => {
                       setDialogOpen(false);

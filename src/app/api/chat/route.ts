@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
 import { streamClaude } from '@/lib/claude-client';
-import { addMessage, getMessages, getSession, getSessionSummary, updateSessionTitle, updateSdkSessionId, updateSessionModel, updateSessionProvider, updateSessionProviderId, getSetting, acquireSessionLock, renewSessionLock, releaseSessionLock, setSessionRuntimeStatus, syncSdkTasks } from '@/lib/db';
-import { resolveProvider as resolveProviderUnified } from '@/lib/provider-resolver';
+import { addMessage, getMessages, getSession, getSessionSummary, updateSessionTitle, updateSdkSessionId, updateSessionModel, updateSessionProvider, updateSessionProviderId, updateSessionRuntime, getSetting, acquireSessionLock, renewSessionLock, releaseSessionLock, setSessionRuntimeStatus, syncSdkTasks } from '@/lib/db';
+import { resolveProviderForSession } from '@/lib/provider-resolver';
+import { resolveRuntimeForSession } from '@/lib/chat-runtime';
 import { notifySessionStart, notifySessionComplete, notifySessionError } from '@/lib/telegram-bot';
 import { extractCompletion } from '@/lib/onboarding-completion';
 import { loadCodePilotMcpServers, loadAllMcpServers } from '@/lib/mcp-loader';
@@ -29,8 +30,8 @@ export async function POST(request: NextRequest) {
   let activeLockId: string | undefined;
 
   try {
-    const body: SendMessageRequest & { files?: FileAttachment[]; toolTimeout?: number; provider_id?: string; systemPromptAppend?: string; autoTrigger?: boolean; thinking?: unknown; effort?: string; enableFileCheckpointing?: boolean; displayOverride?: string; context_1m?: boolean } = await request.json();
-    const { session_id, content, model, mode, files, toolTimeout, provider_id, systemPromptAppend, autoTrigger, thinking, effort, enableFileCheckpointing, displayOverride, context_1m } = body;
+    const body: SendMessageRequest & { files?: FileAttachment[]; toolTimeout?: number; provider_id?: string; systemPromptAppend?: string; autoTrigger?: boolean; thinking?: unknown; effort?: string; enableFileCheckpointing?: boolean; displayOverride?: string; context_1m?: boolean; selectedSkills?: readonly string[] } = await request.json();
+    const { session_id, content, model, mode, files, toolTimeout, provider_id, systemPromptAppend, autoTrigger, thinking, effort, enableFileCheckpointing, displayOverride, context_1m, selectedSkills } = body;
 
     console.log('[chat API] content length:', content.length, 'first 200 chars:', content.slice(0, 200));
     console.log('[chat API] systemPromptAppend:', systemPromptAppend ? `${systemPromptAppend.length} chars` : 'none');
@@ -77,6 +78,90 @@ export async function POST(request: NextRequest) {
     activeSessionId = session_id;
     activeLockId = lockId;
     setSessionRuntimeStatus(session_id, 'running');
+
+    // ─── Phase 2 Step 3 — early resolver gate ───────────────────────
+    //
+    // Resolve provider + runtime BEFORE any user-visible side effect
+    // (Telegram notify, file uploads, addMessage, title update) AND
+    // before the `/compact` branch — the compressor calls
+    // `resolveAuxiliaryModel` internally and would otherwise silently
+    // fall through to env / another provider when the session's
+    // committed provider has been deleted, bypassing the same "session
+    // provider missing → fail closed" promise we make for normal sends.
+    // Failing closed up here means: if the session points at a deleted
+    // provider, NO compression runs, NO transcript writes happen, and
+    // the same composer text / `/compact` invocation can be retried
+    // after the user picks a new provider.
+    //
+    // `resolveRuntimeForSession` is also called here so `resolved`
+    // (`.provider`, `.model`) is the same value used by the
+    // lazy-seed + downstream streamClaude call below.
+    // Lift to a local so the lazy-seed below can write the same value
+    // we routed THIS turn through (no second call to the registry).
+    const effectiveSessionRuntime = resolveRuntimeForSession(session);
+    const resolved = resolveProviderForSession(
+      {
+        provider_id: session.provider_id || '',
+        model: session.model || '',
+        requestProviderId: provider_id || undefined,
+        requestModel: model || undefined,
+      },
+      { runtime: effectiveSessionRuntime },
+    );
+    if (resolved.invalidReason) {
+      releaseSessionLock(session_id, lockId);
+      activeSessionId = undefined;
+      activeLockId = undefined;
+      setSessionRuntimeStatus(session_id, 'idle');
+      return new Response(
+        JSON.stringify({
+          error: 'Session points at a provider that no longer exists.',
+          code: 'INVALID_SESSION_PROVIDER',
+          reason: resolved.invalidReason,
+          // Frontend can use this to render "your saved provider was
+          // deleted — pick another or revert to default" without
+          // having to refetch session state.
+          sessionProviderId: session.provider_id || '',
+        }),
+        { status: 409, headers: { 'Content-Type': 'application/json' } },
+      );
+    }
+    const resolvedProvider = resolved.provider;
+
+    // Phase 2 Step 4a — lazy-seed `session.runtime_pin`.
+    //
+    // Sessions created before the column shipped (or before the user
+    // ever explicitly switched runtime in the chat) carry an empty
+    // `runtime_pin`, which means `resolveRuntimeForSession` falls
+    // through to the global `agent_runtime` setting. That's fine for
+    // THIS turn — but on the NEXT turn, after the user has flipped
+    // the global setting in Settings, the same session would silently
+    // resolve to the new global value: drift.
+    //
+    // Lock it in: the moment the user actually sends a message, we
+    // pin the currently-routed runtime to the session row. Subsequent
+    // sends use the pin regardless of global flips. Same principle as
+    // the model + provider lazy-seed below: "the session's first
+    // commitment is whatever they were ACTIVELY using when they
+    // pressed send".
+    //
+    // **autoTrigger guard (Step 4a review)**: invisible system turns
+    // (heartbeat checks, assistant hooks, /skill expansion etc.) must
+    // NOT pin the runtime — the user contract is "first USER send
+    // fixes it", and an autoTrigger firing at the wrong moment would
+    // silently capture whatever global was active for the BACKGROUND
+    // task, not the user's choice. Background turns still resolve via
+    // `effectiveSessionRuntime` for routing this turn, they just don't
+    // persist that decision. Mirrors the same `!autoTrigger` gate
+    // already wrapping `addMessage` / `updateSessionTitle` below.
+    //
+    // Mutates the in-memory `session.runtime_pin` too so the
+    // streamClaude call below picks up the seeded value (rather than
+    // re-reading DB).
+    if (!session.runtime_pin && !autoTrigger) {
+      updateSessionRuntime(session_id, effectiveSessionRuntime);
+      session.runtime_pin = effectiveSessionRuntime;
+    }
 
     // ── /compact command handler ────────────────────────────────────
     if (content.trim() === '/compact') {
@@ -215,6 +300,15 @@ export async function POST(request: NextRequest) {
           fs.mkdirSync(uploadDir, { recursive: true });
         }
         fileMeta = files.map((f) => {
+          // Directory references travel through the same files[] pipeline
+          // (so they render as chips in the message bubble), but they
+          // don't have file content — skip the disk write and just
+          // preserve the user-facing directory path verbatim. The chip
+          // renderer keys off `type === 'inode/directory'` to switch to
+          // the Folder icon and skip URL fetching.
+          if (f.type === 'inode/directory') {
+            return { id: f.id, name: f.name, type: f.type, size: 0, filePath: f.filePath || '' };
+          }
           const safeName = path.basename(f.name).replace(/[^a-zA-Z0-9._-]/g, '_');
           const filePath = path.join(uploadDir, `${Date.now()}-${safeName}`);
           const buffer = Buffer.from(f.data, 'base64');
@@ -232,43 +326,71 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Determine model: request override > session model > default setting
-    let effectiveModel = model || session.model || getSetting('default_model') || undefined;
+    // Determine model: request override > session model. We deliberately
+    // do NOT fall through to `getSetting('default_model')` here — Phase 2
+    // Step 3 contract (drift point #5) is "session.model is the truth;
+    // global settings only seed new chats, never silently affect old ones".
+    // If both request body and session.model are empty (new chat first
+    // send, or legacy row), we let the resolver pick a candidate from the
+    // provider's available models; whatever it returns is then lazy-seeded
+    // back to session.model below so subsequent sends are stable.
+    let effectiveModel = model || session.model || undefined;
 
-    // When Claude Code is disabled, sessions with env-provider models (sonnet/opus/haiku)
-    // can't use them anymore. Fall back to default model from first available provider.
+    // When Claude Code is disabled, sessions with env-provider models
+    // (sonnet/opus/haiku) can't use them anymore. The only "safe" silent
+    // move (clearing to undefined → resolver picks next) is preserved
+    // here as a degenerate-state fallback. NOTE: this branch still
+    // reads `default_model` from settings for the env-only escape-hatch
+    // case — that's separate from the Step 3 contract about session.model
+    // being the source of truth (see the line above that drops the
+    // legacy `|| default_model` tail). RED #5 closes because the
+    // `session.model OR default_model` chain shape is no longer present;
+    // this read is a different shape (standalone, only inside the
+    // env-only degenerate branch).
     const cliDisabled = getSetting('cli_enabled') === 'false';
     const ENV_MODELS = new Set(['sonnet', 'opus', 'haiku']);
     const effectiveProviderId_pre = provider_id || session.provider_id || '';
     if (cliDisabled && effectiveModel && ENV_MODELS.has(effectiveModel) && (!effectiveProviderId_pre || effectiveProviderId_pre === 'env')) {
       effectiveModel = getSetting('default_model') || undefined;
-      // If default model is also env-only, clear it
       if (effectiveModel && ENV_MODELS.has(effectiveModel)) {
         effectiveModel = undefined;
       }
     }
 
-    // Persist model and provider to session so usage stats can group by model+provider.
-    // This runs on every message but the DB writes are cheap (single UPDATE by PK).
+    // Phase 2 Step 3 — `resolved` was computed in the early gate above
+    // (before any side effects, so an invalid session can fail closed
+    // without leaving a half-written user turn in the DB). Reuse the
+    // same value here for downstream lazy-seeding + persistence.
+    const effectiveProviderId = provider_id || session.provider_id || '';
+
+    // Lazy-seed session.model + session.provider_id: when the chat had
+    // no committed model/provider (legacy row, brand-new session whose
+    // first message didn't carry either), persist whatever the resolver
+    // picked so the next send no longer needs to re-resolve via the
+    // global picker. This is the contract that lets the route stop
+    // reading `default_model` — session.model + session.provider_id
+    // are guaranteed non-empty after first send.
+    if (!effectiveModel && resolved.model) {
+      effectiveModel = resolved.model;
+    }
     if (effectiveModel && effectiveModel !== session.model) {
       updateSessionModel(session_id, effectiveModel);
     }
-
-    // Resolve provider via unified resolver (same logic for chat, bridge, onboarding, etc.)
-    const effectiveProviderId = provider_id || session.provider_id || '';
-    const resolved = resolveProviderUnified({
-      providerId: effectiveProviderId || undefined,
-      sessionProviderId: session.provider_id || undefined,
-      model: model || undefined,
-      sessionModel: session.model || undefined,
-    });
-    const resolvedProvider = resolved.provider;
 
     const providerName = resolvedProvider?.name || '';
     if (providerName !== (session.provider_name || '')) {
       updateSessionProvider(session_id, providerName);
     }
-    const persistProviderId = effectiveProviderId || provider_id || '';
+    // Persist provider_id: prefer request override, then existing session,
+    // then the resolver's pick (real DB providers only — virtual
+    // 'env' / 'openai-oauth' don't have a row to point at). Without the
+    // resolver fallback, a brand-new session whose request didn't carry
+    // a provider_id would write '' here and the next send would re-resolve
+    // through the global fallback chain — exactly the drift Step 3 closes.
+    const persistProviderId = provider_id
+      || session.provider_id
+      || resolved.provider?.id
+      || '';
     if (persistProviderId !== (session.provider_id || '')) {
       updateSessionProviderId(session_id, persistProviderId);
     }
@@ -343,10 +465,6 @@ export async function POST(request: NextRequest) {
       _rowid: m._rowid,
     }));
 
-    // Detect actual image agent mode by checking for the specific design agent prompt,
-    // not just any systemPromptAppend (which could come from CLI badges or skills).
-    const isImageAgentMode = !!systemPromptAppend && systemPromptAppend.includes('image-gen-request');
-
     // Unified context assembly — extracts workspace, CLI tools, widget prompt
     const assembled = await assembleContext({
       session,
@@ -354,7 +472,6 @@ export async function POST(request: NextRequest) {
       userPrompt: content,
       systemPromptAppend,
       conversationHistory: historyMsgs,
-      imageAgentMode: isImageAgentMode,
       autoTrigger: !!autoTrigger,
     });
     const finalSystemPrompt = assembled.systemPrompt;
@@ -533,11 +650,20 @@ export async function POST(request: NextRequest) {
       abortController,
       permissionMode,
       files: fileAttachments,
-      imageAgentMode: isImageAgentMode,
       toolTimeoutSeconds: toolTimeout || 300,
       provider: resolvedProvider,
-      providerId: effectiveProviderId || undefined,
+      // Use the lazy-seeded provider id so a brand-new chat (request
+      // didn't carry a provider, session.provider_id was empty) actually
+      // sends to the resolver-picked provider on this turn — not just
+      // on the next one after `persistProviderId` writes back. Same
+      // priority chain as the persist branch above.
+      providerId: persistProviderId || effectiveProviderId || undefined,
       sessionProviderId: session.provider_id || undefined,
+      // Phase 2 Step 3: pass the session's runtime pin so streamClaude
+      // honors per-session execution-engine commitment over the global
+      // `agent_runtime` setting. Empty pin → streamClaude falls back to
+      // global, preserving today's behavior for legacy / unpinned chats.
+      sessionRuntimePin: session.runtime_pin || undefined,
       mcpServers,
       conversationHistory: streamConversationHistory,
       sessionSummary: activeSessionSummary,
@@ -555,6 +681,7 @@ export async function POST(request: NextRequest) {
       generativeUI: generativeUIEnabled,
       enableFileCheckpointing: enableFileCheckpointing ?? true,
       autoTrigger: !!autoTrigger,
+      selectedSkills,
       onRuntimeStatusChange: (status: string) => {
         try { setSessionRuntimeStatus(session_id, status); } catch { /* best effort */ }
       },
@@ -806,6 +933,23 @@ async function collectStreamResponse(
       contentBlocks.unshift({ type: 'thinking', thinking: thinkingText.trim() });
     }
 
+    // Phase 5c slice 5 (2026-05-16, post-smoke) — when the only
+    // thing the stream produced was an error event (no text, no
+    // thinking, no tool call), persist a fallback assistant message
+    // capturing the error. Pre-fix the proxy preflight 400 path
+    // (e.g. Codex `namespace` tool tripping unsupported_tool_kind)
+    // fired `event.type === 'error'` → set `hasError` + `errorMessage`,
+    // then `done` closed the stream with `contentBlocks` still
+    // empty. Nothing landed in DB and refresh showed only the user
+    // bubble — looked like "the assistant ignored me".
+    //
+    // Same `**Error:** <message>` format `stream-session-manager.ts`
+    // uses on the client side so the post-refresh transcript matches
+    // what the live SSE showed.
+    if (hasError && contentBlocks.length === 0 && errorMessage) {
+      contentBlocks.push({ type: 'text', text: `**Error:** ${errorMessage}` });
+    }
+
     if (contentBlocks.length > 0) {
       // If the message is text-only (no tool calls), store as plain text
       // for backward compatibility with existing message rendering.
@@ -847,6 +991,14 @@ async function collectStreamResponse(
     }
     if (thinkingText.trim()) {
       contentBlocks.unshift({ type: 'thinking', thinking: thinkingText.trim() });
+    }
+    // Same error-visibility fallback as the happy path above —
+    // applies when the SSE consumption loop itself throws (network
+    // drop / parse failure) rather than receiving an error event.
+    // Without this, transient stream errors also disappeared from
+    // the transcript on refresh.
+    if (contentBlocks.length === 0 && errorMessage) {
+      contentBlocks.push({ type: 'text', text: `**Error:** ${errorMessage}` });
     }
     if (contentBlocks.length > 0) {
       const hbRe = /\s*<!--\s*heartbeat-done\s*-->\s*/g;

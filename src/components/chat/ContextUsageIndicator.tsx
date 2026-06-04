@@ -1,30 +1,33 @@
 'use client';
 
+import type { LanguageModelUsage } from 'ai';
 import type { Message } from '@/types';
 import { useContextUsage } from '@/hooks/useContextUsage';
 import { useTranslation } from '@/hooks/useTranslation';
+import type { TranslationKey } from '@/i18n';
 import { Button } from '@/components/ui/button';
 import {
   HoverCard,
   HoverCardTrigger,
   HoverCardContent,
 } from '@/components/ui/hover-card';
+import {
+  Context,
+  ContextContent,
+  ContextContentBody,
+  ContextContentHeader,
+  ContextCacheUsage,
+  ContextInputUsage,
+  ContextOutputUsage,
+  ContextTrigger,
+} from '@/components/ai-elements/context';
 
 interface ContextUsageIndicatorProps {
   messages: Message[];
   modelName: string;
   context1m?: boolean;
   hasSummary?: boolean;
-  /** Resolved upstream model ID from /api/providers/models — needed to
-   *  disambiguate alias windows (first-party opus = 1M vs Bedrock/Vertex
-   *  opus = 200K). Omit for provider setups where the alias already
-   *  matches the catalog context-window table. */
   upstreamModelId?: string;
-  /**
-   * Phase 5 — post-turn snapshot from SDK.getContextUsage(). When
-   * supplied and fresh (<60s), this replaces the char-based estimator
-   * as the source for used / total. Tooltip gets a "精确 · N 秒前" tag.
-   */
   contextUsageSnapshot?: {
     totalTokens: number;
     maxTokens: number;
@@ -32,19 +35,22 @@ interface ContextUsageIndicatorProps {
   };
 }
 
-function formatSnapshotAge(capturedAt: number): string {
-  const ageSec = Math.max(0, Math.floor((Date.now() - capturedAt) / 1000));
-  if (ageSec < 60) return `${ageSec}秒前`;
-  const ageMin = Math.floor(ageSec / 60);
-  return `${ageMin}分钟前`;
-}
-
-function formatTokens(n: number): string {
-  if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+function formatTokensCompact(n: number): string {
+  if (n >= 1000) {
+    const k = n / 1000;
+    return (k >= 100 ? k.toFixed(0) : k.toFixed(1).replace(/\.0$/, '')) + 'K';
+  }
   return String(n);
 }
 
-export function ContextUsageIndicator({ messages, modelName, context1m, hasSummary, upstreamModelId, contextUsageSnapshot }: ContextUsageIndicatorProps) {
+export function ContextUsageIndicator({
+  messages,
+  modelName,
+  context1m,
+  hasSummary,
+  upstreamModelId,
+  contextUsageSnapshot,
+}: ContextUsageIndicatorProps) {
   const { t } = useTranslation();
   const usage = useContextUsage(messages, modelName, {
     context1m,
@@ -53,124 +59,101 @@ export function ContextUsageIndicator({ messages, modelName, context1m, hasSumma
     snapshot: contextUsageSnapshot,
   });
 
-  const size = 16;
-  const strokeWidth = 2.5;
-  const radius = (size - strokeWidth) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference - usage.ratio * circumference;
+  // Render only after at least one assistant turn has produced real
+  // token data. Pre-first-response, hasData=false but contextWindow may
+  // still be inferred from the model — rendering then shows "0%" with
+  // an empty breakdown, which reads as "unlimited" to the user instead
+  // of "no data yet". Skip until we have authoritative numbers.
+  if (!usage.hasData) return null;
 
-  // Color based on context state
-  let strokeColor = 'text-muted-foreground';
-  if (usage.hasData) {
-    if (usage.state === 'critical') strokeColor = 'text-status-error-foreground';
-    else if (usage.state === 'warning') strokeColor = 'text-status-warning-foreground';
-    else strokeColor = 'text-zinc-600 dark:text-zinc-400';
-  }
+  // Capacity unknown branch: when the model's context window can't be
+  // resolved we drop the percentage / progress entirely (otherwise the
+  // ai-elements `Context` shows ∞% or NaN%, which Codex flagged as
+  // breaking trust). Surface "已用 N · 容量未知" with an explanatory
+  // popover instead.
+  const capacityUnknown = !usage.contextWindow || usage.contextWindow <= 0;
 
-  return (
-    <HoverCard openDelay={200} closeDelay={100}>
-      <HoverCardTrigger asChild>
-        <Button variant="ghost" size="icon-xs" className="p-1">
-          <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="block">
-            {/* Background circle */}
-            <circle
-              cx={size / 2}
-              cy={size / 2}
-              r={radius}
-              fill="none"
-              strokeWidth={strokeWidth}
-              className="stroke-muted"
-            />
-            {/* Usage arc */}
-            {usage.hasData && usage.ratio > 0 && (
-              <circle
-                cx={size / 2}
-                cy={size / 2}
-                r={radius}
-                fill="none"
-                strokeWidth={strokeWidth}
-                strokeDasharray={circumference}
-                strokeDashoffset={offset}
-                strokeLinecap="round"
-                className={`${strokeColor} transition-all`}
-                style={{ stroke: 'currentColor' }}
-                transform={`rotate(-90 ${size / 2} ${size / 2})`}
-              />
-            )}
-          </svg>
-        </Button>
-      </HoverCardTrigger>
-      <HoverCardContent side="top" align="center" className="w-56 p-3 text-xs">
-        {!usage.hasData ? (
-          <p className="text-muted-foreground">{t('context.noData')}</p>
-        ) : (
-          <div className="space-y-1.5">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">{t('context.model')}</span>
-              <span className="font-medium">{usage.modelName}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">{t('context.used')}</span>
-              <span className="font-medium">{formatTokens(usage.used)}</span>
-            </div>
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">{t('context.total')}</span>
-              <span className="font-medium">
-                {usage.contextWindow ? formatTokens(usage.contextWindow) : t('context.unknown')}
+  if (capacityUnknown) {
+    return (
+      <HoverCard openDelay={0} closeDelay={0}>
+        <HoverCardTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            className="text-[10px] font-normal text-muted-foreground"
+          >
+            <span>{formatTokensCompact(usage.used)}</span>
+            <span className="opacity-60">·</span>
+            <span>{t('context.unknownCapacity' as TranslationKey)}</span>
+          </Button>
+        </HoverCardTrigger>
+        <HoverCardContent side="top" align="end" className="min-w-60 p-3 text-xs">
+          <p className="text-foreground font-medium">
+            {t('context.unknownCapacity' as TranslationKey)}
+          </p>
+          <p className="mt-1 text-muted-foreground leading-snug">
+            {t('context.unknownCapacityHint' as TranslationKey)}
+          </p>
+          <div className="mt-2 flex items-center justify-between border-t pt-2">
+            <span className="text-muted-foreground">
+              {t('context.used' as TranslationKey)}
+            </span>
+            <span className="font-mono">{formatTokensCompact(usage.used)}</span>
+          </div>
+          {usage.outputTokens > 0 && (
+            <div className="mt-1 flex items-center justify-between">
+              <span className="text-muted-foreground">
+                {t('context.outputTokens' as TranslationKey)}
+              </span>
+              <span className="font-mono">
+                {formatTokensCompact(usage.outputTokens)}
               </span>
             </div>
-            {usage.contextWindow && (
-              <>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">{t('context.percentage')}</span>
-                  <span className="font-medium">{(usage.ratio * 100).toFixed(1)}%</span>
-                </div>
-                {usage.estimatedNextTurn > 0 && (
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">{t('context.nextEstimate')}</span>
-                    <span className={`font-medium ${usage.estimatedNextRatio >= 0.8 ? 'text-status-warning-foreground' : ''}`}>
-                      ~{formatTokens(usage.estimatedNextTurn)} ({(usage.estimatedNextRatio * 100).toFixed(1)}%)
-                    </span>
-                  </div>
-                )}
-              </>
-            )}
-            <div className="border-t border-border pt-1.5 mt-1.5 space-y-1">
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">{t('context.cacheRead')}</span>
-                <span>{formatTokens(usage.cacheReadTokens)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">{t('context.cacheCreation')}</span>
-                <span>{formatTokens(usage.cacheCreationTokens)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">{t('context.outputTokens')}</span>
-                <span>{formatTokens(usage.outputTokens)}</span>
-              </div>
-            </div>
-            {usage.hasSummary && (
-              <div className="flex justify-between border-t border-border pt-1.5 mt-1.5">
-                <span className="text-muted-foreground">{t('context.summary')}</span>
-                <span className="text-green-600 dark:text-green-400">{t('context.summaryActive')}</span>
-              </div>
-            )}
-            {usage.state !== 'normal' && (
-              <p className="text-[10px] pt-1 border-t border-border text-status-warning-foreground">
-                {usage.state === 'critical' ? t('context.criticalHint') : t('context.warningHint')}
-              </p>
-            )}
-            {/* Phase 5 — data source indicator. Both 'snapshot' (unused
-                today) and 'result_usage' (active primary source) are
-                SDK-authoritative numbers — NOT char-based estimates. */}
-            <p className="text-[10px] text-muted-foreground pt-1 border-t border-border">
-              {usage.source === 'snapshot' && usage.snapshotCapturedAt
-                ? `📌 ${t('context.sourceSnapshot')} · ${formatSnapshotAge(usage.snapshotCapturedAt)}`
-                : `📌 ${t('context.sourceResultUsage')}`}
-            </p>
-          </div>
-        )}
-      </HoverCardContent>
-    </HoverCard>
+          )}
+        </HoverCardContent>
+      </HoverCard>
+    );
+  }
+
+  // Capacity known: use ai-elements Context with full progress + breakdown.
+  // `used` already includes cache; recover the raw input slice for the
+  // breakdown panel so cache and input don't double-count.
+  const inputTokens = Math.max(
+    0,
+    usage.used - usage.cacheReadTokens - usage.cacheCreationTokens,
+  );
+  const lmUsage: LanguageModelUsage = {
+    inputTokens,
+    inputTokenDetails: {
+      noCacheTokens: inputTokens,
+      cacheReadTokens: usage.cacheReadTokens,
+      cacheWriteTokens: usage.cacheCreationTokens,
+    },
+    outputTokens: usage.outputTokens,
+    outputTokenDetails: {
+      textTokens: usage.outputTokens,
+      reasoningTokens: undefined,
+    },
+    totalTokens: usage.used + usage.outputTokens,
+    cachedInputTokens: usage.cacheReadTokens,
+  };
+
+  return (
+    <Context
+      usedTokens={usage.used}
+      maxTokens={usage.contextWindow as number}
+      usage={lmUsage}
+    >
+      <ContextTrigger size="xs" className="text-[10px] font-normal" />
+      <ContextContent side="top" align="end">
+        <ContextContentHeader />
+        <ContextContentBody className="space-y-1.5">
+          <ContextInputUsage />
+          <ContextOutputUsage />
+          <ContextCacheUsage />
+        </ContextContentBody>
+      </ContextContent>
+    </Context>
   );
 }

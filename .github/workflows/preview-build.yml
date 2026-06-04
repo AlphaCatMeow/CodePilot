@@ -1,0 +1,324 @@
+name: Preview Build (manual · artifacts only · no release)
+
+# Manual-only branch-preview packaging.
+#
+# WHY a separate workflow (not build.yml): build.yml is the STABLE release flow
+# — it triggers on pushed tags and has `contents: write` to create GitHub
+# Releases. Preview builds must NEVER create a Release, push a tag, or feed the
+# stable auto-update channel. They only UPLOAD workflow artifacts (installer +
+# SHA + commit + version check + native ABI check + logs) so every preview
+# package is traceable to a CI run instead of one developer's local machine.
+#
+# See docs/exec-plans/active/preview-build-readiness.md — Phase 0 (version
+# single-source), Phase 4 (packaging/install verification), Phase 4A (this CI).
+#
+# Hard rules encoded here:
+#   - version comes from a real package.json + lockfile patch (npm version),
+#     NOT `electron-builder --config.extraMetadata.version`. The 0.55.0-preview.2
+#     local build failed exactly because extraMetadata only stamped Electron
+#     metadata while package.json stayed 0.53.0 (app showed 0.53, Codex
+#     clientInfo + NEXT_PUBLIC_APP_VERSION disagreed).
+#   - macOS = arm64 ONLY (user decision; no Intel real machine to smoke, and
+#     cross-building x64 on arm64 pollutes better-sqlite3 ABI).
+#   - Windows = x64 ONLY, built on windows-latest (native .node cannot be
+#     cross-compiled from macOS — preview-build-readiness Phase 2 实现路径 5).
+
+on:
+  workflow_dispatch:
+    inputs:
+      preview_version:
+        description: "Preview version — MUST be > 0.54.0 (e.g. 0.55.0-preview.3)"
+        required: true
+        default: "0.55.0-preview.3"
+        type: string
+      build_macos_arm64:
+        description: "Build macOS arm64 (Apple Silicon)"
+        required: true
+        default: true
+        type: boolean
+      build_windows_x64:
+        description: "Build Windows x64"
+        required: true
+        default: true
+        type: boolean
+      commit_sha:
+        description: "Commit to build (blank = the ref this workflow runs on)"
+        required: false
+        default: ""
+        type: string
+
+# Read-only: this workflow must not be able to create Releases or push tags.
+permissions:
+  contents: read
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Gate 0: reject a bad preview_version BEFORE anything builds. The inputs only
+  # *documented* "MUST be > 0.54.0" — with no actual check, a typo like 0.53.1
+  # would still build and reproduce the exact "package shows old version" P0
+  # this whole effort exists to kill. Fails closed: invalid semver OR <= 0.54.0
+  # → no artifacts. (preview_version is read via env, never inlined into the
+  # script, to avoid workflow command injection.)
+  # --------------------------------------------------------------------------
+  validate-inputs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: preview_version must be valid semver AND > 0.54.0
+        env:
+          PV: ${{ inputs.preview_version }}
+        run: |
+          mkdir -p /tmp/vchk && cd /tmp/vchk
+          npm init -y >/dev/null 2>&1
+          npm i semver@7 >/dev/null 2>&1
+          node -e '
+            const semver = require("semver");
+            const v = process.env.PV;
+            if (!semver.valid(v)) {
+              console.error(`::error::preview_version "${v}" is not valid semver`);
+              process.exit(1);
+            }
+            if (!semver.gt(v, "0.54.0")) {
+              console.error(`::error::preview_version "${v}" must be > 0.54.0 — refusing to build a stale-version preview`);
+              process.exit(1);
+            }
+            console.log(`✓ preview_version ${v} is valid semver and > 0.54.0`);
+          '
+
+  # --------------------------------------------------------------------------
+  # Gate: the CHECKED-OUT SOURCE must carry the P0 fixes — verified WITHOUT
+  # trusting the target commit's own test files.
+  #
+  # Codex review P1: this job checks out inputs.commit_sha and would otherwise
+  # only run THAT commit's tests. An OLD commit_sha (before 6923f13) predates
+  # the regression pins, so its tests pass while its code still spawns Codex
+  # `app-server --listen` and leaves ClaudeCode `ANTHROPIC_MODEL=sonnet`. The
+  # gate steps below run from THIS workflow file (the triggering ref, NOT
+  # commit_sha) and inspect the checked-out files / runtime directly, so they
+  # hold no matter which commit is built. Fail → no installer.
+  # --------------------------------------------------------------------------
+  verify-source:
+    needs: validate-inputs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+          fetch-depth: 0   # full history so the 6923f13 ancestry check resolves
+      - name: Fail-closed gate A — 6923f13 ancestry + no Codex `--listen`
+        run: |
+          set -euo pipefail
+          if ! git merge-base --is-ancestor 6923f13 HEAD; then
+            echo "::error::commit_sha does not include 6923f13 (Codex/ClaudeCode preview startup fixes) — refusing to build"
+            exit 1
+          fi
+          if grep -RIn -- "--listen" src/lib/codex/app-server-manager.ts; then
+            echo "::error::src/lib/codex/app-server-manager.ts still spawns Codex app-server with --listen"
+            exit 1
+          fi
+          echo "✓ 6923f13 in ancestry + no --listen in app-server-manager"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Fail-closed gate B — ClaudeCode canonicalizes bare `sonnet` (checked-out resolver, not the commit's tests)
+        run: |
+          set -euo pipefail
+          trap 'rm -f preview-gate-sonnet.ts' EXIT   # clean temp file even if the gate fails (set -e exits before a trailing rm)
+          # Run the CHECKED-OUT resolver against a legacy bare-`sonnet` provider.
+          # Fixed (6923f13) → ANTHROPIC_MODEL=claude-sonnet-4-6; unfixed / reverted
+          # → 'sonnet' → Anthropic gateway 503 model_not_found. Written to a temp
+          # .ts at repo root: a STATIC import resolves against the checked-out
+          # source, whereas `tsx -e` dynamic import returns an empty namespace.
+          # `JSON.stringify` avoids nested-quote escaping. Heredoc is quoted ('TS')
+          # so the shell does not expand the body.
+          cat > preview-gate-sonnet.ts <<'TS'
+          import { toClaudeCodeEnv } from './src/lib/provider-resolver';
+          const resolved: any = {
+            provider: { id: 'gate', name: 'Legacy Gateway', provider_type: 'anthropic', protocol: 'anthropic', base_url: 'https://gateway.example.com/anthropic', api_key: 'key', is_active: 1, sort_order: 0, extra_env: '{}', headers_json: '{}', env_overrides_json: '', role_models_json: JSON.stringify({ default: 'sonnet', sonnet: 'sonnet', haiku: 'haiku', opus: 'opus' }), notes: '', created_at: '', updated_at: '', options_json: '{}' },
+            protocol: 'anthropic', authStyle: 'api_key', model: 'sonnet', upstreamModel: 'claude-sonnet-4-6', modelDisplayName: 'Sonnet 4.6',
+            headers: {}, envOverrides: {}, roleModels: { default: 'sonnet', sonnet: 'sonnet', haiku: 'haiku', opus: 'opus' }, hasCredentials: true,
+            availableModels: [ { modelId: 'sonnet', upstreamModelId: 'claude-sonnet-4-6', displayName: 'Sonnet 4.6' }, { modelId: 'haiku', upstreamModelId: 'claude-haiku-4-5-20251001', displayName: 'Haiku 4.5' }, { modelId: 'opus', upstreamModelId: 'claude-opus-4-7', displayName: 'Opus 4.7' } ],
+            settingSources: ['user'],
+          };
+          const env = toClaudeCodeEnv({}, resolved);
+          if (env.ANTHROPIC_MODEL !== 'claude-sonnet-4-6') {
+            console.error('::error::ClaudeCode did NOT canonicalize bare sonnet -> claude-sonnet-4-6 (got "' + env.ANTHROPIC_MODEL + '") — this checkout predates or reverted the alias fix');
+            process.exit(1);
+          }
+          console.log('✓ ClaudeCode sonnet alias -> ' + env.ANTHROPIC_MODEL);
+          TS
+          CODEX_DISABLED=1 npx tsx preview-gate-sonnet.ts
+      - name: P0 regression pins (Codex no---listen + ClaudeCode alias canonicalization)
+        run: |
+          CODEX_DISABLED=1 npx tsx --test --import ./src/__tests__/db-isolation.setup.ts \
+            src/__tests__/unit/codex-binary-discovery.test.ts \
+            src/__tests__/unit/provider-resolver.test.ts
+      - name: Full unit suite
+        run: npm run test:unit
+
+  # --------------------------------------------------------------------------
+  # Audit: prove the version change is a real, isolated package.json + lockfile
+  # patch (the single source every other version reader derives from), and
+  # publish the diff so reviewers can see exactly what the preview version
+  # touched. NOT electron-builder extraMetadata.
+  # --------------------------------------------------------------------------
+  version-patch-audit:
+    needs: [validate-inputs, verify-source]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Patch version (single source)
+        run: npm version "${{ inputs.preview_version }}" --no-git-tag-version --allow-same-version
+      - name: Show + save patch diff + resolved sources
+        run: |
+          git diff -- package.json package-lock.json | tee version-patch.diff
+          {
+            echo "package.json      = $(node -p "require('./package.json').version")"
+            echo "lock root         = $(node -p "require('./package-lock.json').version")"
+            echo "lock packages['']= $(node -p "require('./package-lock.json').packages[''].version")"
+            echo "(NEXT_PUBLIC_APP_VERSION, app.getVersion, Codex clientInfo all derive from package.json)"
+          } | tee version-sources.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-version-patch
+          path: |
+            version-patch.diff
+            version-sources.txt
+          retention-days: 7
+
+  # --------------------------------------------------------------------------
+  # macOS arm64 installer
+  # --------------------------------------------------------------------------
+  build-macos-arm64:
+    needs: [validate-inputs, verify-source]
+    if: ${{ inputs.build_macos_arm64 }}
+    # Pinned explicit Apple Silicon runner — NOT floating `macos-latest`, which
+    # GitHub is migrating between macOS versions (preview builds want a
+    # reproducible runner). macos-15 (Sequoia) is arm64; bump to a newer arm64
+    # label (e.g. macos-26) when it is GA on this repo.
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Record build inputs
+        run: |
+          {
+            echo "commit=$(git rev-parse HEAD)"
+            echo "preview_version=${{ inputs.preview_version }}"
+            echo "runner=$(uname -mrs)"
+          } | tee build-meta-macos-arm64.txt
+      - run: npm ci
+      - name: Patch version (single source — NOT extraMetadata)
+        run: npm version "${{ inputs.preview_version }}" --no-git-tag-version --allow-same-version
+      - name: Build + package (arm64 only, no publish)
+        timeout-minutes: 25
+        run: |
+          npm run electron:build
+          npx electron-builder --mac --arm64 --config electron-builder.yml --publish never
+      - name: Verify packaged version == input (filename + Info.plist)
+        run: |
+          set -euo pipefail
+          DMG=$(find release -name "CodePilot-*-arm64.dmg" | head -1)
+          echo "DMG=$DMG" | tee -a build-meta-macos-arm64.txt
+          [ -n "$DMG" ] || { echo "::error::no arm64 DMG produced"; exit 1; }
+          case "$DMG" in *"${{ inputs.preview_version }}"*) ;; *) echo "::error::DMG name lacks ${{ inputs.preview_version }}"; exit 1 ;; esac
+          APP=$(find release -maxdepth 4 -name "CodePilot.app" -type d | head -1)
+          PLIST_VER=$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")
+          echo "Info.plist CFBundleShortVersionString=$PLIST_VER" | tee -a build-meta-macos-arm64.txt
+          [ "$PLIST_VER" = "${{ inputs.preview_version }}" ] || { echo "::error::Info.plist $PLIST_VER != ${{ inputs.preview_version }}"; exit 1; }
+      - name: Verify native module ABI (better-sqlite3 loads under packaged Electron)
+        run: |
+          set -euo pipefail
+          APP=$(find release -maxdepth 4 -name "CodePilot.app" -type d | head -1)
+          BIN="$APP/Contents/MacOS/CodePilot"
+          SQLITE=$(find "$APP/Contents/Resources" -path "*better-sqlite3*" -name "*.node" | head -1)
+          echo "better-sqlite3=$SQLITE" | tee -a build-meta-macos-arm64.txt
+          [ -n "$SQLITE" ] || { echo "::error::better-sqlite3 .node not found in bundle"; exit 1; }
+          ELECTRON_RUN_AS_NODE=1 "$BIN" -e "require(process.argv[1]); console.log('better-sqlite3 OK under Electron, modules ABI=' + process.versions.modules)" "$SQLITE" | tee -a build-meta-macos-arm64.txt
+      - name: Checksums
+        run: cd release && shasum -a 256 CodePilot-*-arm64.dmg CodePilot-*-arm64*.zip 2>/dev/null | tee checksums-macos-arm64.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-macos-arm64
+          path: |
+            release/CodePilot-*-arm64.dmg
+            release/CodePilot-*-arm64*.zip
+            release/checksums-macos-arm64.sha256
+            build-meta-macos-arm64.txt
+          retention-days: 7
+
+  # --------------------------------------------------------------------------
+  # Windows x64 installer (MUST run on windows-latest — native modules)
+  # --------------------------------------------------------------------------
+  build-windows-x64:
+    needs: [validate-inputs, verify-source]
+    if: ${{ inputs.build_windows_x64 }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.commit_sha || github.sha }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Record build inputs
+        shell: bash
+        run: |
+          {
+            echo "commit=$(git rev-parse HEAD)"
+            echo "preview_version=${{ inputs.preview_version }}"
+            echo "runner=$RUNNER_OS"
+          } | tee build-meta-windows-x64.txt
+      - run: npm ci
+      - name: Patch version (single source — NOT extraMetadata)
+        run: npm version "${{ inputs.preview_version }}" --no-git-tag-version --allow-same-version
+      - name: Build + package (x64 only, no publish)
+        timeout-minutes: 30
+        run: |
+          npm run electron:build
+          npx electron-builder --win --x64 --config electron-builder.yml --publish never
+      - name: Verify packaged version == input (installer filename)
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXE=$(find release -name "CodePilot.Setup.*.exe" | head -1)
+          echo "EXE=$EXE" | tee -a build-meta-windows-x64.txt
+          [ -n "$EXE" ] || { echo "::error::no NSIS installer produced"; exit 1; }
+          case "$EXE" in *"${{ inputs.preview_version }}"*) ;; *) echo "::error::installer name lacks ${{ inputs.preview_version }}"; exit 1 ;; esac
+      - name: Verify native module ABI (better-sqlite3 in unpacked app)
+        shell: bash
+        run: |
+          set -euo pipefail
+          SQLITE=$(find release/win-unpacked -path "*better-sqlite3*" -name "*.node" 2>/dev/null | head -1)
+          echo "better-sqlite3=$SQLITE" | tee -a build-meta-windows-x64.txt
+          [ -n "$SQLITE" ] || { echo "::error::better-sqlite3 .node not found in win-unpacked"; exit 1; }
+          BIN=$(find release/win-unpacked -maxdepth 1 -name "CodePilot.exe" | head -1)
+          ELECTRON_RUN_AS_NODE=1 "$BIN" -e "require(process.argv[1]); console.log('better-sqlite3 OK under Electron, modules ABI=' + process.versions.modules)" "$SQLITE" | tee -a build-meta-windows-x64.txt
+      - name: Checksums
+        shell: bash
+        run: cd release && sha256sum CodePilot.Setup.*.exe 2>/dev/null | tee checksums-windows-x64.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-windows-x64
+          path: |
+            release/CodePilot.Setup.*.exe
+            release/checksums-windows-x64.sha256
+            build-meta-windows-x64.txt
+          retention-days: 7

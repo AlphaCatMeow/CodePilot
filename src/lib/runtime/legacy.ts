@@ -18,10 +18,16 @@
  *   migration writes "Native".
  */
 
-export type ConcreteRuntime = 'native' | 'claude-code-sdk';
+// Phase 5 Phase 6 IA correction (2026-05-14) — three-engine concrete set.
+// Adding 'codex_runtime' here lets Settings → Runtime persist Codex as the
+// global default engine via the same `agent_runtime` setting that already
+// holds 'native' / 'claude-code-sdk'. Codex was previously only reachable
+// via session-level `runtime_pin`; the three-engine picker in RuntimePanel
+// hangs off this expanded union.
+export type ConcreteRuntime = 'native' | 'claude-code-sdk' | 'codex_runtime';
 
 export function isConcreteRuntime(v: unknown): v is ConcreteRuntime {
-  return v === 'native' || v === 'claude-code-sdk';
+  return v === 'native' || v === 'claude-code-sdk' || v === 'codex_runtime';
 }
 
 /**

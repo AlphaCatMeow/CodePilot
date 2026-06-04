@@ -5,6 +5,16 @@
  * (notification, memory, dashboard, cli-tools, media, image-gen, widget)
  * but packaged as Vercel AI SDK tools for the Native Runtime.
  *
+ * Phase 5d Phase 2 slice 2d (2026-05-17) — `getBuiltinTools` now
+ * delegates system-prompt assembly to the Harness Context Compiler.
+ * Per-group `systemPrompt` fields stay declared (they document the
+ * canonical fragment for that group) but are NOT directly returned
+ * to callers; the compiler produces the final ordered + de-duplicated
+ * prompt string from the capability catalog. This keeps Native
+ * adapter "only adapt compiler output" — gating decisions stay in
+ * this file (workspace / keyword / always), prompt text comes from
+ * the compiler.
+ *
  * Migration status:
  * ✅ notification (4 tools) — fully migrated
  * ✅ memory-search (3 tools) — fully migrated
@@ -15,6 +25,8 @@
  */
 
 import type { ToolSet } from 'ai';
+import { adaptForNative } from '@/lib/harness/runtime-adapter';
+import { shouldSkipPermission } from '@/lib/harness/mutation-level';
 
 export interface BuiltinToolGroup {
   name: string;
@@ -23,18 +35,113 @@ export interface BuiltinToolGroup {
   tools: ToolSet;
 }
 
-/**
- * Get all built-in tools that should be registered for the current context.
- */
-export function getBuiltinTools(options: {
+export interface GetBuiltinToolsOptions {
   workspacePath?: string;
   prompt?: string;
-}): { tools: ToolSet; systemPrompts: string[] } {
+  /**
+   * Originating chat session id — plumbed through to
+   * `createNotificationTools` so codepilot_schedule_task knows which
+   * chat session the task is being created from. Mirrors the SDK
+   * MCP variant in claude-client.ts.
+   */
+  sessionId?: string;
+  /**
+   * #26: when true, mount only permission-safe (read-only) tools and emit
+   * only their capability prompts. Plan / read-only mode uses this so the
+   * Native Agent keeps safe_read Harness capabilities (widget guidelines,
+   * memory reads) WITHOUT mutating tools (image gen / dashboard / schedule /
+   * notify / media import). See assembleTools('plan').
+   */
+  safeReadOnly?: boolean;
+}
+
+/**
+ * Map a builtin-tool group `name` to the capability ids from
+ * `src/lib/harness/capability-contract.ts`. Drives the
+ * `enabledCapabilities` set the compiler consumes when this function
+ * decides a group is active.
+ *
+ * Returns an array because one group can mount tools that belong to
+ * multiple capabilities (e.g. `codepilot-media` mounts both
+ * `codepilot_import_media` → media_import AND
+ * `codepilot_generate_image` → image_generation). The compiler then
+ * emits fragments + tool descriptors for every returned id.
+ *
+ * Empty array = the group is not capability-tracked yet (Phase 4
+ * candidates like session-search / ask-user-question whose prompts
+ * haven't earned a capability contract entry).
+ */
+function capabilityIdsForGroup(groupName: string): readonly string[] {
+  switch (groupName) {
+    case 'codepilot-notify':
+      // Phase 5e round 8 follow-up (2026-05-18) — same pattern as the
+      // round 5 media fix below: `createNotificationTools` mounts
+      // BOTH the task/notify quartet (notify / schedule_task /
+      // list_tasks / cancel_task → tasks_and_notify) AND
+      // `codepilot_hatch_buddy` (→ assistant_buddy). Returning only
+      // `tasks_and_notify` would leak the same "tool exists at
+      // runtime but the compiler doesn't know about its capability"
+      // gap the media fix sealed: Settings would show Native as
+      // supporting assistant_buddy, the Native ToolSet would actually
+      // carry codepilot_hatch_buddy, but the Context Compiler would
+      // never emit the assistant_buddy fragment / tool descriptor /
+      // runtime hint. Two ids keeps the compiler contract aligned
+      // with what Native actually mounts.
+      return ['tasks_and_notify', 'assistant_buddy'];
+    case 'codepilot-memory':
+      return ['memory'];
+    case 'codepilot-widget-guidelines':
+      return ['widget'];
+    case 'codepilot-dashboard':
+      return ['dashboard'];
+    case 'codepilot-media':
+      // Phase 5d Phase 2 P1 fix (2026-05-17) — pre-fix this returned
+      // only 'media_import' but the underlying `createMediaTools()`
+      // mounts BOTH the import tool AND `codepilot_generate_image`.
+      // That meant the compiler's enabledCapabilities / toolDescriptors
+      // / future runtimeHints.native.toolSetKeys never knew about
+      // image_generation on the Native runtime even though the tool
+      // was registered and callable. Returning both keeps the
+      // compiler contract aligned with what Native actually exposes.
+      return ['media_import', 'image_generation'];
+    case 'codepilot-cli-tools':
+      return ['cli_tools'];
+    case 'codepilot-session-search':
+    case 'codepilot-ask-user':
+      // Native-only groups without a capability contract entry yet.
+      // Their per-group `systemPrompt` was never canonicalised; the
+      // caller (getBuiltinTools) routes them into `nonCapabilityPrompts`
+      // so they don't disappear during Phase 2.
+      return [];
+    default:
+      return [];
+  }
+}
+
+/**
+ * Get all built-in tools that should be registered for the current
+ * context. Returns:
+ *   - `tools`: the merged AI SDK ToolSet from gated-in groups
+ *   - `systemPrompts`: legacy slot kept for back-compat; index 0 is
+ *     the compiler-produced canonical prompt for capability-tracked
+ *     groups; additional entries (if any) are non-capability groups
+ *     whose prompt isn't in the harness contract yet (e.g. session-
+ *     search, ask-user-question).
+ *
+ * Native Runtime callers should treat `systemPrompts` as a flat
+ * list to concatenate — same shape as pre-Phase-5d.
+ */
+export function getBuiltinTools(
+  options: GetBuiltinToolsOptions,
+): { tools: ToolSet; systemPrompts: string[] } {
   const tools: ToolSet = {};
-  const systemPrompts: string[] = [];
+  const enabledCapabilities = new Set<string>();
+  const nonCapabilityPrompts: string[] = [];
 
   for (const group of getToolGroups(options)) {
-    // Check condition
+    // Check condition (gating logic stays in the caller as the
+    // compiler is a pure function and does not read filesystem /
+    // keyword regex / mode state).
     if (group.condition === 'always') {
       // Always include
     } else if (group.condition === 'workspace') {
@@ -44,19 +151,99 @@ export function getBuiltinTools(options: {
       if (!group.condition.keywords.test(text)) continue;
     }
 
-    Object.assign(tools, group.tools);
-    if (group.systemPrompt) {
-      systemPrompts.push(group.systemPrompt);
+    // #26: Plan / read-only mode keeps only permission-safe tools. A group
+    // whose tools are all mutating contributes neither tools nor its
+    // capability prompt — so Plan advertises safe_read caps (widget
+    // guidelines / memory) but not image-gen / dashboard / schedule / notify.
+    const groupTools = options.safeReadOnly
+      ? Object.fromEntries(
+          Object.entries(group.tools).filter(([name]) => shouldSkipPermission(name)),
+        )
+      : group.tools;
+    if (Object.keys(groupTools).length === 0) continue;
+
+    Object.assign(tools, groupTools);
+    const capIds = capabilityIdsForGroup(group.name);
+    if (capIds.length > 0) {
+      for (const id of capIds) enabledCapabilities.add(id);
+    } else if (group.systemPrompt) {
+      // Non-capability group whose prompt hasn't been canonicalised
+      // yet (session-search / ask-user-question). Keep its raw
+      // systemPrompt in the legacy slot so we don't drop the
+      // capability while Phase 4 is pending.
+      nonCapabilityPrompts.push(group.systemPrompt);
     }
   }
+
+  // Phase 5d Phase 3 (2026-05-17) — capability prompt assembly +
+  // toolSet keys routed through the Runtime Capability Adapter.
+  // Caller (this function) still owns:
+  //   - tool MOUNTING (the AI SDK `ToolSet` instances live in
+  //     per-group factories like `createNotificationTools`).
+  //   - capability GATING (`group.condition === 'always' | 'workspace'
+  //     | keyword`) — gating reads filesystem / regex / mode state
+  //     which the adapter is forbidden from touching.
+  //   - NON-CAPABILITY prompt slots (session-search /
+  //     ask-user-question — these haven't earned a capability contract
+  //     entry yet; their raw `systemPrompt` text flows through the
+  //     legacy slot in the returned `systemPrompts` array).
+  // Adapter owns: capability prompt text + toolSetKeys hint, both
+  // sourced from the canonical capability catalog.
+  //
+  // Phase 5e review fix P1 #2 (2026-05-18) — scan User / External
+  // Harness extensions and pass them through the adapter so the
+  // Native Runtime's model sees the user's MCP / Skills / commands /
+  // external framework configs in the system prompt. Scans are best-
+  // effort + read-only.
+  let userExtensions: ReturnType<
+    typeof import('@/lib/harness/user-codepilot-extensions').scanUserCodePilotExtensions
+  > = [];
+  let externalExtensions: ReturnType<
+    typeof import('@/lib/harness/external-framework-harness').scanExternalFrameworkExtensions
+  > = [];
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { scanUserCodePilotExtensions } = require('@/lib/harness/user-codepilot-extensions');
+    userExtensions = scanUserCodePilotExtensions({
+      workspacePath: options.workspacePath,
+      runtimeId: 'codepilot_runtime',
+    });
+  } catch { /* best effort */ }
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { scanExternalFrameworkExtensions } = require('@/lib/harness/external-framework-harness');
+    // Native isn't ClaudeCode or Codex itself — flag external
+    // extensions as perception-only (executable=false). Caller's
+    // active framework hint is `undefined`, which the scanner
+    // interprets as "no framework matches → all entries get
+    // perceptionHint".
+    externalExtensions = scanExternalFrameworkExtensions({});
+  } catch { /* best effort */ }
+
+  const adapted = adaptForNative({
+    sessionId: options.sessionId || 'native-anonymous',
+    workingDirectory: options.workspacePath || undefined,
+    providerId: '',
+    model: '',
+    userPrompt: options.prompt || '',
+    enabledCapabilities,
+    userExtensions,
+    externalExtensions,
+  });
+
+  const systemPrompts: string[] = [];
+  if (adapted.systemPromptText.length > 0) systemPrompts.push(adapted.systemPromptText);
+  systemPrompts.push(...nonCapabilityPrompts);
 
   return { tools, systemPrompts };
 }
 
-function getToolGroups(options: { workspacePath?: string }): BuiltinToolGroup[] {
+function getToolGroups(options: GetBuiltinToolsOptions): BuiltinToolGroup[] {
   const groups: BuiltinToolGroup[] = [];
 
-  // Notification tools — always available
+  // Notification tools — always available. Pass through the run
+  // context so codepilot_schedule_task injects origin_session_id +
+  // working_directory into /api/tasks/schedule POST body.
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { createNotificationTools, NOTIFICATION_SYSTEM_PROMPT } = require('./notification');
@@ -64,7 +251,10 @@ function getToolGroups(options: { workspacePath?: string }): BuiltinToolGroup[] 
       name: 'codepilot-notify',
       systemPrompt: NOTIFICATION_SYSTEM_PROMPT,
       condition: 'always',
-      tools: createNotificationTools(),
+      tools: createNotificationTools({
+        sessionId: options.sessionId,
+        workingDirectory: options.workspacePath,
+      }),
     });
   } catch { /* notification module not available */ }
 

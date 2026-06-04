@@ -10,7 +10,7 @@ interface SettingsCardProps {
 
 export function SettingsCard({ title, description, children, className }: SettingsCardProps) {
   return (
-    <div className={cn("rounded-lg border border-border/50 p-4 space-y-4 transition-shadow hover:shadow-sm", className)}>
+    <div className={cn("rounded-lg bg-card border border-border/50 p-5 space-y-4", className)}>
       {(title || description) && (
         <div className="space-y-1">
           {title && <h3 className="text-sm font-medium">{title}</h3>}

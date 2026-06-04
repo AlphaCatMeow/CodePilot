@@ -5,12 +5,25 @@ import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { ImageGenCard } from './ImageGenCard';
-import { PaintBrush } from '@/components/ui/icon';
+import { CodePilotIcon } from '@/components/ui/semantic-icon';
 import { useTranslation } from '@/hooks/useTranslation';
 import { usePanel } from '@/hooks/usePanel';
 import type { TranslationKey } from '@/i18n';
 import type { ReferenceImage } from '@/types';
-import type { ImageGenResult } from '@/hooks/useImageGen';
+
+/**
+ * Render-side type for image generation results, kept here after the
+ * Design Agent ghost feature cleanup (Phase 2D.0). The previous home was
+ * the now-deleted hooks/useImageGen module, which carried a dead toggle
+ * that was never user-reachable. The shape mirrors the response of
+ * `/api/media/generate`, which is what `ImageGenConfirmation` actually
+ * fetches — no React context needed.
+ */
+export interface ImageGenResult {
+  id: string;
+  text?: string;
+  images: Array<{ data: string; mimeType: string; localPath?: string }>;
+}
 
 /** What the active-image endpoint returns when a usable media provider is set. */
 interface ActiveImageInfo {
@@ -266,7 +279,7 @@ export function ImageGenConfirmation({
             className="inline-flex items-center gap-1 text-[11px] text-muted-foreground max-w-[55%] min-w-0"
             title={`${activeInfo.modelLabel} · ${activeInfo.providerName ?? ''}`}
           >
-            <PaintBrush size={12} className="shrink-0" />
+            <CodePilotIcon name="appearance" size={12} className="shrink-0" aria-hidden />
             <span className="truncate">
               <span className="text-foreground/80">{activeInfo.modelLabel}</span>
               {activeInfo.providerName ? (
@@ -276,19 +289,19 @@ export function ImageGenConfirmation({
           </span>
         ) : activeInfo?.stale ? (
           <a
-            href="/settings#providers"
+            href="/settings/providers"
             className="inline-flex items-center gap-1 text-[11px] text-amber-600 dark:text-amber-400 hover:underline"
             title={t('imageGen.activeProviderStaleHint' as TranslationKey)}
           >
-            <PaintBrush size={12} className="shrink-0" />
+            <CodePilotIcon name="appearance" size={12} className="shrink-0" aria-hidden />
             <span>{t('imageGen.activeProviderStale' as TranslationKey)}</span>
           </a>
         ) : activeInfo ? (
           <a
-            href="/settings#providers"
+            href="/settings/providers"
             className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground hover:underline"
           >
-            <PaintBrush size={12} className="shrink-0" />
+            <CodePilotIcon name="appearance" size={12} className="shrink-0" aria-hidden />
             <span>{t('imageGen.noActiveProvider' as TranslationKey)}</span>
           </a>
         ) : null}

@@ -14,7 +14,7 @@ import { Shimmer } from '@/components/ai-elements/shimmer';
 import { ImageGenConfirmation } from './ImageGenConfirmation';
 import { BatchPlanInlinePreview } from './batch-image-gen/BatchPlanInlinePreview';
 import { WidgetRenderer } from './WidgetRenderer';
-import { parseAllShowWidgets, computePartialWidgetKey } from './MessageItem';
+import { parseAllShowWidgets, computePartialWidgetKey, MalformedWidgetNotice } from './MessageItem';
 import { PENDING_KEY, buildReferenceImages } from '@/lib/image-ref-store';
 import type { PlannerOutput, MediaBlock } from '@/types';
 
@@ -173,10 +173,15 @@ function useBufferedContent(rawContent: string, isStreaming: boolean): string {
 }
 
 /**
- * Thinking phase label that evolves over time to reduce perceived wait.
- * 0-5s: "思考中..." / "Thinking..."
- * 5-15s: "深度思考中..." / "Thinking deeply..."
- * 15s+: "组织回复中..." / "Preparing response..."
+ * Wait-phase label shown while waiting for the first content token.
+ * Pure UX-comfort progression — NOT tied to model thinking/reasoning state.
+ * Real reasoning content is rendered separately by ToolActionsGroup's ThinkingRow.
+ *   0-5s:  "生成中..." / "Generating..."
+ *   5-15s: "回复中..." / "Responding..."
+ *   15s+:  "组织回复中..." / "Preparing response..."
+ * Wording deliberately avoids "thinking" because users read it as the model
+ * actually reasoning hard — misleading for short prompts where the model
+ * just hasn't streamed first byte yet.
  */
 function ThinkingPhaseLabel() {
   const { t } = useTranslation();
@@ -198,19 +203,36 @@ function ThinkingPhaseLabel() {
 }
 
 function ElapsedTimer({ startedAt }: { startedAt: number }) {
-  const [elapsed, setElapsed] = useState(() => Math.floor((Date.now() - startedAt) / 1000));
+  // Phase 6 P0 follow-up (2026-05-15) — guard against the brief
+  // window right after `setIsStreaming(true)` where the parent
+  // hasn't yet populated `startedAt` (snapshot can still be 0 /
+  // undefined / NaN). Without this gate the JS arithmetic
+  // produces `NaN` (undefined minus number) or a huge nonsense
+  // number (0 minus Date.now()), and the rendered `${secs}s`
+  // template flashes "NaNs" or "1.7e9s" for a tick. The status
+  // bar's "Thinking..." shimmer + label still surface — we just
+  // hide the elapsed-time counter until the start timestamp is
+  // a real positive monotonic value.
+  const startedAtIsReady = Number.isFinite(startedAt) && startedAt > 0;
+  const [elapsed, setElapsed] = useState(() =>
+    startedAtIsReady ? Math.floor((Date.now() - startedAt) / 1000) : 0,
+  );
 
   // Reset elapsed when the stream start time changes (e.g. new turn or session switch)
   useEffect(() => {
+    if (!startedAtIsReady) return;
     setElapsed(Math.floor((Date.now() - startedAt) / 1000));
-  }, [startedAt]);
+  }, [startedAt, startedAtIsReady]);
 
   useEffect(() => {
+    if (!startedAtIsReady) return;
     const interval = setInterval(() => {
       setElapsed(Math.floor((Date.now() - startedAt) / 1000));
     }, 1000);
     return () => clearInterval(interval);
-  }, [startedAt]);
+  }, [startedAt, startedAtIsReady]);
+
+  if (!startedAtIsReady) return null;
 
   const mins = Math.floor(elapsed / 60);
   const secs = elapsed % 60;
@@ -360,11 +382,15 @@ export function StreamingMessage({
               const allSegments = parseAllShowWidgets(content);
               return (
                 <>
-                  {allSegments.map((seg, i) =>
-                    seg.type === 'text'
-                      ? <MessageResponse key={`t-${i}`}>{seg.content}</MessageResponse>
-                      : <WidgetRenderer key={`w-${i}`} widgetCode={seg.data.widget_code} isStreaming={false} title={seg.data.title} />
-                  )}
+                  {allSegments.map((seg, i) => {
+                    if (seg.type === 'text') {
+                      return <MessageResponse key={`t-${i}`}>{seg.content}</MessageResponse>;
+                    }
+                    if (seg.type === 'malformed_widget') {
+                      return <MalformedWidgetNotice key={`mw-${i}`} reason={seg.reason} raw={seg.raw} />;
+                    }
+                    return <WidgetRenderer key={`w-${i}`} widgetCode={seg.data.widget_code} isStreaming={false} title={seg.data.title} />;
+                  })}
                 </>
               );
             }
@@ -433,11 +459,15 @@ export function StreamingMessage({
                   <MessageResponse key="pre-text">{beforePart}</MessageResponse>
                 )}
                 {/* Completed widget fences + interleaved text */}
-                {completedSegments.map((seg, i) =>
-                  seg.type === 'text'
-                    ? <MessageResponse key={`t-${i}`}>{seg.content}</MessageResponse>
-                    : <WidgetRenderer key={`w-${i}`} widgetCode={seg.data.widget_code} isStreaming={false} title={seg.data.title} />
-                )}
+                {completedSegments.map((seg, i) => {
+                  if (seg.type === 'text') {
+                    return <MessageResponse key={`t-${i}`}>{seg.content}</MessageResponse>;
+                  }
+                  if (seg.type === 'malformed_widget') {
+                    return <MalformedWidgetNotice key={`mw-${i}`} reason={seg.reason} raw={seg.raw} />;
+                  }
+                  return <WidgetRenderer key={`w-${i}`} widgetCode={seg.data.widget_code} isStreaming={false} title={seg.data.title} />;
+                })}
                 {partialCode && partialCode.length > 10 ? (
                   <WidgetRenderer key={partialWidgetKey} widgetCode={partialCode} isStreaming={true} title={partialTitle} showOverlay={scriptsTruncated} />
                 ) : (
@@ -453,11 +483,15 @@ export function StreamingMessage({
             if (widgetSegments.length > 0) {
               return (
                 <>
-                  {widgetSegments.map((seg, i) =>
-                    seg.type === 'text'
-                      ? <MessageResponse key={`t-${i}`}>{seg.content}</MessageResponse>
-                      : <WidgetRenderer key={`w-${i}`} widgetCode={seg.data.widget_code} isStreaming={false} title={seg.data.title} />
-                  )}
+                  {widgetSegments.map((seg, i) => {
+                    if (seg.type === 'text') {
+                      return <MessageResponse key={`t-${i}`}>{seg.content}</MessageResponse>;
+                    }
+                    if (seg.type === 'malformed_widget') {
+                      return <MalformedWidgetNotice key={`mw-${i}`} reason={seg.reason} raw={seg.raw} />;
+                    }
+                    return <WidgetRenderer key={`w-${i}`} widgetCode={seg.data.widget_code} isStreaming={false} title={seg.data.title} />;
+                  })}
                 </>
               );
             }

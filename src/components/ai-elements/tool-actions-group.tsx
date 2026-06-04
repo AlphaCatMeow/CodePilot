@@ -1,22 +1,14 @@
 'use client';
 
-import React, { useState, createElement } from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import type { Icon } from "@phosphor-icons/react";
 import {
-  File,
-  NotePencil,
-  Terminal,
-  MagnifyingGlass,
-  Wrench,
   SpinnerGap,
   CheckCircle,
   XCircle,
   CaretRight,
-  Brain,
-  Image as ImageIcon,
-  Lightning,
 } from "@phosphor-icons/react";
+import { CodePilotIcon, type CodePilotIconName } from "@/components/ui/semantic-icon";
 import { cn } from '@/lib/utils';
 import { Shimmer } from '@/components/ai-elements/shimmer';
 import { useStickToBottomContext } from 'use-stick-to-bottom';
@@ -27,6 +19,10 @@ import { mermaid } from '@streamdown/mermaid';
 
 const thinkingPlugins = { cjk, math, mermaid };
 import type { MediaBlock } from '@/types';
+import {
+  isToolUnsupportedError,
+  buildToolUnsupportedHint,
+} from '@/lib/harness/capability-display-text';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,7 +53,7 @@ interface ToolActionsGroupProps {
 
 interface ToolRendererDef {
   match: (name: string) => boolean;
-  icon: Icon;
+  iconName: CodePilotIconName;
   label: string;
   getSummary: (input: unknown, name?: string) => string;
   /** Render inline detail when tool row is hovered/expanded (optional) */
@@ -83,7 +79,7 @@ function truncatePath(path: string, maxLen = 50): string {
 const TOOL_REGISTRY: ToolRendererDef[] = [
   {
     match: (n) => ['bash', 'execute', 'run', 'shell', 'execute_command'].includes(n.toLowerCase()),
-    icon: Terminal,
+    iconName: 'terminal',
     label: '',
     getSummary: (input) => {
       const cmd = ((input as Record<string, unknown>)?.command || (input as Record<string, unknown>)?.cmd || '') as string;
@@ -110,8 +106,14 @@ const TOOL_REGISTRY: ToolRendererDef[] = [
         return outputText;
       })();
 
+      // Round 15 (2026-05-23): bumped from `rounded` (4px, reads as
+      // sharp at this size) to `rounded-lg` (8px) so the bash command
+      // card aligns with the project's sub-card radius scale. Outer
+      // Widget / Markdown cards use rounded-xl (12px); inline
+      // tool-output sub-cards sit one tier inside them, so rounded-lg
+      // is the right step down.
       return (
-        <div className="mt-1 rounded bg-muted/40 px-2 py-1.5 font-mono text-[11px] text-muted-foreground/80 max-h-[140px] overflow-auto whitespace-pre-wrap break-all">
+        <div className="mt-1 rounded-lg bg-muted/40 px-2.5 py-2 font-mono text-[11px] text-muted-foreground/80 max-h-[140px] overflow-auto whitespace-pre-wrap break-all">
           {cmd && <div className="text-foreground/70">$ {cmd}</div>}
           {displayLines && (
             <div className={cn("mt-1", isRunning ? "text-muted-foreground/50" : "text-muted-foreground/60")}>
@@ -124,7 +126,7 @@ const TOOL_REGISTRY: ToolRendererDef[] = [
   },
   {
     match: (n) => ['write', 'edit', 'writefile', 'write_file', 'create_file', 'createfile', 'notebookedit', 'notebook_edit'].includes(n.toLowerCase()),
-    icon: NotePencil,
+    iconName: 'edit',
     label: 'Edit',
     getSummary: (input) => {
       const path = getFilePath(input);
@@ -133,7 +135,7 @@ const TOOL_REGISTRY: ToolRendererDef[] = [
   },
   {
     match: (n) => ['read', 'readfile', 'read_file'].includes(n.toLowerCase()),
-    icon: File,
+    iconName: 'file',
     label: 'Read',
     getSummary: (input) => {
       const path = getFilePath(input);
@@ -142,7 +144,7 @@ const TOOL_REGISTRY: ToolRendererDef[] = [
   },
   {
     match: (n) => ['search', 'glob', 'grep', 'find_files', 'search_files', 'websearch', 'web_search'].includes(n.toLowerCase()),
-    icon: MagnifyingGlass,
+    iconName: 'search',
     label: 'Search',
     getSummary: (input) => {
       const inp = input as Record<string, unknown> | undefined;
@@ -152,7 +154,7 @@ const TOOL_REGISTRY: ToolRendererDef[] = [
   },
   {
     match: (n) => n.toLowerCase() === 'agent',
-    icon: Lightning,
+    iconName: 'assistant',
     label: 'Agent',
     getSummary: (input) => {
       const inp = input as Record<string, unknown> | undefined;
@@ -205,7 +207,7 @@ const TOOL_REGISTRY: ToolRendererDef[] = [
     // Fallback — must be last. Shows the raw tool name so unregistered tools
     // (TodoWrite, MCP tools, plugin tools) remain identifiable.
     match: () => true,
-    icon: Wrench,
+    iconName: 'wrench',
     label: '',
     getSummary: (input, name?: string) => {
       const prefix = name || '';
@@ -337,7 +339,7 @@ function ContextGroup({ tools }: { tools: ToolAction[] }) {
         onClick={() => setExpanded((prev) => !prev)}
         className="flex w-full items-center gap-2 px-2 py-1 min-h-[28px] text-xs hover:bg-muted/30 rounded-sm transition-colors"
       >
-        <MagnifyingGlass size={14} className="shrink-0 text-muted-foreground" />
+        <CodePilotIcon name="search" size="sm" className="shrink-0 text-muted-foreground" aria-hidden />
         <CaretRight
           size={10}
           className={cn(
@@ -415,7 +417,7 @@ function ThinkingRow({ content, isStreaming }: { content: string; isStreaming?: 
             )}
           />
         ) : (
-          <Brain size={14} className="shrink-0 text-muted-foreground" />
+          <CodePilotIcon name="assistant" size="sm" className="shrink-0 text-muted-foreground" aria-hidden />
         )}
         <span className="font-mono text-muted-foreground/60 truncate flex-1 text-left">
           {isStreaming ? <Shimmer duration={1.5}>{summary}</Shimmer> : summary}
@@ -449,13 +451,29 @@ function ToolActionRow({ tool, streamingToolOutput }: { tool: ToolAction; stream
   const summary = renderer.getSummary(tool.input, tool.name);
   const filePath = getFilePath(tool.input);
   const status = getStatus(tool);
-  const hasDetail = renderer.icon === Terminal || renderer.icon === Lightning;
+  const hasDetail = renderer.iconName === 'terminal' || renderer.iconName === 'assistant';
   const showDetail = hasDetail && renderer.renderDetail && (status === 'running' || streamingToolOutput || tool.result);
+
+  // Phase 5e round 8 (2026-05-18) — small inline hint when the model
+  // tried to call a `codepilot_*` built-in tool that isn't supported
+  // on the active Runtime. Narrowed by `isToolUnsupportedError`:
+  // fires only when the error content matches "tool not found /
+  // unknown tool / not registered" + the tool is in our catalog,
+  // so legitimate runtime errors (API key, network) DON'T show a
+  // "switch runtime" hint.
+  const unsupportedHint = (() => {
+    if (!isToolUnsupportedError({
+      toolName: tool.name,
+      errorContent: tool.result,
+      isError: tool.isError,
+    })) return null;
+    return buildToolUnsupportedHint(tool.name);
+  })();
 
   return (
     <div>
       <div className="flex items-center gap-2 px-2 py-1 min-h-[28px] text-xs hover:bg-muted/30 rounded-sm transition-colors">
-        {createElement(renderer.icon, { size: 14, className: "shrink-0 text-muted-foreground" })}
+        <CodePilotIcon name={renderer.iconName} size="sm" className="shrink-0 text-muted-foreground" aria-hidden />
 
         {renderer.label && (
           <span className="font-medium text-muted-foreground shrink-0">{renderer.label}</span>
@@ -472,12 +490,20 @@ function ToolActionRow({ tool, streamingToolOutput }: { tool: ToolAction; stream
         )}
 
         {tool.media && tool.media.length > 0 && (
-          <ImageIcon size={14} className="shrink-0 text-primary/60" />
+          <CodePilotIcon name="image" size="sm" className="shrink-0 text-primary/60" aria-hidden />
         )}
 
         <StatusDot status={status} />
       </div>
       {showDetail && renderer.renderDetail?.(tool, streamingToolOutput)}
+      {unsupportedHint && (
+        <p
+          data-testid={`tool-unsupported-hint-${tool.id ?? tool.name}`}
+          className="px-2 py-1 text-[11px] text-muted-foreground/80 leading-snug italic"
+        >
+          {unsupportedHint.hint.zh}
+        </p>
+      )}
     </div>
   );
 }
@@ -554,11 +580,18 @@ export function ToolActionsGroup({
 
   return (
     <div className="w-[min(100%,48rem)]">
-      {/* Header — content left, caret right */}
+      {/* Header — content left, caret right.
+          Round 12 fix: was `py-1 rounded-sm` with NO horizontal
+          padding, so the inner count badge sat flush against the
+          button's left edge and the hover-bg `rounded-sm` (2px)
+          curve cut into the badge's own `rounded` (4px). Visually
+          this read as "图标露在 hover 区外". `px-2` + `rounded-md`
+          (6px) keeps the badge inside the hover surface and matches
+          the curve scale across nested elements. */}
       <button
         type="button"
         onClick={handleToggle}
-        className="flex w-full items-center gap-2 py-1 text-xs rounded-sm hover:bg-muted/30 transition-colors"
+        className="flex w-full items-center gap-2 px-2 py-1 text-xs rounded-md hover:bg-muted/30 transition-colors"
       >
         <span className="inline-flex items-center justify-center rounded bg-muted/80 px-1.5 py-0.5 text-[10px] font-medium leading-none text-muted-foreground/70 tabular-nums">
           {tools.length + (thinkingContent ? 1 : 0)}

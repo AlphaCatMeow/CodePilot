@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
@@ -14,13 +14,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SpinnerGap, CheckCircle, Warning, TelegramLogo, ChatTeardrop, GameController, ChatsCircle } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { useTranslation } from "@/hooks/useTranslation";
 import { useBridgeStatus } from "@/hooks/useBridgeStatus";
 import { showToast } from "@/hooks/useToast";
 import { SettingsCard } from "@/components/patterns/SettingsCard";
 import { FieldRow } from "@/components/patterns/FieldRow";
 import { StatusBanner } from "@/components/patterns/StatusBanner";
-import type { ProviderModelGroup } from "@/types";
+import type { ChatSession, ProviderModelGroup } from "@/types";
 
 interface BridgeSettings {
   remote_bridge_enabled: string;
@@ -54,6 +55,11 @@ export function BridgeSection() {
   const [workDir, setWorkDir] = useState("");
   const [model, setModel] = useState("");
   const [providerGroups, setProviderGroups] = useState<ProviderModelGroup[]>([]);
+  // Recent project paths (distinct working_directory across chat
+  // sessions, latest activity first) — same data source the Assistant
+  // workspace picker uses. Lets users pick a known project for the
+  // bridge default without retyping the path.
+  const [recentPaths, setRecentPaths] = useState<string[]>([]);
   const { bridgeStatus, starting, stopping, startBridge, stopBridge } = useBridgeStatus();
   const { t } = useTranslation();
 
@@ -66,13 +72,36 @@ export function BridgeSection() {
         setSettings(s);
         setWorkDir(s.bridge_default_work_dir);
         // Build composite value for Select: "provider_id::model"
+        let composite = "";
         if (s.bridge_default_provider_id && s.bridge_default_model) {
-          setModel(`${s.bridge_default_provider_id}::${s.bridge_default_model}`);
+          composite = `${s.bridge_default_provider_id}::${s.bridge_default_model}`;
         } else if (s.bridge_default_model) {
-          setModel(s.bridge_default_model);
-        } else {
-          setModel("");
+          composite = s.bridge_default_model;
         }
+        setModel(composite);
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const fetchRecentPaths = useCallback(async () => {
+    try {
+      const res = await fetch("/api/chat/sessions");
+      if (res.ok) {
+        const data = await res.json();
+        const sessions: ChatSession[] = data.sessions || [];
+        const seen = new Set<string>();
+        const ordered: string[] = [];
+        for (const s of [...sessions].sort((a, b) =>
+          (b.updated_at || "").localeCompare(a.updated_at || ""),
+        )) {
+          const wd = s.working_directory?.trim();
+          if (!wd || seen.has(wd)) continue;
+          seen.add(wd);
+          ordered.push(wd);
+        }
+        setRecentPaths(ordered);
       }
     } catch {
       // ignore
@@ -96,9 +125,12 @@ export function BridgeSection() {
   useEffect(() => {
     fetchSettings();
     fetchModels();
-  }, [fetchSettings, fetchModels]);
+    fetchRecentPaths();
+  }, [fetchSettings, fetchModels, fetchRecentPaths]);
 
-  const saveSettings = async (updates: Partial<BridgeSettings>) => {
+  const saveSettings = async (
+    updates: Partial<BridgeSettings>,
+  ): Promise<boolean> => {
     setSaving(true);
     try {
       const res = await fetch("/api/bridge/settings", {
@@ -108,9 +140,11 @@ export function BridgeSection() {
       });
       if (res.ok) {
         setSettings((prev) => ({ ...prev, ...updates }));
+        return true;
       }
+      return false;
     } catch {
-      // ignore
+      return false;
     } finally {
       setSaving(false);
     }
@@ -140,16 +174,90 @@ export function BridgeSection() {
     saveSettings({ bridge_weixin_enabled: checked ? "true" : "" });
   };
 
-  const handleSaveDefaults = () => {
-    // Split composite "provider_id::model" value
-    const parts = model.split("::");
+  // Defaults card is auto-save with debounce + latest-wins. Both
+  // dimensions need protection:
+  //   1. Sequencing — quick workDir-then-model edits could race so the
+  //      older PUT lands second and overwrites the newer model. We
+  //      coalesce via a single pending {workDir, model} ref so only
+  //      the latest pair ever fires.
+  //   2. Half-typed fallback — when `providerGroups` is empty the
+  //      model field is a plain Input; without debounce every
+  //      keystroke would PUT (`g` → `gl` → `glm`), persisting
+  //      half-typed model names. 400ms debounce collapses those into
+  //      one save of the final value.
+  const pendingDefaultsRef = useRef<{ workDir: string; model: string } | null>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Drain the pending pair into a PUT immediately. `keepalive: true`
+  // is the meaningful bit: it lets the browser finish the request even
+  // when this fires from an unmount cleanup that's part of a
+  // page-navigation (without it, the in-flight fetch is cancelled and
+  // the user's last edit silently disappears). We don't await it for
+  // the same reason — the calling context may be tearing down.
+  const flushPendingDefaults = () => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    const target = pendingDefaultsRef.current;
+    pendingDefaultsRef.current = null;
+    if (!target) return;
+    const parts = target.model.split("::");
     const providerId = parts.length === 2 ? parts[0] : "";
-    const modelValue = parts.length === 2 ? parts[1] : model;
-    saveSettings({
-      bridge_default_work_dir: workDir,
-      bridge_default_model: modelValue,
-      bridge_default_provider_id: providerId,
-    });
+    const modelValue = parts.length === 2 ? parts[1] : target.model;
+    void fetch("/api/bridge/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        settings: {
+          bridge_default_work_dir: target.workDir,
+          bridge_default_model: modelValue,
+          bridge_default_provider_id: providerId,
+        },
+      }),
+      keepalive: true,
+    }).catch(() => { /* page may be unloading; nothing actionable */ });
+  };
+
+  const schedulePersistDefaults = (nextWorkDir: string, nextModel: string) => {
+    pendingDefaultsRef.current = { workDir: nextWorkDir, model: nextModel };
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      const target = pendingDefaultsRef.current;
+      pendingDefaultsRef.current = null;
+      debounceRef.current = null;
+      if (!target) return;
+      const parts = target.model.split("::");
+      const providerId = parts.length === 2 ? parts[0] : "";
+      const modelValue = parts.length === 2 ? parts[1] : target.model;
+      void saveSettings({
+        bridge_default_work_dir: target.workDir,
+        bridge_default_model: modelValue,
+        bridge_default_provider_id: providerId,
+      });
+    }, 400);
+  };
+
+  // Flush any pending debounced save on unmount so a value the user
+  // just picked (Select / folder dialog / Input keystroke) doesn't get
+  // silently dropped when they immediately switch settings tab. The
+  // flush uses keepalive: true so the PUT survives the unmount even if
+  // it coincides with a route change.
+  useEffect(() => () => {
+    flushPendingDefaults();
+    // flushPendingDefaults is a stable closure over refs/setters; the
+    // empty dep array intentionally captures the mount-time function.
+    // (flushPendingDefaults is stable — eslint needs no suppression here.)
+  }, []);
+
+  const handleWorkDirChange = (next: string) => {
+    setWorkDir(next);
+    schedulePersistDefaults(next, model);
+  };
+
+  const handleModelChange = (next: string) => {
+    setModel(next);
+    schedulePersistDefaults(workDir, next);
   };
 
   const handleBrowseFolder = async () => {
@@ -163,7 +271,7 @@ export function BridgeSection() {
           title: t("bridge.defaultWorkDir"),
         });
         if (!result.canceled && result.filePaths[0]) {
-          setWorkDir(result.filePaths[0]);
+          handleWorkDirChange(result.filePaths[0]);
         }
       }
     } catch {
@@ -202,7 +310,7 @@ export function BridgeSection() {
   const adapterCount = bridgeStatus?.adapters?.length ?? 0;
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="max-w-3xl mx-auto space-y-6">
       {/* Enable/Disable Master Toggle */}
       <SettingsCard className={isEnabled ? "border-primary/50 bg-primary/5" : undefined}>
         <FieldRow
@@ -215,7 +323,18 @@ export function BridgeSection() {
             disabled={saving}
           />
         </FieldRow>
-        {isEnabled && (
+        {/* Two-state banner: distinguish "enabled in config" from
+            "service is actually running". The previous single-message
+            banner conflated the two and made users assume external
+            channels were already usable just because the master
+            switch was on. (2026-05-05 P2 fix.) */}
+        {isEnabled && !isRunning && (
+          <StatusBanner variant="warning">
+            <Warning size={14} className="shrink-0" />
+            {t("bridge.enabledNotRunningHint")}
+          </StatusBanner>
+        )}
+        {isEnabled && isRunning && (
           <StatusBanner variant="info" className="bg-primary/10 text-primary">
             <span className="h-2 w-2 shrink-0 rounded-full bg-primary inline-block mr-1" />
             {t("bridge.activeHint")}
@@ -236,18 +355,22 @@ export function BridgeSection() {
               </p>
             </div>
             <div className="flex items-center gap-3">
-              <div
-                className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs ${
+              <span
+                className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
                   isRunning
                     ? "bg-status-success-muted text-status-success-foreground"
                     : "bg-muted text-muted-foreground"
                 }`}
               >
-                {isRunning ? <CheckCircle size={14} className="shrink-0" /> : <Warning size={14} className="shrink-0" />}
+                <span
+                  className={`size-1.5 rounded-full ${
+                    isRunning ? "bg-status-success-foreground" : "bg-muted-foreground"
+                  }`}
+                />
                 {isRunning
                   ? t("bridge.statusConnected")
                   : t("bridge.statusDisconnected")}
-              </div>
+              </span>
               {isRunning ? (
                 <Button
                   size="sm"
@@ -270,11 +393,10 @@ export function BridgeSection() {
                   disabled={starting}
                 >
                   {starting ? (
-                    <SpinnerGap
-                      size={14}
-                      className="animate-spin mr-1.5"
-                    />
-                  ) : null}
+                    <SpinnerGap size={14} className="animate-spin" />
+                  ) : (
+                    <CodePilotIcon name="play" size="sm" aria-hidden />
+                  )}
                   {starting ? t("bridge.starting") : t("bridge.start")}
                 </Button>
               )}
@@ -289,93 +411,61 @@ export function BridgeSection() {
           title={t("bridge.channels")}
           description={t("bridge.channelsDesc")}
         >
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <TelegramLogo size={16} className="text-muted-foreground" />
-                <div>
-                  <p className="text-sm">{t("bridge.telegramChannel")}</p>
-                  <p className="text-xs text-muted-foreground">{t("bridge.telegramChannelDesc")}</p>
-                </div>
-              </div>
-              <Switch
+          {/* All 6 toggles use the inset-divider sub-card pattern from
+              `docs/design.md` § Sub-card so the rows share a single
+              container with built-in dividers — replaces 5 hand-rolled
+              `flex justify-between` rows that had inconsistent
+              `pt-3`-based spacing. */}
+          <div className="rounded-md bg-muted/40 -mx-1">
+            <div className="px-3.5 divide-y divide-border/50">
+              <ChannelToggleRow
+                icon={<TelegramLogo size={16} className="text-muted-foreground" />}
+                title={t("bridge.telegramChannel")}
+                description={t("bridge.telegramChannelDesc")}
                 checked={isTelegramEnabled}
                 onCheckedChange={handleToggleTelegram}
                 disabled={saving}
               />
-            </div>
-
-            <div className="flex items-center justify-between border-t border-border/30 pt-3">
-              <div className="flex items-center gap-3">
-                <ChatTeardrop size={16} className="text-muted-foreground" />
-                <div>
-                  <p className="text-sm">{t("bridge.feishuChannel")}</p>
-                  <p className="text-xs text-muted-foreground">{t("bridge.feishuChannelDesc")}</p>
-                </div>
-              </div>
-              <Switch
+              <ChannelToggleRow
+                icon={<ChatTeardrop size={16} className="text-muted-foreground" />}
+                title={t("bridge.feishuChannel")}
+                description={t("bridge.feishuChannelDesc")}
                 checked={isFeishuEnabled}
                 onCheckedChange={handleToggleFeishu}
                 disabled={saving}
               />
-            </div>
-
-            <div className="flex items-center justify-between border-t border-border/30 pt-3">
-              <div className="flex items-center gap-3">
-                <GameController size={16} className="text-muted-foreground" />
-                <div>
-                  <p className="text-sm">{t("bridge.discordChannel")}</p>
-                  <p className="text-xs text-muted-foreground">{t("bridge.discordChannelDesc")}</p>
-                </div>
-              </div>
-              <Switch
+              <ChannelToggleRow
+                icon={<GameController size={16} className="text-muted-foreground" />}
+                title={t("bridge.discordChannel")}
+                description={t("bridge.discordChannelDesc")}
                 checked={isDiscordEnabled}
                 onCheckedChange={handleToggleDiscord}
                 disabled={saving}
               />
-            </div>
-
-            <div className="flex items-center justify-between border-t border-border/30 pt-3">
-              <div className="flex items-center gap-3">
-                <ChatsCircle size={16} className="text-muted-foreground" />
-                <div>
-                  <p className="text-sm">{t("bridge.qqChannel")}</p>
-                  <p className="text-xs text-muted-foreground">{t("bridge.qqChannelDesc")}</p>
-                </div>
-              </div>
-              <Switch
+              <ChannelToggleRow
+                icon={<ChatsCircle size={16} className="text-muted-foreground" />}
+                title={t("bridge.qqChannel")}
+                description={t("bridge.qqChannelDesc")}
                 checked={isQQEnabled}
                 onCheckedChange={handleToggleQQ}
                 disabled={saving}
               />
-            </div>
-
-            <div className="flex items-center justify-between border-t border-border/30 pt-3">
-              <div className="flex items-center gap-3">
-                <ChatTeardrop size={16} className="text-muted-foreground" />
-                <div>
-                  <p className="text-sm">{t("bridge.weixinChannel")}</p>
-                  <p className="text-xs text-muted-foreground">{t("bridge.weixinChannelDesc")}</p>
-                </div>
-              </div>
-              <Switch
+              <ChannelToggleRow
+                icon={<ChatTeardrop size={16} className="text-muted-foreground" />}
+                title={t("bridge.weixinChannel")}
+                description={t("bridge.weixinChannelDesc")}
                 checked={isWeixinEnabled}
                 onCheckedChange={handleToggleWeixin}
                 disabled={saving}
               />
-            </div>
-
-            <FieldRow
-              label={t("bridge.autoStart")}
-              description={t("bridge.autoStartDesc")}
-              separator
-            >
-              <Switch
+              <ChannelToggleRow
+                title={t("bridge.autoStart")}
+                description={t("bridge.autoStartDesc")}
                 checked={isAutoStart}
                 onCheckedChange={handleToggleAutoStart}
                 disabled={saving}
               />
-            </FieldRow>
+            </div>
           </div>
         </SettingsCard>
       )}
@@ -390,23 +480,28 @@ export function BridgeSection() {
             {bridgeStatus?.adapters.map((adapter) => (
               <div
                 key={adapter.channelType}
-                className="rounded-md border border-border/30 px-3 py-2 space-y-1"
+                className="rounded-md border border-border/50 bg-muted/40 px-3 py-2 space-y-1"
               >
                 <div className="flex items-center justify-between">
                   <span className="text-xs font-medium capitalize">
                     {adapter.channelType}
                   </span>
-                  <div
-                    className={`rounded px-2 py-0.5 text-xs ${
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
                       adapter.running
                         ? "bg-status-success-muted text-status-success-foreground"
                         : "bg-muted text-muted-foreground"
                     }`}
                   >
+                    <span
+                      className={`size-1.5 rounded-full ${
+                        adapter.running ? "bg-status-success-foreground" : "bg-muted-foreground"
+                      }`}
+                    />
                     {adapter.running
                       ? t("bridge.adapterRunning")
                       : t("bridge.adapterStopped")}
-                  </div>
+                  </span>
                 </div>
                 {adapter.lastMessageAt && (
                   <p className="text-xs text-muted-foreground">
@@ -424,7 +519,11 @@ export function BridgeSection() {
         </SettingsCard>
       )}
 
-      {/* Default Settings */}
+      {/* Default Settings — auto-save: changes to workDir / model
+          immediately PUT /api/bridge/settings, so no Save button. The
+          workDir Select pulls from recent project paths (distinct
+          working_directory across chat sessions); "选择文件夹" stays
+          for paths that aren't in the recent list yet. */}
       {isEnabled && (
         <SettingsCard
           title={t("bridge.defaults")}
@@ -436,17 +535,36 @@ export function BridgeSection() {
                 {t("bridge.defaultWorkDir")}
               </label>
               <div className="flex gap-2">
-                <Input
-                  value={workDir}
-                  onChange={(e) => setWorkDir(e.target.value)}
-                  placeholder="/path/to/project"
-                  className="font-mono text-sm"
-                />
+                <Select value={workDir} onValueChange={handleWorkDirChange} disabled={saving}>
+                  <SelectTrigger className="flex-1 text-sm font-mono">
+                    <SelectValue placeholder="/path/to/project" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(() => {
+                      const opts = workDir && !recentPaths.includes(workDir)
+                        ? [workDir, ...recentPaths]
+                        : recentPaths;
+                      if (opts.length === 0) {
+                        return (
+                          <div className="px-2 py-1.5 text-xs text-muted-foreground">
+                            {t("bridge.browse")}
+                          </div>
+                        );
+                      }
+                      return opts.map((p) => (
+                        <SelectItem key={p} value={p}>
+                          {p}
+                        </SelectItem>
+                      ));
+                    })()}
+                  </SelectContent>
+                </Select>
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={handleBrowseFolder}
                   className="shrink-0"
+                  disabled={saving}
                 >
                   {t("bridge.browse")}
                 </Button>
@@ -461,7 +579,7 @@ export function BridgeSection() {
                 {t("bridge.defaultModel")}
               </label>
               {providerGroups.length > 0 ? (
-                <Select value={model} onValueChange={setModel}>
+                <Select value={model} onValueChange={handleModelChange} disabled={saving}>
                   <SelectTrigger className="w-full text-sm font-mono">
                     <SelectValue placeholder={t("bridge.defaultModelHint")} />
                   </SelectTrigger>
@@ -484,9 +602,10 @@ export function BridgeSection() {
               ) : (
                 <Input
                   value={model}
-                  onChange={(e) => setModel(e.target.value)}
+                  onChange={(e) => handleModelChange(e.target.value)}
                   placeholder="sonnet"
                   className="font-mono text-sm"
+                  disabled={saving}
                 />
               )}
               <p className="text-xs text-muted-foreground mt-1">
@@ -494,16 +613,47 @@ export function BridgeSection() {
               </p>
             </div>
           </div>
-
-          <Button
-            size="sm"
-            onClick={handleSaveDefaults}
-            disabled={saving}
-          >
-            {saving ? t("common.loading") : t("common.save")}
-          </Button>
         </SettingsCard>
       )}
+    </div>
+  );
+}
+
+/**
+ * Single channel/auto-start toggle row inside the channels card. Matches
+ * the inset-divider sub-card row pattern from `docs/design.md` § Sub-card
+ * — `py-2.5 flex items-center justify-between`. Icon is optional (the
+ * auto-start row at the bottom doesn't have one).
+ */
+function ChannelToggleRow({
+  icon,
+  title,
+  description,
+  checked,
+  onCheckedChange,
+  disabled,
+}: {
+  icon?: React.ReactNode;
+  title: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (next: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-2.5">
+      <div className="flex items-center gap-3 min-w-0 flex-1">
+        {icon}
+        <div className="min-w-0">
+          <p className="text-sm">{title}</p>
+          <p className="text-xs text-muted-foreground">{description}</p>
+        </div>
+      </div>
+      <Switch
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        disabled={disabled}
+      />
     </div>
   );
 }

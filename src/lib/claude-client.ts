@@ -13,8 +13,10 @@ import type {
   McpHttpServerConfig,
   McpServerConfig,
 } from '@anthropic-ai/claude-agent-sdk';
+import type { SdkModelUsage } from './sdk-model-usage';
 import type { ClaudeStreamOptions, SSEEvent, TokenUsage, MCPServerConfig, PermissionRequestEvent, FileAttachment, MediaBlock } from '@/types';
 import { isImageFile } from '@/types';
+import { pickModelUsage } from './sdk-model-usage';
 import { registerPendingPermission } from './permission-registry';
 import { registerConversation, unregisterConversation } from './conversation-registry';
 import { captureCapabilities, isCacheFresh, setCachedPlugins } from './agent-sdk-capabilities';
@@ -47,6 +49,15 @@ import { prepareSdkSubprocessEnv } from './sdk-subprocess-env';
 // registry.ts only imports types/db/claude-settings — no cycle. The actual
 // runtime registration still happens elsewhere (runtime/index is imported
 // via its own entry points at app startup).
+// Import directly from registry — DO NOT switch this to the barrel
+// (`./runtime`). sdk-runtime.ts imports `streamClaudeSdk` from this
+// file; if claude-client also imports the barrel, the chain becomes
+// runtime/index.ts → sdk-runtime.ts → claude-client.ts → runtime/index.ts
+// (circular), and sdk-runtime is still mid-init when registerRuntime
+// reads it, surfacing as "Cannot access 'sdkRuntime' before initialization".
+// Safe because every caller of claude-client (chat route, bridge) imports
+// the barrel themselves, so the registry is already populated by the time
+// resolveRuntime() fires here.
 import { resolveRuntime, getRuntime } from './runtime/registry';
 import { detectTransport, isNativeCompatible } from './provider-transport';
 import os from 'os';
@@ -215,17 +226,43 @@ function extractTextFromMessage(msg: SDKAssistantMessage): string {
 }
 
 /**
- * Extract token usage from an SDK result message
+ * Extract token usage from an SDK result message.
+ *
+ * `modelHints` lets the caller forward what the request was *for*
+ * (alias + resolved upstream id) so `pickModelUsage` can find the
+ * right entry in `msg.modelUsage`. Optional — when absent we still
+ * pull contextWindow if there's only one entry, which covers the
+ * most common third-party-proxy shape.
  */
-function extractTokenUsage(msg: SDKResultMessage): TokenUsage | null {
+function extractTokenUsage(
+  msg: SDKResultMessage,
+  modelHints: { requested?: string; upstream?: string } = {},
+): TokenUsage | null {
   if (!msg.usage) return null;
-  return {
+  const base: TokenUsage = {
     input_tokens: msg.usage.input_tokens,
     output_tokens: msg.usage.output_tokens,
     cache_read_input_tokens: msg.usage.cache_read_input_tokens ?? 0,
     cache_creation_input_tokens: msg.usage.cache_creation_input_tokens ?? 0,
     cost_usd: 'total_cost_usd' in msg ? msg.total_cost_usd : undefined,
   };
+  // Pull contextWindow / maxOutputTokens straight from the SDK when
+  // available — this is the path that finally lights up % + Context bar
+  // in RunCockpit for GLM / Bailian / MiniMax / Kimi / Volcengine / etc.
+  // We deliberately keep the lookup permissive (try requested key,
+  // upstream key, single-entry, first-with-window). Missing modelUsage
+  // is not an error — the older runtime path and some adapters don't
+  // populate it, in which case useContextUsage falls back to the
+  // static catalog window via getContextWindow().
+  const modelUsage = (msg as { modelUsage?: Record<string, SdkModelUsage> }).modelUsage;
+  const picked = pickModelUsage(modelUsage, modelHints);
+  if (picked) {
+    const [key, usage] = picked;
+    if (usage.contextWindow > 0) base.context_window = usage.contextWindow;
+    if (usage.maxOutputTokens > 0) base.max_output_tokens = usage.maxOutputTokens;
+    base.usage_model_id = key;
+  }
+  return base;
 }
 
 /**
@@ -437,11 +474,67 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
   const effectiveProvider = options.providerId || options.sessionProviderId || '';
   let runtime;
 
-  // Non-Anthropic providers (OpenAI OAuth, etc.) MUST use Native Runtime
-  // because Claude Code SDK only supports Anthropic models.
+  // Non-Anthropic providers (OpenAI OAuth, etc.) historically went to
+  // Native Runtime because Claude Code SDK only supports Anthropic
+  // models. Phase 5b makes that branch CONDITIONAL on the runtime pin
+  // / global default: when the user has explicitly selected Codex
+  // Runtime, openai-oauth must route to Codex Runtime so the proxy
+  // can handle it (Codex's wire format = OpenAI Responses-API, which
+  // is exactly what openai-oauth speaks). Forcing Native here is the
+  // pre-fix bug that returned `Session is pinned to codex_runtime
+  // but resolver returned "native"`.
   const isNonAnthropicProvider = effectiveProvider === 'openai-oauth';
 
-  if (isNonAnthropicProvider) {
+  // Phase 5 review round 5 (2026-05-13) — Codex Account models flow
+  // ONLY through Codex Runtime's app-server. ClaudeCode SDK / Native
+  // can't speak Codex's wire format. Fail-closed if codex_runtime
+  // isn't registered (codex binary missing): downstream chat send
+  // path will surface a clean "Codex not available" error instead
+  // of falling through to ClaudeCode SDK with an unknown model.
+  const isCodexAccountProvider = effectiveProvider === 'codex_account';
+
+  // Phase 5b smoke follow-up (2026-05-15) — resolve the effective
+  // Codex Runtime intent BEFORE the provider-shape branches so a
+  // Codex pin (session pin or global default) wins over the legacy
+  // openai-oauth → Native heuristic. Order is intentional:
+  // 1. session pin wins outright;
+  // 2. global default lights it up when no session pin is set.
+  const codexIntended =
+    options.sessionRuntimePin === 'codex_runtime' ||
+    (!options.sessionRuntimePin && getSetting('agent_runtime') === 'codex_runtime');
+
+  if (isCodexAccountProvider) {
+    const codexRt = getRuntime('codex_runtime');
+    if (codexRt?.isAvailable()) {
+      runtime = codexRt;
+    } else {
+      throw new Error(
+        'codex_account provider selected but Codex Runtime is not available — ' +
+          'install codex CLI or pick a different provider.',
+      );
+    }
+  } else if (codexIntended) {
+    // Codex Runtime intent overrides every other provider-shape
+    // heuristic. The proxy adapter and CodexRuntime.stream() already
+    // know how to handle openai-oauth (virtual provider) and DB
+    // providers; sending them through Native here would either go to
+    // the wrong upstream or trip the "Session is pinned to codex_runtime
+    // but resolver returned X" guardrail below.
+    const codexRt = getRuntime('codex_runtime');
+    if (codexRt?.isAvailable()) {
+      runtime = codexRt;
+    } else if (options.sessionRuntimePin === 'codex_runtime') {
+      // Pin is binding — explicit user intent. Surface the error
+      // rather than silently downgrading to a different runtime.
+      throw new Error(
+        'Session is pinned to codex_runtime but Codex Runtime is not available — ' +
+          'install codex CLI or change the session runtime in the chat picker.',
+      );
+    }
+    // No pin, global=codex but binary missing: fall through to the
+    // normal resolution below so the user still gets *some* response
+    // through whichever runtime is reachable.
+  } else if (isNonAnthropicProvider) {
     runtime = getRuntime('native');
   } else if (!cliDisabled) {
     // Only attempt transport-based SDK forcing when CLI is enabled
@@ -461,10 +554,81 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
   }
 
   if (!runtime) {
-    runtime = resolveRuntime(getSetting('agent_runtime') || undefined, effectiveProvider || undefined);
+    // Phase 2 Step 3: prefer the session's `runtime_pin` over the global
+    // `agent_runtime` setting. The pin is stored in chat-runtime label
+    // form (`'claude_code'` / `'codepilot_runtime'` / `'codex_runtime'`);
+    // translate to the `agent_runtime` registry id form. Empty / unknown
+    // pin → pass `undefined`, letting `resolveRuntime()` read the global
+    // setting itself in its step 3 (legacy stored-preference semantics).
+    //
+    // Registry id mapping (the agent_runtime setting form):
+    //   claude_code       → claude-code-sdk  (legacy; CC SDK predates RuntimeId)
+    //   codepilot_runtime → native           (legacy; same reason)
+    //   codex_runtime     → codex_runtime    (Phase 3 — id matches RuntimeId)
+    //
+    // Round 5 fix (2026-05-13): the third mapping was missing, so
+    // sessions pinned to codex_runtime fell through to the global
+    // setting (typically claude-code-sdk) and ran GPT-5.5 through
+    // ClaudeCode SDK — the bug Codex CDP smoke caught.
+    //
+    // Round 8 fix (2026-05-18): previously the override fell back to
+    // `getSetting('agent_runtime')` — conflating "strong explicit pin
+    // for THIS request" with "stale stored preference". Round 8's
+    // registry-side change gives explicit overrides fail-closed
+    // semantics (throw instead of silently demote to Native when the
+    // CLI is gone). Mixing the global setting into that meant a
+    // legitimate "global = ClaudeCode, CLI later went missing" case
+    // would suddenly throw instead of quietly fall back. Fix here:
+    // pass ONLY the session pin (or undefined) — the registry reads
+    // the global setting itself in step 3 with the legacy
+    // fall-through semantics.
+    const pinAsAgentRuntime =
+      options.sessionRuntimePin === 'claude_code'
+        ? 'claude-code-sdk'
+        : options.sessionRuntimePin === 'codepilot_runtime'
+          ? 'native'
+          : options.sessionRuntimePin === 'codex_runtime'
+            ? 'codex_runtime'
+            : undefined;
+    runtime = resolveRuntime(pinAsAgentRuntime, effectiveProvider || undefined);
   }
 
-  console.log(`[streamClaude] Using runtime: ${runtime.id} (setting: ${getSetting('agent_runtime') || 'auto'})`);
+  // Phase 5 review round 5 (2026-05-13) — guardrail: when the session
+  // is pinned to codex_runtime, the resolved runtime MUST be
+  // codex_runtime. Falling through to claude-code-sdk / native is
+  // exactly the failure mode that produced "There's an issue with
+  // the selected model (gpt-5.5)" — silent runtime mismatch. Throw
+  // instead so the chat send path surfaces a clear error.
+  if (options.sessionRuntimePin === 'codex_runtime' && runtime.id !== 'codex_runtime') {
+    throw new Error(
+      `Session is pinned to codex_runtime but resolver returned "${runtime.id}". ` +
+        'Codex Runtime is not registered or not available — install codex CLI ' +
+        '(or set CODEX_BIN) and retry.',
+    );
+  }
+
+  // Phase 5e round 8 (2026-05-18) — symmetric guardrail for claude_code
+  // session pin. registry.ts:resolveRuntime() now fail-closes when an
+  // explicit override targets claude-code-sdk but the CLI is missing
+  // (round 8 reorder), so this branch usually doesn't fire. But it
+  // catches the residual case where the registry returns a non-SDK
+  // runtime for a claude_code-pinned session — for example, if the
+  // runtime registry state diverges (mis-registered SDK, race during
+  // setup). The check stays narrow: pin === claude_code AND resolved
+  // runtime is not claude-code-sdk → throw, never silently demote.
+  if (options.sessionRuntimePin === 'claude_code' && runtime.id !== 'claude-code-sdk') {
+    throw new Error(
+      `Session is pinned to Claude Code but the resolver returned "${runtime.id}". `
+      + 'Claude Code CLI is not installed or not detected — install Claude Code CLI, '
+      + 'or switch this session to CodePilot / Codex Runtime.',
+    );
+  }
+
+  console.log(
+    `[streamClaude] Using runtime: ${runtime.id} `
+    + `(session pin: ${options.sessionRuntimePin || 'none'}, `
+    + `global setting: ${getSetting('agent_runtime') || 'auto'})`,
+  );
 
   return runtime.stream({
     // Universal fields
@@ -492,7 +656,6 @@ export function streamClaude(options: ClaudeStreamOptions): ReadableStream<strin
       conversationHistory: options.conversationHistory,
       sessionSummary: options.sessionSummary,
       fallbackTokenBudget: options.fallbackTokenBudget,
-      imageAgentMode: options.imageAgentMode,
       toolTimeoutSeconds: options.toolTimeoutSeconds,
       outputFormat: options.outputFormat,
       agents: options.agents,
@@ -523,7 +686,6 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
     toolTimeoutSeconds = 0,
     conversationHistory,
     onRuntimeStatusChange,
-    imageAgentMode,
     bypassPermissions: sessionBypassPermissions,
     thinking,
     effort,
@@ -534,7 +696,17 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
     autoTrigger,
     context1m,
     generativeUI,
+    agentMode,
   } = options;
+  // Codex P1 — heartbeat agentMode is a HARD restriction, not a hint.
+  // It tightens defaults at the SDK level so the model literally
+  // cannot reach the dangerous tools, regardless of system-prompt
+  // pressure. Tools the heartbeat run is allowed to use:
+  //   - mcp__codepilot-memory (codepilot_memory_recent only — for
+  //     interpreting HEARTBEAT.md against recent memory)
+  // Everything else is either not registered (MCP servers below) or
+  // listed in disallowedTools (SDK builtins).
+  const isHeartbeatMode = agentMode === 'heartbeat';
 
   return new ReadableStream<string>({
     async start(controllerRaw) {
@@ -546,6 +718,13 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
       });
       // Flag to prevent infinite PTL retry loops (at most one retry per request)
       let ptlRetryAttempted = false;
+      // #577: once the turn's `result` SSE has been emitted, the turn SUCCEEDED
+      // and the result is authoritative. A post-result rejection of the SDK
+      // iterator (control-channel teardown racing capability capture, late
+      // stderr, etc.) lands in the catch below and would otherwise append an
+      // "**Error:**" bubble after a correct answer (and clear the SDK session /
+      // trigger a retry). Gate those crash behaviors on this flag.
+      let resultEmitted = false;
       // Per-request shadow ~/.claude/ for DB-provider isolation. Built lazily
       // below once we know whether we have an explicit DB provider; cleaned up
       // in the outer finally block. See src/lib/claude-home-shadow.ts.
@@ -559,6 +738,15 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         providerId: options.providerId,
         sessionProviderId: options.sessionProviderId,
       });
+
+      // Phase 7 Context Accounting — accumulator must outlive try/catch so
+      // the CONTEXT_TOO_LONG retry path (alt path inside catch) can drain
+      // the same per-turn record list as the main path. Decl here at the
+      // streamClaude scope; ToolInvocationAccumulator class imported up top.
+      const { ToolInvocationAccumulator: _PhaseRcAcc } = await import(
+        '@/lib/harness/auto-invoke-accounting'
+      );
+      const toolInvocationAccumulator = new _PhaseRcAcc();
 
       try {
         const resolvedWorkingDirectory = resolveWorkingDirectory([
@@ -601,7 +789,26 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
           // Load settings so the SDK behaves like the CLI (tool permissions,
           // CLAUDE.md, etc.). For DB providers settingSources is ['user'] only;
           // for env mode it's ['user', 'project', 'local']. See provider-resolver.ts.
-          settingSources: resolved.settingSources as Options['settingSources'],
+          //
+          // Codex P2 — heartbeat narrows this to `[]` (no filesystem
+          // settings loading at all). The MCP-server gates above only
+          // skip the explicit registrations claude-client controls;
+          // the SDK ALSO auto-loads MCP servers declared in
+          // ~/.claude/settings.json (`user`), <cwd>/.claude/settings.json
+          // (`project`), and .claude/settings.local.json (`local`).
+          // Without this collapse, a user-level MCP would be loaded
+          // by the SDK even though we never asked for it, and the
+          // model could see those tools (`disallowedTools` blocks
+          // SDK builtins like Bash but does not enumerate every
+          // user-configured MCP server name). The cost: heartbeat
+          // also won't auto-pick-up ambient CLAUDE.md / tool
+          // permissions / agents — none of which heartbeat needs.
+          // The in-process codepilot-memory MCP we register manually
+          // does NOT depend on settingSources, so memory access
+          // continues to work.
+          settingSources: isHeartbeatMode
+            ? ([] as Options['settingSources'])
+            : (resolved.settingSources as Options['settingSources']),
           // Auto-allow all CodePilot built-in MCPs. These are host-defined
           // in-process servers (createSdkMcpServer in claude-client.ts below)
           // that ship with CodePilot — they're not third-party plugins and
@@ -609,16 +816,44 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
           // default 'acceptEdits' mode prompts the user for each mcp__codepilot-*
           // invocation, which is the regression users reported after we
           // stopped silently allowing everything via project-level settings.
-          allowedTools: [
-            'mcp__codepilot-memory',
-            'mcp__codepilot-notify',
-            'mcp__codepilot-widget',
-            'mcp__codepilot-widget-guidelines',
-            'mcp__codepilot-media',
-            'mcp__codepilot-image-gen',
-            'mcp__codepilot-cli-tools',
-            'mcp__codepilot-dashboard',
-          ],
+          //
+          // Codex P1 — heartbeat narrows this down to memory only, AND
+          // adds disallowedTools so SDK builtins (Bash/Edit/Write/etc.)
+          // can't be invoked even though they're not gated by
+          // allowedTools (which is auto-approve, not whitelist).
+          allowedTools: isHeartbeatMode
+            ? ['mcp__codepilot-memory']
+            : [
+                'mcp__codepilot-memory',
+                'mcp__codepilot-notify',
+                'mcp__codepilot-widget',
+                'mcp__codepilot-widget-guidelines',
+                'mcp__codepilot-media',
+                'mcp__codepilot-image-gen',
+                'mcp__codepilot-cli-tools',
+                'mcp__codepilot-dashboard',
+              ],
+          ...(isHeartbeatMode
+            ? {
+                // Hard block of dangerous SDK builtins for heartbeat
+                // runs. The system prompt also tells the model not
+                // to use these (belt + suspenders) — but the SDK
+                // refusal is what makes "model decides to ignore
+                // the prompt and call Bash anyway" not a problem.
+                disallowedTools: [
+                  'Bash',
+                  'Edit',
+                  'Write',
+                  'NotebookEdit',
+                  'Task',
+                  'WebSearch',
+                  'WebFetch',
+                  'Read',
+                  'Glob',
+                  'Grep',
+                ],
+              }
+            : {}),
         };
 
         if (skipPermissions) {
@@ -662,7 +897,13 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         // User-level MCP config from ~/.claude.json and ~/.claude/settings.json
         // is automatically loaded by the SDK via settingSources: ['user'] (DB
         // providers) or ['user', 'project', 'local'] (env mode).
-        if (mcpServers && Object.keys(mcpServers).length > 0) {
+        //
+        // Codex P1 — heartbeat agentMode forbids external MCP entirely.
+        // External servers can do anything (HTTP / shell / DB writes),
+        // and a heartbeat that touches them is by definition off-spec.
+        // We let `codepilot-memory` get registered later; everything
+        // else is dropped here.
+        if (!isHeartbeatMode && mcpServers && Object.keys(mcpServers).length > 0) {
           queryOptions.mcpServers = toSdkMcpConfig(mcpServers);
         }
 
@@ -673,7 +914,7 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         // `<cwd>/.mcp.json`, which is normally an auth-neutral file team
         // members commit to share project MCP servers. Re-inject it here so
         // those servers don't silently disappear for DB-provider users.
-        if (resolved.provider) {
+        if (!isHeartbeatMode && resolved.provider) {
           const { loadProjectMcpServers } = await import('@/lib/mcp-loader');
           const projectMcps = loadProjectMcpServers(resolvedWorkingDirectory.path);
           if (projectMcps) {
@@ -688,33 +929,57 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
           }
         }
 
+        // Phase 5d Phase 2 slice 2c (2026-05-17) — capability prompt
+        // assembly delegated to the Harness Context Compiler. This
+        // loop registers MCP servers (transport-layer concern), and
+        // tracks which capabilities ended up enabled; the compiler
+        // turns that set into the canonical `systemPrompt.append`
+        // text in one call after the loop.
+        //
+        // Pre-fix this file appended per-capability `_SYSTEM_PROMPT`
+        // strings inline. The strings were sourced from the right
+        // MCP files, so there was no paraphrase — but each call site
+        // was a separate place that could drift. The compiler is now
+        // the single producer; this file is a pure consumer.
+        const enabledCapabilities = new Set<string>();
+
         // Memory MCP: always registered in assistant mode for memory search/retrieval.
         // Unlike other MCPs which are keyword-gated, memory search is a core assistant capability.
         {
           const assistantWorkspacePath = getSetting('assistant_workspace_path');
           if (assistantWorkspacePath && resolvedWorkingDirectory.path === assistantWorkspacePath) {
-            const { createMemorySearchMcpServer, MEMORY_SEARCH_SYSTEM_PROMPT } = await import('@/lib/memory-search-mcp');
+            const { createMemorySearchMcpServer } = await import('@/lib/memory-search-mcp');
             queryOptions.mcpServers = {
               ...(queryOptions.mcpServers || {}),
               'codepilot-memory': createMemorySearchMcpServer(assistantWorkspacePath),
             };
-            if (queryOptions.systemPrompt && typeof queryOptions.systemPrompt === 'object' && 'append' in queryOptions.systemPrompt) {
-              queryOptions.systemPrompt.append = (queryOptions.systemPrompt.append || '') + '\n\n' + MEMORY_SEARCH_SYSTEM_PROMPT;
-            }
+            enabledCapabilities.add('memory');
           }
         }
 
         // Notification + Schedule MCP: globally available in all contexts
-        {
-          const { createNotificationMcpServer, NOTIFICATION_MCP_SYSTEM_PROMPT } =
-            await import('@/lib/notification-mcp');
+        // EXCEPT heartbeat (Codex P1) — codepilot-notify exposes
+        // schedule_task / list_tasks / cancel_task / hatch_buddy /
+        // notify, all of which are exactly the tools that caused the
+        // heartbeat-tool-loop hang. Skipping registration is the
+        // hard guarantee; the system prompt + allowedTools are
+        // additional belts.
+        if (!isHeartbeatMode) {
+          const { createNotificationMcpServer } = await import('@/lib/notification-mcp');
           queryOptions.mcpServers = {
             ...(queryOptions.mcpServers || {}),
-            'codepilot-notify': createNotificationMcpServer(),
+            // Inject hidden run context so codepilot_schedule_task can
+            // POST origin_session_id + working_directory to /api/tasks/schedule
+            // without exposing those fields in the model's tool schema.
+            // Tasks created here will fire later in this session's
+            // working dir + provider, not whatever the global default
+            // is at scheduler-tick time.
+            'codepilot-notify': createNotificationMcpServer({
+              sessionId,
+              workingDirectory: resolvedWorkingDirectory.path,
+            }),
           };
-          if (queryOptions.systemPrompt && typeof queryOptions.systemPrompt === 'object' && 'append' in queryOptions.systemPrompt) {
-            queryOptions.systemPrompt.append = (queryOptions.systemPrompt.append || '') + '\n\n' + NOTIFICATION_MCP_SYSTEM_PROMPT;
-          }
+          enabledCapabilities.add('tasks_and_notify');
         }
 
         // Widget guidelines: progressive loading strategy.
@@ -723,15 +988,15 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         // conversation likely involves widget generation — detected by keywords in
         // the user's prompt or existing show-widget output in conversation history.
         // This avoids SDK tool discovery overhead (~1s) on plain text conversations.
-        if (generativeUI !== false) {
+        // Codex P1 — heartbeat skips this entirely; HEARTBEAT.md is
+        // text-only, no widget surface.
+        if (!isHeartbeatMode && generativeUI !== false) {
           const needsWidgetSpecs = (() => {
             const widgetKeywords = /可视化|图表|流程图|时间线|架构图|对比|visualiz|diagram|chart|flowchart|timeline|infographic|interactive|widget|show-widget|hierarchy|dashboard/i;
             // Check current user prompt
             if (widgetKeywords.test(prompt)) return true;
             // Check if conversation already has widgets (resume context)
             if (conversationHistory?.some(m => m.content.includes('show-widget'))) return true;
-            // Check explicit widget/image-agent mode
-            if (imageAgentMode) return true;
             return false;
           })();
 
@@ -742,15 +1007,18 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
               ...(queryOptions.mcpServers || {}),
               'codepilot-widget': widgetServer,
             };
+            enabledCapabilities.add('widget');
           }
         }
 
         // Media MCP: import + generation tools (keyword-gated).
         // Registered when the conversation involves media/image generation tasks
-        // in CODE mode. Design Agent mode uses the old image-gen-request flow
-        // and does NOT need these MCP tools.
-        const needsMediaMcp = (() => {
-          if (imageAgentMode) return false; // Design Agent uses its own flow
+        // in CODE mode. The legacy "Design Agent mode" branch was removed in
+        // Phase 2D.0 (2026-04-30) — it was never user-reachable.
+        // Codex P1 — heartbeat never needs media tools; skip even
+        // before keyword evaluation so a HEARTBEAT.md mentioning the
+        // word "图片" can't accidentally pull the MCP in.
+        const needsMediaMcp = !isHeartbeatMode && (() => {
           const mediaKeywords = /生成图片|画一|图像|图片|素材|保存.*素材|import.*library|save.*library|codepilot_import_media|codepilot_generate_image/i;
           if (mediaKeywords.test(prompt)) return true;
           if (conversationHistory?.some(m =>
@@ -760,56 +1028,157 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         })();
 
         if (needsMediaMcp) {
-          const { createMediaImportMcpServer, MEDIA_MCP_SYSTEM_PROMPT } = await import('@/lib/media-import-mcp');
+          const { createMediaImportMcpServer } = await import('@/lib/media-import-mcp');
           const { createImageGenMcpServer } = await import('@/lib/image-gen-mcp');
           queryOptions.mcpServers = {
             ...(queryOptions.mcpServers || {}),
             'codepilot-media': createMediaImportMcpServer(sessionId, resolvedWorkingDirectory.path),
             'codepilot-image-gen': createImageGenMcpServer(sessionId, resolvedWorkingDirectory.path),
           };
-          // Inject media capability hint into system prompt
-          if (queryOptions.systemPrompt && typeof queryOptions.systemPrompt === 'object' && 'append' in queryOptions.systemPrompt) {
-            queryOptions.systemPrompt.append = (queryOptions.systemPrompt.append || '') + '\n\n' + MEDIA_MCP_SYSTEM_PROMPT;
-          }
+          enabledCapabilities.add('media_import');
+          enabledCapabilities.add('image_generation');
         }
 
         // CLI tools MCP: tool management capabilities (keyword-gated).
         // Wide regex to cover natural phrasing like "帮我装 jq", "install uv",
         // "brew install", "pip install", "npm install -g", etc.
-        const needsCliToolsMcp = (() => {
-          const cliKeywords = /CLI\s*工具|cli.tool|安装.*工具|卸载.*工具|添加.*工具|更新.*工具|升级.*工具|入库.*工具|工具.*入库|加入.*工具库|添加到.*库|工具库|tool\s*library|codepilot_cli_tools|帮我装|帮我安装|帮我更新|帮我升级|\binstall\s+[@\w./-]+|\buninstall\s+[@\w./-]+|\bupdate\s+[@\w./-]+|\bupgrade\s+[@\w./-]+|brew\s+install|brew\s+upgrade|pip\s+install|pipx\s+install|npm\s+install\s+-g|npm\s+update\s+-g|cargo\s+install|apt\s+install|apt-get\s+install/i;
-          if (cliKeywords.test(prompt)) return true;
-          if (conversationHistory?.some(m => cliKeywords.test(m.content))) return true;
-          return false;
-        })();
+        // Codex P1 — heartbeat never installs CLI tools.
+        // Keyword gate is shared with the Codex injection path (don't
+        // per-runtime rewrite — `feedback_new_agent_must_reuse_contracts`).
+        const { promptNeedsCli } = await import('@/lib/cli-tools-mcp');
+        const needsCliToolsMcp = !isHeartbeatMode && promptNeedsCli(prompt, conversationHistory);
 
         if (needsCliToolsMcp) {
-          const { createCliToolsMcpServer, CLI_TOOLS_MCP_SYSTEM_PROMPT } = await import('@/lib/cli-tools-mcp');
+          const { createCliToolsMcpServer } = await import('@/lib/cli-tools-mcp');
           queryOptions.mcpServers = {
             ...(queryOptions.mcpServers || {}),
             'codepilot-cli-tools': createCliToolsMcpServer(),
           };
-          if (queryOptions.systemPrompt && typeof queryOptions.systemPrompt === 'object' && 'append' in queryOptions.systemPrompt) {
-            queryOptions.systemPrompt.append = (queryOptions.systemPrompt.append || '') + '\n\n' + CLI_TOOLS_MCP_SYSTEM_PROMPT;
-          }
+          enabledCapabilities.add('cli_tools');
         }
 
         // Dashboard MCP: widget management capabilities (keyword-gated).
-        const needsDashboardMcp = (() => {
-          const dashboardKeywords = /dashboard|仪表盘|看板|pin.*widget|pinned.*widget|refresh.*widget|固定.*组件|刷新.*组件|codepilot_dashboard/i;
-          if (dashboardKeywords.test(prompt)) return true;
-          if (conversationHistory?.some(m => dashboardKeywords.test(m.content))) return true;
-          return false;
-        })();
+        // Codex P1 — heartbeat never manages dashboard pins.
+        // Keyword gate is shared with the Codex injection path.
+        const { promptNeedsDashboard } = await import('@/lib/dashboard-mcp');
+        const needsDashboardMcp = !isHeartbeatMode && promptNeedsDashboard(prompt, conversationHistory);
 
         if (needsDashboardMcp) {
-          const { createDashboardMcpServer, DASHBOARD_MCP_SYSTEM_PROMPT } = await import('@/lib/dashboard-mcp');
+          const { createDashboardMcpServer } = await import('@/lib/dashboard-mcp');
           queryOptions.mcpServers = {
             ...(queryOptions.mcpServers || {}),
             'codepilot-dashboard': createDashboardMcpServer(sessionId, resolvedWorkingDirectory.path),
           };
-          if (queryOptions.systemPrompt && typeof queryOptions.systemPrompt === 'object' && 'append' in queryOptions.systemPrompt) {
-            queryOptions.systemPrompt.append = (queryOptions.systemPrompt.append || '') + '\n\n' + DASHBOARD_MCP_SYSTEM_PROMPT;
+          enabledCapabilities.add('dashboard');
+        }
+
+        // Phase 5d Phase 3 (2026-05-17) — capability prompt assembly
+        // routed through the Runtime Capability Adapter. The adapter
+        // wraps Phase 2's compileContext + ClaudeCode-specific hints
+        // so this call site no longer touches the compiler API
+        // directly. Three contract invariants are now structural:
+        //
+        //   1. `adapted.systemPromptAppend` is ALWAYS a string —
+        //      empty when no capabilities mounted, full canonical
+        //      text otherwise. The `length > 0` check below is the
+        //      only place that decides whether to splice it in.
+        //   2. When the upstream caller did NOT pass a `systemPrompt`,
+        //      we still mount the SDK preset shape with the compiled
+        //      append. (Phase 2 P1 review fix — pre-fix the preset
+        //      branch was skipped, leaving the model without
+        //      capability rules in chat runs without a base prompt.)
+        //   3. Capability fragment text comes ONLY from the adapter
+        //      (compiler-sourced). No `+ _SYSTEM_PROMPT` inline appends
+        //      anywhere in this file — the drift surface from
+        //      pre-Phase-2 is now a structural impossibility.
+        // Phase 5e review round 4 fix P2 #1 (2026-05-18) — User /
+        // External Harness extension injection MUST NOT be gated on
+        // `enabledCapabilities.size > 0`. Pre-fix: when no built-in
+        // capability was gated in (rare but reachable — e.g. plain
+        // chat with no widget keyword + no workspace memory), the
+        // whole adapter branch was skipped, so the user's MCP
+        // servers / Skills / commands never reached the model. The
+        // adapter is now called unconditionally; the
+        // `adapted.systemPromptAppend.length > 0` check below
+        // continues to skip the splice when there's nothing useful
+        // to inject (capability + extension fragments both empty).
+        //
+        // Phase 7 Context Accounting (2026-05-20): producer time-shifted
+        // from streamClaude-start to result-event. Instead of guessing
+        // what Claude will invoke, we accumulate the actual tool_use /
+        // tool_result blocks during streaming and produce the snapshot
+        // from real invocations at result time. Wire below at line ~1589
+        // (main path tool_use), ~1623 (main path tool_result), ~1844
+        // (main path result), and ~2086/2094/2160 (alt path retry).
+        // The accumulator instance lives in streamClaude scope above so
+        // CONTEXT_TOO_LONG retry can share it across try/catch boundary.
+        // See src/lib/harness/auto-invoke-accounting.ts for the contract.
+        {
+          const { adaptForClaudeCode } = await import('@/lib/harness/runtime-adapter');
+          // Phase 5e review fix P1 #2 (2026-05-18) — scan User /
+          // External Harness extensions and pass them through the
+          // adapter so the model sees a "Your harness extensions"
+          // perception fragment. Scanners are best-effort + read-only;
+          // a scan failure degrades to "no extensions visible" rather
+          // than blocking the turn (try/catch guards each scan).
+          let userExtensions: ReturnType<
+            typeof import('@/lib/harness/user-codepilot-extensions').scanUserCodePilotExtensions
+          > = [];
+          let externalExtensions: ReturnType<
+            typeof import('@/lib/harness/external-framework-harness').scanExternalFrameworkExtensions
+          > = [];
+          try {
+            const { scanUserCodePilotExtensions } = await import(
+              '@/lib/harness/user-codepilot-extensions'
+            );
+            userExtensions = scanUserCodePilotExtensions({
+              workspacePath: resolvedWorkingDirectory.path,
+              runtimeId: 'claude_code',
+            });
+          } catch {
+            // best-effort
+          }
+          try {
+            const { scanExternalFrameworkExtensions } = await import(
+              '@/lib/harness/external-framework-harness'
+            );
+            externalExtensions = scanExternalFrameworkExtensions({
+              activeFramework: 'claude_code',
+            });
+          } catch {
+            // best-effort
+          }
+          const adapted = adaptForClaudeCode({
+            sessionId,
+            workingDirectory: resolvedWorkingDirectory.path,
+            providerId: resolved.provider?.id || 'env',
+            model: model || '',
+            userPrompt: prompt || '',
+            enabledCapabilities,
+            userExtensions,
+            externalExtensions,
+          });
+          if (adapted.systemPromptAppend.length > 0) {
+            if (
+              queryOptions.systemPrompt &&
+              typeof queryOptions.systemPrompt === 'object' &&
+              'append' in queryOptions.systemPrompt
+            ) {
+              queryOptions.systemPrompt.append =
+                (queryOptions.systemPrompt.append || '') +
+                '\n\n' +
+                adapted.systemPromptAppend;
+            } else {
+              // No upstream systemPrompt. Mount the SDK's preset
+              // shape with the compiled capability prompt in the
+              // append slot — keeps Claude Code's default preset
+              // intact while still injecting our capability rules.
+              queryOptions.systemPrompt = {
+                type: 'preset',
+                preset: 'claude_code',
+                append: adapted.systemPromptAppend,
+              };
+            }
           }
         }
 
@@ -1056,21 +1425,17 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
               : imageFiles;
             const droppedCount = imageFiles.length - limitedImages.length;
 
-            // In imageAgentMode, skip file path references so Claude doesn't
-            // try to use built-in tools to analyze images from disk. It will
-            // see the images via vision (base64 content blocks) and follow the
-            // IMAGE_AGENT_SYSTEM_PROMPT to output image-gen-request blocks.
-            // In normal mode, append disk paths — only for the images actually included.
-            const textWithImageRefs = imageAgentMode
-              ? textPrompt
-              : (() => {
-                  const workDir = resolvedWorkingDirectory.path;
-                  const imagePaths = getUploadedFilePaths(limitedImages, workDir);
-                  const imageReferences = imagePaths
-                    .map((p, i) => `[User attached image: ${p} (${limitedImages[i].name})]`)
-                    .join('\n');
-                  return `${imageReferences}\n\n${textPrompt}`;
-                })();
+            // Append disk paths — only for the images actually included.
+            // (The legacy Design-Agent branch that skipped paths was
+            // removed in Phase 2D.0; it was never user-reachable.)
+            const textWithImageRefs = (() => {
+              const workDir = resolvedWorkingDirectory.path;
+              const imagePaths = getUploadedFilePaths(limitedImages, workDir);
+              const imageReferences = imagePaths
+                .map((p, i) => `[User attached image: ${p} (${limitedImages[i].name})]`)
+                .join('\n');
+              return `${imageReferences}\n\n${textPrompt}`;
+            })();
 
             const contentBlocks: Array<
               | { type: 'image'; source: { type: 'base64'; media_type: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp'; data: string } }
@@ -1216,6 +1581,9 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
               // Check for tool use blocks
               for (const block of assistantMsg.message.content) {
                 if (block.type === 'tool_use') {
+                  // Phase 7 — accumulate for Context Accounting at result time.
+                  toolInvocationAccumulator.recordToolUse(block.id, block.name, block.input);
+
                   controller.enqueue(formatSSE({
                     type: 'tool_use',
                     data: JSON.stringify({
@@ -1307,6 +1675,11 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
                     if (mediaBlocks.length > 0) {
                       ssePayload.media = mediaBlocks;
                     }
+                    // Phase 7 — accumulate for Context Accounting at result time.
+                    // resultContent is already string-normalized (text-only join,
+                    // media stripped, MEDIA_RESULT_MARKER trimmed above).
+                    toolInvocationAccumulator.recordToolResult(block.tool_use_id, resultContent);
+
                     controller.enqueue(formatSSE({
                       type: 'tool_result',
                       data: JSON.stringify(ssePayload),
@@ -1453,11 +1826,49 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
 
             case 'result': {
               const resultMsg = message as SDKResultMessage;
-              tokenUsage = extractTokenUsage(resultMsg);
+              // Forward the requested alias + resolved upstream so
+              // pickModelUsage can find the right entry in modelUsage —
+              // third-party Anthropic-compat proxies sometimes key the
+              // map by upstream id rather than the alias the user
+              // picked. See pickModelUsage doc for the full priority.
+              tokenUsage = extractTokenUsage(resultMsg, {
+                requested: model,
+                upstream: resolved.upstreamModel,
+              });
               // terminal_reason is an optional field added in SDK 0.2.111.
               // When present, it enriches the end-of-turn UI chip (Phase 1 of
               // agent-sdk-0-2-111-adoption) without replacing error-classifier.
               const terminalReason = (resultMsg as SDKResultMessage & { terminal_reason?: string }).terminal_reason;
+              // Phase 7 — produce Context Accounting snapshot from accumulated
+              // tool_use / tool_result records. Real invocation data only;
+              // empty records → entries omit (no fabrication).
+              // Replaces Phase 2 streamClaude-start produce (deleted above).
+              let contextAccountingSnapshot:
+                | import('@/types').RuntimeContextAccountingSnapshot
+                | undefined;
+              try {
+                const { collectAutoInvokeSnapshot, resolveWorkspaceClaudeMdRules } =
+                  await import('@/lib/harness/auto-invoke-accounting');
+                contextAccountingSnapshot = collectAutoInvokeSnapshot({
+                  workspacePath: resolvedWorkingDirectory.path,
+                  records: toolInvocationAccumulator.drain(),
+                  producedBy: 'claude_code',
+                  selectedSkills: options.selectedSkills,
+                  // Phase 7 ClaudeCode unsupported list — system_prompt opaque
+                  // (SDK preset), memory not wired (Phase 6.x), files_attachments
+                  // goes through composer pending channel not Runtime.
+                  unsupported: ['system_prompt', 'memory', 'files_attachments'],
+                  resolveRulesEntry: resolveWorkspaceClaudeMdRules,
+                });
+              } catch {
+                // Best-effort: producer failed → snapshot stays undefined,
+                // result event falls back to raw tokenUsage (popover hides
+                // Runtime kinds rather than showing fake data).
+              }
+              const usageWithAccounting =
+                tokenUsage && contextAccountingSnapshot
+                  ? { ...tokenUsage, context_accounting: contextAccountingSnapshot }
+                  : tokenUsage;
               controller.enqueue(formatSSE({
                 type: 'result',
                 data: JSON.stringify({
@@ -1465,11 +1876,12 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
                   is_error: resultMsg.is_error,
                   num_turns: resultMsg.num_turns,
                   duration_ms: resultMsg.duration_ms,
-                  usage: tokenUsage,
+                  usage: usageWithAccounting,
                   session_id: resultMsg.session_id,
                   ...(terminalReason ? { terminal_reason: terminalReason } : {}),
                 }),
               }));
+              resultEmitted = true; // #577 — turn succeeded; suppress any post-result error
               // Notify on conversation-level errors (e.g. rate limit, auth failure)
               if (resultMsg.is_error) {
                 const errTitle = 'Conversation error';
@@ -1587,7 +1999,7 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         });
 
         // ── Reactive compact: auto-compress and retry on CONTEXT_TOO_LONG ──
-        if (classified.category === 'CONTEXT_TOO_LONG' && !ptlRetryAttempted && conversationHistory && conversationHistory.length > 4) {
+        if (classified.category === 'CONTEXT_TOO_LONG' && !ptlRetryAttempted && !resultEmitted && conversationHistory && conversationHistory.length > 4) {
           ptlRetryAttempted = true;
           try {
             console.log('[claude-client] CONTEXT_TOO_LONG detected — attempting auto-compress + retry');
@@ -1696,6 +2108,8 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
                   const aMsg = msg as SDKAssistantMessage;
                   for (const block of aMsg.message.content) {
                     if (block.type === 'tool_use') {
+                      // Phase 7 — accumulator shared with main path so retry tool calls also count.
+                      toolInvocationAccumulator.recordToolUse(block.id, block.name, block.input);
                       controller.enqueue(formatSSE({ type: 'tool_use', data: JSON.stringify({ id: block.id, name: block.name, input: block.input }) }));
                     }
                   }
@@ -1747,6 +2161,10 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
                         retryContent = retryContent.slice(0, retryMarkerIdx).trim();
                       }
 
+                      // Phase 7 — accumulator shared; pair with main path tool_use ids.
+                      if (block.tool_use_id) {
+                        toolInvocationAccumulator.recordToolResult(block.tool_use_id, retryContent);
+                      }
                       controller.enqueue(formatSSE({ type: 'tool_result', data: JSON.stringify({
                         tool_use_id: block.tool_use_id,
                         content: retryContent,
@@ -1771,7 +2189,39 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
                 }
                 case 'result': {
                   const rMsg = msg as SDKResultMessage;
-                  const usage = 'result' in rMsg ? extractTokenUsage(rMsg as SDKResultSuccess) : undefined;
+                  const usage = 'result' in rMsg
+                    ? extractTokenUsage(rMsg as SDKResultSuccess, {
+                        requested: model,
+                        upstream: resolved.upstreamModel,
+                      })
+                    : undefined;
+                  // Phase 7 — alt path also produces Context Accounting snapshot
+                  // from the same shared accumulator. Without this, retry-after-
+                  // compression turns would lose Skills/MCP/Tools visibility.
+                  // resolvedWorkingDirectory is scoped to outer try (line 736);
+                  // use the same expression line 2057 uses for retry cwd.
+                  const altWorkspacePath = options.workingDirectory || os.homedir();
+                  let altContextAccounting:
+                    | import('@/types').RuntimeContextAccountingSnapshot
+                    | undefined;
+                  try {
+                    const { collectAutoInvokeSnapshot, resolveWorkspaceClaudeMdRules } =
+                      await import('@/lib/harness/auto-invoke-accounting');
+                    altContextAccounting = collectAutoInvokeSnapshot({
+                      workspacePath: altWorkspacePath,
+                      records: toolInvocationAccumulator.drain(),
+                      producedBy: 'claude_code',
+                      selectedSkills: options.selectedSkills,
+                      unsupported: ['system_prompt', 'memory', 'files_attachments'],
+                      resolveRulesEntry: resolveWorkspaceClaudeMdRules,
+                    });
+                  } catch {
+                    // Best-effort; degrade to raw usage if producer fails.
+                  }
+                  const altUsageWithAccounting =
+                    usage && altContextAccounting
+                      ? { ...usage, context_accounting: altContextAccounting }
+                      : usage;
                   // Match main-path result shape so the chat route can persist
                   // the new sdk_session_id (route reads result.session_id as a
                   // safety net when status init was missed).
@@ -1782,10 +2232,11 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
                       is_error: rMsg.is_error,
                       num_turns: rMsg.num_turns,
                       duration_ms: rMsg.duration_ms,
-                      usage,
+                      usage: altUsageWithAccounting,
                       session_id: rMsg.session_id,
                     }),
                   }));
+                  resultEmitted = true; // #577 — retry produced a result; same guard applies
                   // Emit compression notification via the shared builder so
                   // useSSEStream's subtype=context_compressed dispatch fires.
                   const { buildContextCompressedStatus } = await import('./context-compressor');
@@ -1810,30 +2261,41 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         }
 
         // Send structured error JSON so frontend can parse category + hints
-        // Falls back gracefully for older frontends that only read raw text
-        const errorMessage = formatClassifiedError(classified);
-        controller.enqueue(formatSSE({
-          type: 'error',
-          data: JSON.stringify({
-            category: classified.category,
-            userMessage: classified.userMessage,
-            actionHint: classified.actionHint,
-            retryable: classified.retryable,
-            providerName: classified.providerName,
-            details: classified.details,
-            rawMessage: classified.rawMessage,
-            recoveryActions: classified.recoveryActions,
-            // Include formatted text for backward compatibility
-            _formattedMessage: errorMessage,
-          }),
-        }));
+        // (falls back gracefully for older frontends that only read raw text) —
+        // but ONLY if the turn hadn't already emitted its result. #577: a
+        // post-result rejection (iterator teardown racing capability capture,
+        // late stderr, etc.) must not append an error bubble after a correct
+        // answer; the result is authoritative, so we just finish the stream.
+        if (!resultEmitted) {
+          const errorMessage = formatClassifiedError(classified);
+          controller.enqueue(formatSSE({
+            type: 'error',
+            data: JSON.stringify({
+              category: classified.category,
+              userMessage: classified.userMessage,
+              actionHint: classified.actionHint,
+              retryable: classified.retryable,
+              providerName: classified.providerName,
+              details: classified.details,
+              rawMessage: classified.rawMessage,
+              recoveryActions: classified.recoveryActions,
+              // Include formatted text for backward compatibility
+              _formattedMessage: errorMessage,
+            }),
+          }));
+        } else {
+          console.warn('[claude-client] suppressing post-result error (#577):', rawMessage);
+        }
         controller.enqueue(formatSSE({ type: 'done', data: '' }));
 
-        // Always clear sdk_session_id on crash so the next message starts fresh.
-        // Even for fresh sessions — the SDK may emit a session_id via status
-        // event before crashing, which gets persisted by consumeStream/SSE
-        // handlers. Leaving it would cause repeated resume failures.
-        if (sessionId) {
+        // Clear sdk_session_id on a genuine crash so the next message starts
+        // fresh. Even for fresh sessions — the SDK may emit a session_id via
+        // status event before crashing, which gets persisted by consumeStream/
+        // SSE handlers. Leaving it would cause repeated resume failures.
+        // #577: but NOT when the turn already produced a result — that session
+        // is valid and the next turn should resume it; only post-result teardown
+        // noise reached here, so preserve the session.
+        if (sessionId && !resultEmitted) {
           try {
             updateSdkSessionId(sessionId, '');
             console.warn('[claude-client] Cleared stale sdk_session_id for session', sessionId);

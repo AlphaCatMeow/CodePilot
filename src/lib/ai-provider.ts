@@ -30,7 +30,7 @@ import {
   resolveProvider,
   toAiSdkConfig,
 } from './provider-resolver';
-import { getOAuthCredentialsSync } from './openai-oauth-manager';
+import { ensureTokenFresh } from './openai-oauth-manager';
 import { hasClaudeSettingsCredentials } from './claude-settings';
 
 // ── Public API ──────────────────────────────────────────────────
@@ -93,7 +93,7 @@ export function createModel(opts: CreateModelOptions = {}): CreateModelResult {
   // Only for env-mode (no provider) with bare aliases, map to current Anthropic defaults.
   if (!resolved.provider && isShortAlias(config.modelId)) {
     const CURRENT_DEFAULTS: Record<string, string> = {
-      sonnet: 'claude-sonnet-4-5-20250929',
+      sonnet: 'claude-sonnet-4-6',
       opus: 'claude-opus-4-7',
       haiku: 'claude-haiku-4-5-20251001',
     };
@@ -193,20 +193,38 @@ function createLanguageModel(config: AiSdkConfig, isThirdPartyProxy: boolean): L
       // OpenAI OAuth (Codex API) — use custom fetch to rewrite URL + inject auth
       // Pattern from opencode-dev's codex.ts plugin
       if (config.useResponsesApi) {
-        const creds = getOAuthCredentialsSync();
-        if (!creds) {
-          throw new Error('OpenAI OAuth token expired or not available. Please log in again in Settings.');
-        }
+        // Phase 5b round-7 fix (2026-05-18) — per-fetch token refresh.
+        // Pre-fix this captured `getOAuthCredentialsSync()` at model-
+        // creation time AND stored `accessToken` / `accountId` in
+        // closure. Two problems:
+        //   (1) `getOAuthCredentialsSync()` returns undefined for
+        //       expired tokens even when a refresh_token is on hand —
+        //       so a session sitting past expiry could never recover,
+        //       and `/api/openai-oauth/status` would say
+        //       authenticated:true while the proxy hard-errored.
+        //   (2) Even when fresh creds were captured, they went stale
+        //       on long sessions; subsequent fetches kept reusing the
+        //       captured value.
+        // Fix: drop the construction-time check entirely. On every
+        // fetch, `await ensureTokenFresh()` — it refreshes via
+        // refresh_token if the access token is past/within the 5-min
+        // expiry buffer, persists via `saveTokens()`, and returns
+        // fresh creds. Only returns undefined when there's no usable
+        // refresh path at all, at which point we throw the "log in
+        // again" error — but at first-fetch time, not lazily at
+        // model-creation.
         const codexEndpoint = config.baseUrl
           ? `${config.baseUrl}/responses`
           : 'https://chatgpt.com/backend-api/codex/responses';
-        const accountId = creds.accountId;
-        const accessToken = creds.accessToken;
 
         const openai = createOpenAI({
           apiKey: 'codex-oauth',  // placeholder — overridden by custom fetch
           // Keep default baseURL so SDK constructs valid paths
           fetch: async (url: RequestInfo | URL, init?: RequestInit) => {
+            const creds = await ensureTokenFresh();
+            if (!creds) {
+              throw new Error('OpenAI OAuth token expired or not available. Please log in again in Settings.');
+            }
             // Rewrite URL to Codex endpoint
             const reqUrl = url instanceof URL ? url : new URL(url as string);
             const targetUrl = reqUrl.pathname.includes('/responses')
@@ -218,9 +236,9 @@ function createLanguageModel(config: AiSdkConfig, isThirdPartyProxy: boolean): L
             // Remove SDK's dummy auth, inject real OAuth token
             headers.delete('Authorization');
             headers.delete('authorization');
-            headers.set('Authorization', `Bearer ${accessToken}`);
-            if (accountId) {
-              headers.set('chatgpt-account-id', accountId);
+            headers.set('Authorization', `Bearer ${creds.accessToken}`);
+            if (creds.accountId) {
+              headers.set('chatgpt-account-id', creds.accountId);
             }
 
             // Timeout: 30s default, configurable via CODEX_TIMEOUT_MS

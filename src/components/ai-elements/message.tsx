@@ -30,6 +30,7 @@ import {
   useState,
 } from "react";
 import { Streamdown } from "streamdown";
+import { CHAT_MARKDOWN_COMPONENTS } from "@/components/chat/markdown-components";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -55,8 +56,14 @@ export const MessageContent = ({
 }: MessageContentProps) => (
   <div
     className={cn(
-      "is-user:dark flex w-fit min-w-0 max-w-full flex-col gap-2 overflow-hidden text-sm",
-      "group-[.is-user]:ml-auto group-[.is-user]:rounded-lg group-[.is-user]:bg-(--user-bubble) group-[.is-user]:px-4 group-[.is-user]:py-3 group-[.is-user]:text-(--user-bubble-foreground)",
+      "flex w-fit min-w-0 max-w-full flex-col gap-2 overflow-hidden break-words text-sm",
+      // User bubble: Luma-light styling per April 2026 user feedback —
+      // soft muted bg + default foreground, 24px radius matching the
+      // composer input box. Drops the prior `is-user:dark` inversion
+      // (dark bubble in light mode) which fought the rest of the chat
+      // surface. `break-words` keeps very long URLs / unbreakable
+      // tokens contained inside the bubble.
+      "group-[.is-user]:ml-auto group-[.is-user]:rounded-2xl group-[.is-user]:bg-muted group-[.is-user]:px-4 group-[.is-user]:py-3 group-[.is-user]:text-foreground",
       "group-[.is-assistant]:w-full group-[.is-assistant]:text-foreground",
       className
     )}
@@ -332,13 +339,19 @@ const _codePlugin = createSharedCodePlugin();
 const streamdownPlugins = { cjk, code: _codePlugin, math, mermaid };
 
 export const MessageResponse = memo(
-  ({ className, ...props }: MessageResponseProps) => (
+  ({ className, components, ...props }: MessageResponseProps) => (
     <Streamdown
       className={cn(
         "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
         className
       )}
       plugins={streamdownPlugins}
+      // Round 12 chat UI refresh — every markdown element rendered
+      // here goes through CHAT_MARKDOWN_COMPONENTS so tables, code
+      // blocks, headings, lists, etc. all match the Widget-card
+      // design language. Callers can still override individual
+      // elements via the `components` prop (last-write-wins).
+      components={{ ...CHAT_MARKDOWN_COMPONENTS, ...components }}
       {...props}
     />
   ),

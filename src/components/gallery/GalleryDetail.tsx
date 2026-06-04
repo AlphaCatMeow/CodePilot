@@ -2,15 +2,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import {
-  DownloadSimple,
-  Trash,
-  PaintBrush,
-  ChatCircle,
-  ArrowLeft,
-  ArrowRight,
-  Heart,
-} from '@/components/ui/icon';
+import { CodePilotIcon } from '@/components/ui/semantic-icon';
 import { cn, parseDBDate } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -131,7 +123,7 @@ export function GalleryDetail({
             <div className="absolute inset-0 flex items-center justify-center">
               {currentImage && (
                 isVideo ? (
-                  // eslint-disable-next-line jsx-a11y/media-has-caption
+                   
                   <video
                     src={imageUrl(currentImage)}
                     controls
@@ -157,7 +149,7 @@ export function GalleryDetail({
                   onClick={() => setCurrentImageIndex((i) => (i > 0 ? i - 1 : item.images.length - 1))}
                   className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/50 text-white hover:bg-black/70 z-10"
                 >
-                  <ArrowLeft size={20} />
+                  <CodePilotIcon name="back" size="lg" aria-hidden />
                 </Button>
                 <Button
                   variant="ghost"
@@ -165,7 +157,7 @@ export function GalleryDetail({
                   onClick={() => setCurrentImageIndex((i) => (i < item.images.length - 1 ? i + 1 : 0))}
                   className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/50 text-white hover:bg-black/70 z-10"
                 >
-                  <ArrowRight size={20} />
+                  <CodePilotIcon name="forward" size="lg" aria-hidden />
                 </Button>
                 <div className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-black/50 px-2 py-0.5 text-xs text-white z-10">
                   {currentImageIndex + 1} / {item.images.length}
@@ -188,9 +180,11 @@ export function GalleryDetail({
                   : 'text-muted-foreground hover:text-status-error-foreground',
               )}
             >
-              <Heart
-                size={20}
-                weight={item.favorited ? 'fill' : 'regular'}
+              <CodePilotIcon
+                name="favorite"
+                size="lg"
+                strokeWidth={item.favorited ? 2 : undefined}
+                aria-hidden
               />
               {item.favorited
                 ? t('gallery.removeFromFavorites' as TranslationKey)
@@ -209,7 +203,7 @@ export function GalleryDetail({
             <div className="flex items-center gap-1.5 flex-wrap">
               {item.model && (
                 <Badge variant="secondary" className="text-[10px] gap-1">
-                  <PaintBrush size={12} />
+                  <CodePilotIcon name="appearance" size={12} aria-hidden />
                   {item.model}
                 </Badge>
               )}
@@ -254,7 +248,7 @@ export function GalleryDetail({
             </div>
 
             {/* Actions */}
-            <div className="flex items-center gap-2 pt-2 border-t border-border/50 flex-wrap">
+            <div className="flex items-center gap-2 pt-3 flex-wrap">
               {item.session_id && (
                 <Button
                   variant="outline"
@@ -264,12 +258,12 @@ export function GalleryDetail({
                     router.push(`/chat/${item.session_id}`);
                   }}
                 >
-                  <ChatCircle size={14} />
+                  <CodePilotIcon name="chat" size="sm" aria-hidden />
                   {t('gallery.openChat' as TranslationKey)}
                 </Button>
               )}
               <Button variant="outline" size="sm" onClick={handleDownload}>
-                <DownloadSimple size={14} />
+                <CodePilotIcon name="download" size="sm" aria-hidden />
                 {t('gallery.download' as TranslationKey)}
               </Button>
               <div className="ml-auto">
@@ -278,7 +272,7 @@ export function GalleryDetail({
                   size="sm"
                   onClick={handleDelete}
                 >
-                  <Trash size={14} />
+                  <CodePilotIcon name="delete" size="sm" aria-hidden />
                   {confirmDelete
                     ? t('gallery.confirmDelete' as TranslationKey)
                     : t('gallery.delete' as TranslationKey)}

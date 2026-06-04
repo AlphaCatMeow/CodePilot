@@ -30,12 +30,15 @@ src/lib/constants/          → 纯数据常量，不引用 UI 层
 | Patterns 层隔离 | error | `src/components/patterns/**` | 禁止导入 `@/hooks/*` 和 `@/lib/*`（允许 `@/lib/utils`） |
 | 外部资料目录排除 | — | `资料/**` | 不参与主仓 lint |
 
-### 2. 图标统一 (`src/components/ui/icon.tsx`)
+### 2. 图标统一 — 已迁移到 CodePilot semantic layer（Phase 7）
 
-- 所有业务组件通过 `@/components/ui/icon` 统一入口导入 Phosphor 图标
-- 目前导出 86+ 个图标 + `ICON_SIZE` 常量 + `Icon`/`IconProps` 类型
-- `types/index.ts` 中的 `IconComponent` 类型与 Phosphor 解耦，使用泛型 SVG 签名
-- 图标与命令数据分离：`lib/constants/commands.ts`（纯数据）+ `lib/constants/command-icons.ts`（图标映射），在 `hooks/useSlashCommands.ts` 中合并
+**图标体系的权威文档现在是 [`docs/handover/icon-system.md`](./icon-system.md)**（产品理由见 [`docs/insights/icon-system.md`](../insights/icon-system.md)）。Phase 7 起：
+
+- 业务代码用 `<CodePilotIcon name="..." />`（`src/components/ui/semantic-icon.tsx`）表达产品概念，不直引 vendor icon 名；一个概念一个 glyph，冲突在 `SEMANTIC_MAP` 单点裁决（model=Cube / runtime=Chip / memory=Brain / cli≠terminal）。
+- 主图标库 HugeIcons（free core）；品牌图标继续用 LobeHub（仅 provider / runtime brand 场景）。
+- eslint guardrail：业务代码 `import { Brain | Lightning | Terminal }` from `@/components/ui/icon` 为 error 级禁用；Phosphor / Lucide 直引重定向到 CodePilotIcon。
+- 旧的 `@/components/ui/icon`（Phosphor 统一入口 + `ICON_SIZE` + `Icon`/`IconProps`）作为 **wrapper 兼容层保留**：53 个结构性图标（CaretDown / CheckCircle / X / SpinnerGap 等，无 HugeIcons 等价或视觉差异可忽略）仍走它。
+- `types/index.ts` 的 `IconComponent` 类型与 Phosphor 解耦（泛型 SVG 签名）；图标与命令数据分离：`lib/constants/commands.ts`（纯数据）+ `lib/constants/command-icons.ts`（`CodePilotIconName` 映射），在 `hooks/useSlashCommands.ts` 合并。
 
 ### 3. 颜色 token 治理 (`globals.css` + `lint:colors`)
 

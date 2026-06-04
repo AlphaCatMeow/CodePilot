@@ -10,7 +10,8 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Copy, ArrowSquareOut, Plus, CaretDown, Play } from "@/components/ui/icon";
+import { ArrowSquareOut, CaretDown } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { useTranslation } from "@/hooks/useTranslation";
 import type { TranslationKey } from "@/i18n";
 import type { CliToolDefinition, CliToolPlatform } from "@/types";
@@ -57,12 +58,12 @@ export function CliToolDetailDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg max-h-[80vh] flex flex-col overflow-hidden">
-        <DialogHeader>
+      <DialogContent className="sm:max-w-2xl max-h-[85vh] flex flex-col gap-0 overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle>{tool.name}</DialogTitle>
         </DialogHeader>
 
-        <div className="flex flex-col gap-5 overflow-y-auto flex-1 min-h-0">
+        <div className="flex-1 min-h-0 overflow-y-auto mt-4 flex flex-col gap-5">
           {/* Agent compatibility */}
           {(() => {
             const score = computeAgentScore(tool);
@@ -162,7 +163,7 @@ export function CliToolDetailDialog({
                         onClick={() => copyToClipboard(isZh ? ep.promptZh : ep.promptEn)}
                         title={t('cliTools.copy')}
                       >
-                        <Copy size={12} />
+                        <CodePilotIcon name="copy" size={12} aria-hidden />
                       </Button>
                     </div>
                   </div>
@@ -213,7 +214,7 @@ export function CliToolDetailDialog({
           )}
         </div>
 
-        <DialogFooter className="relative">
+        <DialogFooter className="shrink-0 border-t border-border/50 pt-3 mt-2 relative">
           {/* "Try" button only for installed tools (no onInstall = already installed) */}
           {!onInstall && (
             <Button
@@ -227,7 +228,7 @@ export function CliToolDetailDialog({
                 window.location.href = `/chat?prefill=${encodeURIComponent(prefill)}`;
               }}
             >
-              <Play size={14} />
+              <CodePilotIcon name="play" size="sm" aria-hidden />
               {t('cliTools.tryTool' as TranslationKey)}
             </Button>
           )}
@@ -238,7 +239,7 @@ export function CliToolDetailDialog({
                 className="gap-1.5"
                 onClick={handleInstallClick}
               >
-                <Plus size={14} />
+                <CodePilotIcon name="plus" size="sm" aria-hidden />
                 {t('cliTools.install')}
                 {availableMethods.length > 1 && <CaretDown size={12} />}
               </Button>

@@ -1,0 +1,226 @@
+name: Preview Release (testers only)
+
+# Tag-only preview packaging for internal testers.
+#
+# Trigger with a tag named `preview-<package.json version>`, for example:
+#   preview-0.55.0-preview.5
+#
+# This workflow intentionally creates a GitHub prerelease, never a stable
+# `v*` release. The app's update check calls GitHub `/releases/latest`, which
+# ignores draft/prerelease entries, so testers can download direct links
+# without triggering upgrade notifications for existing users.
+
+on:
+  push:
+    tags:
+      - "preview-*"
+
+permissions:
+  contents: write
+
+jobs:
+  verify-source:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Version tag must match package.json
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#preview-}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::tag version $VERSION does not match package.json $PKG_VERSION"
+            exit 1
+          fi
+          node -e '
+            const v = process.argv[1];
+            const match = /^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?$/.exec(v);
+            if (!match) {
+              console.error(`::error::preview version ${v} is not valid semver`);
+              process.exit(1);
+            }
+            const [major, minor, patch] = match.slice(1).map(Number);
+            const greaterThan054 = major > 0 || minor > 54 || (minor === 54 && patch > 0);
+            if (!greaterThan054) {
+              console.error(`::error::preview version ${v} must be > 0.54.0`);
+              process.exit(1);
+            }
+          ' "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "✓ preview version $VERSION"
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: P0 regression pins
+        run: |
+          CODEX_DISABLED=1 npx tsx --test --import ./src/__tests__/db-isolation.setup.ts \
+            src/__tests__/unit/codex-binary-discovery.test.ts \
+            src/__tests__/unit/provider-resolver.test.ts \
+            src/__tests__/unit/codex-app-server-client.test.ts
+
+  build-macos-arm64:
+    needs: verify-source
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build + package macOS arm64
+        timeout-minutes: 30
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          npm run electron:build
+          npx electron-builder --mac --arm64 --config electron-builder.yml --publish never
+
+      - name: Verify packaged version and native ABI
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify-source.outputs.version }}"
+          DMG=$(find release -name "CodePilot-*-arm64.dmg" | head -1)
+          [ -n "$DMG" ] || { echo "::error::no arm64 DMG produced"; exit 1; }
+          case "$DMG" in *"$VERSION"*) ;; *) echo "::error::DMG name lacks $VERSION"; exit 1 ;; esac
+          APP=$(find release -maxdepth 4 -name "CodePilot.app" -type d | head -1)
+          PLIST_VER=$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist")
+          [ "$PLIST_VER" = "$VERSION" ] || { echo "::error::Info.plist $PLIST_VER != $VERSION"; exit 1; }
+          SQLITE=$(find "$APP/Contents/Resources" -path "*better-sqlite3*" -name "*.node" | head -1)
+          [ -n "$SQLITE" ] || { echo "::error::better-sqlite3 .node not found"; exit 1; }
+          ELECTRON_RUN_AS_NODE=1 "$APP/Contents/MacOS/CodePilot" -e "const path = require('node:path'); require(path.resolve(process.argv[1])); console.log('better-sqlite3 OK, ABI=' + process.versions.modules)" "$SQLITE"
+
+      - name: Checksums
+        run: cd release && shasum -a 256 CodePilot-*-arm64.dmg CodePilot-*-arm64*.zip 2>/dev/null | tee checksums-macos-arm64.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-macos-arm64
+          path: |
+            release/CodePilot-*-arm64.dmg
+            release/CodePilot-*-arm64*.zip
+            release/checksums-macos-arm64.sha256
+          retention-days: 7
+
+  build-windows-x64:
+    needs: verify-source
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build + package Windows x64
+        timeout-minutes: 35
+        run: |
+          npm run electron:build
+          npx electron-builder --win --x64 --config electron-builder.yml --publish never
+
+      - name: Verify packaged version and native ABI
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify-source.outputs.version }}"
+          EXE=$(find release -name "CodePilot.Setup.*.exe" | head -1)
+          [ -n "$EXE" ] || { echo "::error::no NSIS installer produced"; exit 1; }
+          case "$EXE" in *"$VERSION"*) ;; *) echo "::error::installer name lacks $VERSION"; exit 1 ;; esac
+          SQLITE=$(find release/win-unpacked -path "*better-sqlite3*" -name "*.node" 2>/dev/null | head -1)
+          [ -n "$SQLITE" ] || { echo "::error::better-sqlite3 .node not found"; exit 1; }
+          BIN=$(find release/win-unpacked -maxdepth 1 -name "CodePilot.exe" | head -1)
+          ELECTRON_RUN_AS_NODE=1 "$BIN" -e "const path = require('node:path'); require(path.resolve(process.argv[1])); console.log('better-sqlite3 OK, ABI=' + process.versions.modules)" "$SQLITE"
+
+      - name: Checksums
+        shell: bash
+        run: cd release && sha256sum CodePilot.Setup.*.exe 2>/dev/null | tee checksums-windows-x64.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-windows-x64
+          path: |
+            release/CodePilot.Setup.*.exe
+            release/checksums-windows-x64.sha256
+          retention-days: 7
+
+  create-prerelease:
+    needs: [verify-source, build-macos-arm64, build-windows-x64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Prepare release notes and checksums
+        run: |
+          set -euo pipefail
+          VERSION="${{ needs.verify-source.outputs.version }}"
+          {
+            echo "## CodePilot ${VERSION} internal preview"
+            echo ""
+            echo "This is a tester-only prerelease from the refactor branch."
+            echo ""
+            echo "- Not a stable \`v*\` release."
+            echo "- Marked as GitHub prerelease and \`--latest=false\`."
+            echo "- The app update check uses GitHub \`/releases/latest\`, so this entry is intentionally excluded from upgrade notifications."
+            echo ""
+            echo "### Test focus"
+            echo "- Existing data compatibility after installing over 0.54.x or older preview packages."
+            echo "- Codex runtime startup and model loading."
+            echo "- Claude Code runtime model loading and first message."
+            echo "- macOS tray icon visibility in light/dark mode."
+            echo "- Windows command generation uses PowerShell by default."
+            echo ""
+            echo "### Report P0/P1 issues with"
+            echo "- OS version and CPU architecture."
+            echo "- CodePilot version shown in About."
+            echo "- Runtime selected and model/provider."
+            echo "- Repro steps, screenshot, and logs when available."
+          } > release-notes.md
+
+          echo "## SHA-256 Checksums" > SHA256SUMS.txt
+          echo "" >> SHA256SUMS.txt
+          for cs in artifacts/checksums-*.sha256; do
+            [ -f "$cs" ] || continue
+            cat "$cs" >> SHA256SUMS.txt
+          done
+          cat SHA256SUMS.txt
+
+      - name: List release assets
+        run: find artifacts -type f \( -name "*.dmg" -o -name "*.zip" -o -name "*.exe" \) -print | sort
+
+      - name: Create GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: CodePilot ${{ needs.verify-source.outputs.version }} internal preview
+          body_path: release-notes.md
+          prerelease: true
+          make_latest: false
+          files: |
+            artifacts/*.dmg
+            artifacts/*.zip
+            artifacts/*.exe
+            SHA256SUMS.txt

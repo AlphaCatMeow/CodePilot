@@ -1,32 +1,65 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import dynamic from "next/dynamic";
 import { usePathname, useRouter } from "next/navigation";
 import { TooltipProvider } from "@/components/ui/tooltip";
 // NavRail removed — navigation merged into ChatListPanel
 import { ChatListPanel } from "./ChatListPanel";
-import { ResizeHandle } from "./ResizeHandle";
-import { UpdateDialog } from "./UpdateDialog";
-import { FeatureAnnouncementDialog } from "./FeatureAnnouncementDialog";
+import { SettingsSidebar } from "./SettingsSidebar";
+import { CardFrame, CardSurface, ResizeGutter } from "./card-primitives";
 import { UpdateBanner } from "./UpdateBanner";
 import { UnifiedTopBar } from "./UnifiedTopBar";
-import { PanelZone } from "./PanelZone";
-import { PanelContext, type PreviewViewMode, type PreviewSource } from "@/hooks/usePanel";
+import { WorkspaceSidebarProvider, useWorkspaceSidebar, useWorkspaceSidebarOptional } from "@/hooks/useWorkspaceSidebar";
+import { PanelContext, usePanel, type PreviewViewMode, type PreviewSource } from "@/hooks/usePanel";
 import { UpdateContext } from "@/hooks/useUpdate";
 import { useUpdateChecker } from "@/hooks/useUpdateChecker";
-import { ImageGenContext, useImageGenState } from "@/hooks/useImageGen";
 import { BatchImageGenContext, useBatchImageGenState } from "@/hooks/useBatchImageGen";
 import { SplitContext, type SplitSession } from "@/hooks/useSplit";
-import { SplitChatContainer } from "./SplitChatContainer";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { SentryInit } from "./SentryInit";
 import { getActiveSessionIds, getSnapshot } from "@/lib/stream-session-manager";
 import { useGitStatus } from "@/hooks/useGitStatus";
-import { SetupCenter } from '@/components/setup/SetupCenter';
 import { Toaster } from '@/components/ui/toast';
 import { useNotificationPoll } from '@/hooks/useNotificationPoll';
+import { useNotificationClickRoute } from '@/hooks/useNotificationClickRoute';
 import { useGlobalSearchShortcut } from '@/hooks/useGlobalSearchShortcut';
 import { GlobalSearchDialog } from './GlobalSearchDialog';
+import { ANNOUNCEMENT_KEY } from './feature-announcement-key';
+
+// AppShell static-import contract (Phase A memory cut, 2026-05-08): the six
+// components below are conditionally rendered (gated by route, modal state,
+// or dialog-trigger state). Lazy-loading them via next/dynamic + ssr:false
+// keeps their compile graphs out of the initial /chat dev compile (which
+// previously hit ~2.3 GB on first paint just from AppShell's static chain).
+// Locked in by `src/__tests__/unit/appshell-lazy-imports.test.ts` — adding
+// a static import here regresses memory and will fail CI.
+//
+// Each loader keeps the named export shape so downstream JSX is unchanged.
+const SetupCenter = dynamic(
+  () => import('@/components/setup/SetupCenter').then((m) => ({ default: m.SetupCenter })),
+  { ssr: false },
+);
+const SplitChatContainer = dynamic(
+  () => import('./SplitChatContainer').then((m) => ({ default: m.SplitChatContainer })),
+  { ssr: false },
+);
+const WorkspaceSidebar = dynamic(
+  () => import('./WorkspaceSidebar').then((m) => ({ default: m.WorkspaceSidebar })),
+  { ssr: false },
+);
+const PanelZone = dynamic(
+  () => import('./PanelZone').then((m) => ({ default: m.PanelZone })),
+  { ssr: false },
+);
+const UpdateDialog = dynamic(
+  () => import('./UpdateDialog').then((m) => ({ default: m.UpdateDialog })),
+  { ssr: false },
+);
+const FeatureAnnouncementDialog = dynamic(
+  () => import('./FeatureAnnouncementDialog').then((m) => ({ default: m.FeatureAnnouncementDialog })),
+  { ssr: false },
+);
 
 const SPLIT_SESSIONS_KEY = "codepilot:split-sessions";
 const SPLIT_ACTIVE_COLUMN_KEY = "codepilot:split-active-column";
@@ -79,6 +112,94 @@ function defaultViewMode(filePath: string): PreviewViewMode {
 
 const LG_BREAKPOINT = 1024;
 
+/**
+ * Inner row that holds the chat main area + the two right-rail
+ * surfaces:
+ *   - `<PanelZone>` mounts the lightweight FileTreePanel (independent
+ *     topbar entry) and the AssistantPanel.
+ *   - `<WorkspaceSidebar>` mounts the unified Tab shell that owns
+ *     Git / Widget / Markdown / Artifact / file preview Tabs.
+ *
+ * Reads PanelContext + WorkspaceSidebarContext to derive whether any
+ * rail is visible and toggles a top border accordingly:
+ *   - file tree open OR sidebar open OR both → border-t between
+ *     topbar chrome and the work area
+ *   - both collapsed → no border (chat reads uncluttered)
+ *
+ * v13 product decision: the two right-rail panels are additive — both
+ * can be open simultaneously (file tree on the inner edge, sidebar on
+ * the outer edge), and chat shrinks accordingly. The topbar onClick
+ * handlers each flip their own panel only; no auto-close of the other.
+ */
+
+/**
+ * v13 — Right-rail panels (FileTreePanel + WorkspaceSidebar) are
+ * **additive**, not mutex. Earlier rounds (and v11) treated them as
+ * mutually exclusive: opening one would auto-close the other, both
+ * via topbar onClick handlers and via a `RightRailMutexEnforcer`
+ * effect that plugged the event-driven sidebar-open path. That choice
+ * was reversed: the user wants both panels openable at once so they
+ * can browse files in the tree while a markdown / artifact preview is
+ * pinned on the sidebar tab. The v11 enforcer was removed entirely,
+ * and the topbar onClick mutex lines were dropped (each toggle now
+ * just flips its own panel state). The flexbox layout below already
+ * supported coexistence — only the behavior was wrong.
+ */
+
+function ChatContentRow({
+  isChatDetailRoute,
+  isSplitActive,
+  children,
+}: {
+  isChatDetailRoute: boolean;
+  isSplitActive: boolean;
+  children: React.ReactNode;
+}) {
+  // Phase 7c-C — main column and workspace sidebar both wrapped in
+  // CardFrame + CardSurface. WorkspaceSidebar is now just inner TabBar
+  // + TabPanel content; its width state and ResizeHandle wiring live
+  // here so the row's layout geometry is in one place.
+  const ws = useWorkspaceSidebar();
+  const handleWorkspaceResize = useCallback(
+    (delta: number) => {
+      ws.setWidth(ws.state.width - delta);
+    },
+    [ws],
+  );
+
+  return (
+    <>
+      <CardFrame kind="main">
+        <CardSurface kind="main">
+          <main className="relative flex-1 overflow-hidden">
+            {isSplitActive ? (
+              <SplitChatContainer />
+            ) : (
+              <ErrorBoundary>{children}</ErrorBoundary>
+            )}
+          </main>
+        </CardSurface>
+      </CardFrame>
+      {/* Workspace sidebar: ResizeGutter as sibling of the frame so
+          its visible line lands in the gap between main and workspace. */}
+      {isChatDetailRoute && ws.state.open && (
+        <>
+          <ResizeGutter
+            onResize={handleWorkspaceResize}
+            onReset={() => ws.setWidth(360)}
+          />
+          <CardFrame kind="workspace" width={ws.state.width}>
+            <CardSurface kind="workspace">
+              <WorkspaceSidebar />
+            </CardSurface>
+          </CardFrame>
+        </>
+      )}
+      {isChatDetailRoute && <PanelZone />}
+    </>
+  );
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -88,10 +209,47 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [setupInitialCard, setSetupInitialCard] = useState<'claude' | 'provider' | 'project' | undefined>();
   const [searchOpen, setSearchOpen] = useState(false);
 
+  // Phase A state gate (2026-05-08): only mount FeatureAnnouncementDialog
+  // when its localStorage dismiss flag is missing. The dialog still owns
+  // its own backend fetch + show timing internally; this gate just keeps
+  // the dialog's chunk + react-markdown / Dialog primitives off the boot
+  // path for the 99% of users who already dismissed it. Initial state is
+  // `null` so SSR + hydration agree on "don't render"; client sets the
+  // real value on mount.
+  const [announcementMaybeVisible, setAnnouncementMaybeVisible] = useState<boolean>(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!localStorage.getItem(ANNOUNCEMENT_KEY)) {
+      // SSR-safe hydration gate: initial state is `false` so SSR + first
+      // client render agree on "don't render"; we flip to `true` once after
+      // mount when localStorage shows no dismiss flag. Single transition,
+      // no cascade. The rule has no clean replacement for non-reactive
+      // browser storage reads.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setAnnouncementMaybeVisible(true);
+    }
+  }, []);
+
   useGlobalSearchShortcut(() => setSearchOpen(true));
+
+  // Record the last non-settings pathname for SettingsSidebar's Back button.
+  // Without this, deep-linking into /settings/providers (or any /settings
+  // sub-route) and pressing Back would call router.back() and escape the app
+  // (e.g. to about:blank). sessionStorage scopes per-tab so it doesn't leak
+  // across windows.
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!pathname.startsWith('/settings')) {
+      const fullPath = pathname + window.location.search + window.location.hash;
+      sessionStorage.setItem('codepilot:last-non-settings-path', fullPath);
+    }
+  }, [pathname]);
 
   // Poll server-side notification queue and display as toasts
   useNotificationPoll();
+  // Phase 3 Step 3: route Electron notification clicks (carrying
+  // taskId / sessionId payload) to the right page.
+  useNotificationClickRoute();
 
   // Check if setup is needed
   useEffect(() => {
@@ -116,19 +274,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener('open-setup-center', handler);
   }, []);
 
-  // Hash bridge: error messages render `[Open Settings](/settings#providers)`
-  // markdown links as fallback when the frontend cannot directly dispatch the
-  // open-setup-center event (e.g. rendering inside the SSE text stream). When
-  // such a link is clicked the hash changes to `#providers`, and we surface
-  // the SetupCenter Provider card here — EXCEPT on /settings itself, where
-  // SettingsLayout owns the #providers hash for its own section routing
-  // (see SettingsLayout.tsx `getSectionFromHash`). If we swallowed the hash
-  // there, clicking "Add Provider" inside SetupCenter would ping-pong the
-  // user back into SetupCenter instead of reaching the providers tab.
+  // Hash bridge: legacy error messages and external deep links may still
+  // arrive carrying a `#providers` fragment (route-level split moved internal
+  // links to `/settings/providers`, but old chat sessions and external docs
+  // can still embed the hash form). When such a link is clicked outside the
+  // /settings tree, surface the SetupCenter Provider card here. On /settings
+  // itself the root page's redirect handler owns hash → route translation, so
+  // we early-return to avoid ping-ponging between SetupCenter and the section.
   useEffect(() => {
     const maybeOpenFromHash = () => {
       if (typeof window === 'undefined') return;
-      if (window.location.pathname === '/settings') return;
+      if (window.location.pathname.startsWith('/settings')) return;
       if (window.location.hash === '#providers') {
         setSetupInitialCard('provider');
         setSetupOpen(true);
@@ -184,12 +340,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setChatListOpenRaw(open);
   }, []);
 
-  // --- New independent panel states ---
+  // --- Right-rail panel states ---
+  // Phase 2 (2026-04-30): gitPanelOpen / dashboardPanelOpen / previewOpen
+  // were removed — those surfaces moved into the Workspace Sidebar
+  // (Git + Widget fixed Tabs, Markdown / Artifact / file preview as
+  // dynamic Tabs). Only fileTreeOpen remains as the lightweight
+  // independent topbar entry, plus assistantPanelOpen which doesn't
+  // fit the AI-work-surface Tab model.
   const [fileTreeOpen, setFileTreeOpen] = useState(false);
-  const [gitPanelOpen, setGitPanelOpen] = useState(false);
-  const [previewOpen, setPreviewOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
-  const [dashboardPanelOpen, setDashboardPanelOpen] = useState(false);
   const [assistantPanelOpen, setAssistantPanelOpen] = useState(false);
   const [isAssistantWorkspace, setIsAssistantWorkspace] = useState(false);
 
@@ -365,49 +524,83 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [activeStreamingSessions]);
 
   // --- Doc Preview state ---
-  // Primary state is `previewSource` (Phase 1.5). `previewFile` is a derived
-  // view for legacy consumers (FileTreePanel toggle logic etc.). The adapter
-  // is one-way: setPreviewFile always produces kind:'file' sources, but
-  // callers can observe that an inline-* source makes previewFile appear null.
+  // `previewSource` is the discriminated union (file / inline-html /
+  // inline-jsx / inline-datatable) that the WorkspaceSidebar's
+  // dynamic-Tab content reads. `previewFile` is a derived path-only
+  // view for code paths (FileTreePanel toggle logic, etc.) that only
+  // care about the file kind — when the active source is inline-*,
+  // `previewFile` is null.
   const [previewSource, setPreviewSourceRaw] = useState<PreviewSource | null>(null);
   const [previewViewMode, setPreviewViewMode] = useState<PreviewViewMode>("source");
+  // Track the last filePath we routed through setPreviewSource so we can
+  // distinguish "file change" (reset view mode) from "metadata update"
+  // (Phase 4 UX — same-file presentationTemplate / anchor / trust
+  // promotions must NOT bounce the user out of Edit mode).
+  const lastPreviewFilePathRef = useRef<string | null>(null);
 
   const previewFile: string | null =
     previewSource?.kind === "file" ? previewSource.filePath : null;
 
   const setPreviewSource = useCallback((source: PreviewSource | null) => {
     setPreviewSourceRaw(source);
-    if (source) {
-      // File sources respect the extension-based default view mode.
-      // Inline sources are always "rendered" — there's no raw path to show
-      // for source view, and all inline variants are meaningful only rendered.
-      if (source.kind === "file") {
-        setPreviewViewMode(defaultViewMode(source.filePath));
-      } else {
-        setPreviewViewMode("rendered");
-      }
-      setPreviewOpen(true);
-    } else {
-      setPreviewOpen(false);
+    if (!source) {
+      lastPreviewFilePathRef.current = null;
+      return;
     }
-  }, []);
+    // File sources respect the extension-based default view mode — but
+    // ONLY on actual file changes. A same-file metadata update keeps
+    // whatever view mode the user is in. Inline sources are always
+    // "rendered" — there's no raw path to show for source view, and
+    // all inline variants are meaningful only rendered.
+    if (source.kind === "file") {
+      if (lastPreviewFilePathRef.current !== source.filePath) {
+        setPreviewViewMode(defaultViewMode(source.filePath));
+        lastPreviewFilePathRef.current = source.filePath;
+      }
+    } else {
+      setPreviewViewMode("rendered");
+      lastPreviewFilePathRef.current = null;
+    }
+    // Right-rail routing: on chat-detail routes we dispatch a
+    // `workspace-tab-open-request` event so the WorkspaceSidebar
+    // creates / focuses the matching dynamic Tab. Non-chat-detail
+    // routes (settings, skills, plugins, etc.) don't mount the
+    // sidebar at all; the source sits in context unused, which is
+    // intentional — there is no preview panel outside chat-detail.
+    if (isChatDetailRoute && typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("workspace-tab-open-request", { detail: { source } }),
+      );
+    }
+  }, [isChatDetailRoute]);
 
   const setPreviewFile = useCallback(
     (path: string | null) => {
       if (path === null) {
         setPreviewSource(null);
       } else {
-        setPreviewSource({ kind: "file", filePath: path });
+        // Legacy file-only entry point — used by FileTreePanel toggles
+        // and any other code that thinks in path-strings only. All known
+        // callers operate on workspace files (the file tree is scoped to
+        // workingDirectory), so we stamp the workspace trust tier and
+        // pass workingDirectory as baseDir. Callers that need a
+        // different trust (e.g. agent-referenced) must use
+        // setPreviewSource directly.
+        setPreviewSource({
+          kind: "file",
+          filePath: path,
+          trust: "workspace",
+          baseDir: workingDirectory || undefined,
+        });
       }
     },
-    [setPreviewSource],
+    [setPreviewSource, workingDirectory],
   );
 
-  // Reset doc preview and panels when navigating between pages/sessions
+  // Reset doc preview when navigating between pages/sessions
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setPreviewSourceRaw(null);
-    setPreviewOpen(false);
   }, [pathname]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
@@ -452,16 +645,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const panelContextValue = useMemo(
     () => ({
+      chatListOpen,
+      setChatListOpen,
       fileTreeOpen,
       setFileTreeOpen,
-      gitPanelOpen,
-      setGitPanelOpen,
-      previewOpen,
-      setPreviewOpen,
       terminalOpen,
       setTerminalOpen,
-      dashboardPanelOpen,
-      setDashboardPanelOpen,
       assistantPanelOpen,
       setAssistantPanelOpen,
       isAssistantWorkspace,
@@ -489,51 +678,104 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       previewViewMode,
       setPreviewViewMode,
     }),
-    [fileTreeOpen, gitPanelOpen, previewOpen, terminalOpen, dashboardPanelOpen, assistantPanelOpen, isAssistantWorkspace, currentBranch, gitDirtyCount, currentWorktreeLabel, workingDirectory, sessionId, sessionTitle, streamingSessionId, pendingApprovalSessionId, activeStreamingSessions, pendingApprovalSessionIds, previewSource, setPreviewSource, previewFile, setPreviewFile, previewViewMode]
+    [chatListOpen, setChatListOpen, fileTreeOpen, terminalOpen, assistantPanelOpen, isAssistantWorkspace, currentBranch, gitDirtyCount, currentWorktreeLabel, workingDirectory, sessionId, sessionTitle, streamingSessionId, pendingApprovalSessionId, activeStreamingSessions, pendingApprovalSessionIds, previewSource, setPreviewSource, previewFile, setPreviewFile, previewViewMode]
   );
 
-  const imageGenValue = useImageGenState();
   const batchImageGenValue = useBatchImageGenState();
 
   return (
     <UpdateContext.Provider value={updateContextValue}>
       <SentryInit />
       <PanelContext.Provider value={panelContextValue}>
+        <WorkspaceSidebarProvider workingDirectory={workingDirectory} sessionId={sessionId}>
         <SplitContext.Provider value={splitContextValue}>
-        <ImageGenContext.Provider value={imageGenValue}>
         <BatchImageGenContext.Provider value={batchImageGenValue}>
         <TooltipProvider delayDuration={300}>
-          <div className="flex h-screen overflow-hidden">
-            <ErrorBoundary>
-              <ChatListPanel
-                open={chatListOpen}
-                width={chatListWidth}
-                hasUpdate={updateContextValue.updateInfo?.updateAvailable ?? false}
-                readyToInstall={updateContextValue.updateInfo?.readyToInstall ?? false}
-              />
-            </ErrorBoundary>
-            {chatListOpen && (
-              <ResizeHandle side="left" onResize={handleChatListResize} onResizeEnd={handleChatListResizeEnd} />
-            )}
-            <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-              <UnifiedTopBar />
-              <UpdateBanner />
-              <div className="flex flex-1 min-h-0 overflow-hidden">
-                <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                  <main className="relative flex-1 overflow-hidden">
-                    {isSplitActive ? (
-                      <SplitChatContainer />
-                    ) : (
-                      <ErrorBoundary>{children}</ErrorBoundary>
-                    )}
-                  </main>
-                </div>
-                {isChatDetailRoute && <PanelZone />}
-              </div>
+          {/* Round 20 — layout reorganized so the four floating cards
+              (left sidebar, main content, workspace sidebar, file
+              tree) all start at the same y under a SHARED topbar.
+              Previously the topbar sat inside the main column, which
+              made the left sidebar visually taller than the other
+              three (it included the topbar's vertical space inside
+              its own card). UnifiedTopBar is now a sibling above the
+              content row; traffic-light safe area and sidebar toggle
+              both live there.
+              `data-app-shell` is now on the outer flex-col so
+              globals.css can inset the whole window the same way. */}
+          <div className="flex flex-col h-screen overflow-hidden" data-app-shell>
+            <UnifiedTopBar />
+            <UpdateBanner />
+            <div className="flex flex-1 min-h-0 overflow-hidden" data-app-content-row>
+              {/* Phase 7c closeout — the left sidebar is now a
+                  row-level card, exactly like main / workspace /
+                  fileTree: its CardFrame and ResizeGutter sit FLAT in
+                  data-app-content-row with no extra wrapper.
+
+                  The old `<div className="flex h-full shrink-0">`
+                  wrapper was a vestige of the Round 22 `gap: 4px` era,
+                  when it grouped the sidebar + handle into one flex
+                  item so the row gap wouldn't double up around the
+                  handle. Phase 7c-F set the darwin content-row gap to
+                  0 (the 8px ResizeGutter now owns the only visible
+                  gap), so the wrapper had no layout job left.
+
+                  Removing it was previously blamed for dataPlatform=
+                  null (tech-debt #29). That was a misattribution: the
+                  data-platform attribute is stamped on <html> by the
+                  anti-FOUC <head> script before hydration and has no
+                  causal link to a layout <div> deep in <body>. See
+                  tech-debt #29's resolution for the real cause. */}
+              {chatListOpen && (
+                <CardFrame kind="sidebar" width={chatListWidth}>
+                  <CardSurface
+                    kind="sidebar"
+                    variant={pathname.startsWith('/settings') ? 'settings' : 'chat-list'}
+                  >
+                    <ErrorBoundary>
+                      {pathname.startsWith('/settings') ? (
+                        <SettingsSidebar open={chatListOpen} />
+                      ) : (
+                        <ChatListPanel
+                          open={chatListOpen}
+                          hasUpdate={updateContextValue.updateInfo?.updateAvailable ?? false}
+                          readyToInstall={updateContextValue.updateInfo?.readyToInstall ?? false}
+                        />
+                      )}
+                    </ErrorBoundary>
+                  </CardSurface>
+                </CardFrame>
+              )}
+              {chatListOpen && (
+                <ResizeGutter
+                  onResize={handleChatListResize}
+                  onResizeEnd={handleChatListResizeEnd}
+                  onReset={() => {
+                    setChatListWidth(240);
+                    localStorage.setItem("codepilot_chatlist_width", "240");
+                  }}
+                />
+              )}
+              <ChatContentRow isChatDetailRoute={isChatDetailRoute} isSplitActive={isSplitActive}>
+                {children}
+              </ChatContentRow>
             </div>
           </div>
-          <UpdateDialog />
-          <FeatureAnnouncementDialog />
+          {/* Phase A state gates: only mount when actually needed.
+              UpdateDialog gate (P3 review fix): require BOTH
+              `showDialog` AND an available update. Earlier the gate was
+              just `updateAvailable`, which meant clicking "Later" only
+              flipped `showDialog` to false — the dialog stayed mounted
+              and the lazy chunk stuck around for the rest of the
+              session. UpdateBanner is the always-on lightweight
+              indicator; the dialog chunk should only be live when the
+              modal is actually open.
+              FeatureAnnouncementDialog gates on a localStorage dismiss
+              flag (see `announcementMaybeVisible`); the dialog itself
+              still owns the post-mount fetch + show-timing logic. */}
+          {updateContextValue.showDialog
+            && (updateContextValue.updateInfo?.updateAvailable ?? false)
+            && <UpdateDialog />}
+          {announcementMaybeVisible && <FeatureAnnouncementDialog />}
           <Toaster />
           <GlobalSearchDialog open={searchOpen} onOpenChange={setSearchOpen} />
           {setupOpen && (
@@ -544,8 +786,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           )}
         </TooltipProvider>
         </BatchImageGenContext.Provider>
-        </ImageGenContext.Provider>
         </SplitContext.Provider>
+        </WorkspaceSidebarProvider>
       </PanelContext.Provider>
     </UpdateContext.Provider>
   );

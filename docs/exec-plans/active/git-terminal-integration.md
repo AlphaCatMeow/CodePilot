@@ -1,5 +1,7 @@
 # Git + 终端集成规划
 
+> ⏸ **本轮重构暂缓**（见 [refactor-closeout.md](./refactor-closeout.md) "暂缓清单"）— 终端会话层 / git 工作区状态层不在本轮 6 条主线内；保留作长期参考。
+
 > 创建时间：2026-03-12
 > 最后更新：2026-03-12
 > 参考基线：Codex `main@917c2df`（本地参考副本：`/tmp/codex-main-latest`）

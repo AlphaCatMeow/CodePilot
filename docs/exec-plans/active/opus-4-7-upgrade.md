@@ -1,5 +1,7 @@
 # Opus 4.7 模型升级
 
+> ⚠️ **Superseded by [refactor-closeout.md](./refactor-closeout.md)** — 不再单独推进，保留作历史参考。模型 ID 切换 / `xhigh` effort / tokenizer 复核 / 字面化回归测试并入 refactor-closeout 的 **Phase 1（模型同步与渠道扩展）**。
+
 > 创建时间：2026-04-16
 > 最后更新：2026-04-16（Claude Code 2.1.111 / SDK 0.2.111 发布后复核）
 > 来源：https://www.anthropic.com/news/claude-opus-4-7

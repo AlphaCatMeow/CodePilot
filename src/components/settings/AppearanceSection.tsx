@@ -9,7 +9,7 @@ import {
   resolveShikiThemes,
 } from "@/lib/theme/code-themes";
 import { useTranslation } from "@/hooks/useTranslation";
-import { Sun, Moon, Desktop } from "@/components/ui/icon";
+import { CodePilotIcon, type CodePilotIconName } from "@/components/ui/semantic-icon";
 import {
   Select,
   SelectContent,
@@ -24,10 +24,10 @@ import { FieldRow } from "@/components/patterns/FieldRow";
 
 // ── Theme Mode Pill Selector ────────────────────────────────────────
 
-const MODE_OPTIONS = [
-  { value: "light", icon: Sun, labelKey: "settings.modeLight" as const },
-  { value: "dark", icon: Moon, labelKey: "settings.modeDark" as const },
-  { value: "system", icon: Desktop, labelKey: "settings.modeSystem" as const },
+const MODE_OPTIONS: ReadonlyArray<{ value: string; icon: CodePilotIconName; labelKey: "settings.modeLight" | "settings.modeDark" | "settings.modeSystem" }> = [
+  { value: "light", icon: "theme_light", labelKey: "settings.modeLight" },
+  { value: "dark", icon: "theme_dark", labelKey: "settings.modeDark" },
+  { value: "system", icon: "desktop", labelKey: "settings.modeSystem" },
 ] as const;
 
 function ThemeModePills({
@@ -57,7 +57,7 @@ function ThemeModePills({
                 : "text-muted-foreground hover:bg-accent hover:text-accent-foreground"
             )}
           >
-            <opt.icon size={14} />
+            <CodePilotIcon name={opt.icon} size="sm" aria-hidden />
             {t(opt.labelKey)}
           </Button>
         );
@@ -93,7 +93,7 @@ function ShikiCodePreview({ isDark }: { isDark: boolean }) {
   }, [theme]);
 
   return (
-    <div className="rounded-md border border-border overflow-hidden">
+    <div className="rounded-md border border-border/50 overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1.5 text-xs bg-muted text-muted-foreground">
         <span className="font-medium">preview.ts</span>
         <span className="rounded bg-accent px-1.5 py-0.5 text-accent-foreground">TypeScript</span>
@@ -123,7 +123,7 @@ function UIPreview() {
       <span className="inline-flex items-center rounded-full bg-accent px-2.5 py-0.5 text-[10px] font-medium text-accent-foreground">
         Badge
       </span>
-      <span className="inline-flex items-center rounded-full border border-border bg-card px-2.5 py-0.5 text-[10px] text-card-foreground">
+      <span className="inline-flex items-center rounded-full border border-border/50 bg-card px-2.5 py-0.5 text-[10px] text-card-foreground">
         Card
       </span>
       <span className="inline-flex items-center rounded-full bg-muted px-2.5 py-0.5 text-[10px] text-muted-foreground">
@@ -169,10 +169,14 @@ export function AppearanceSection() {
   if (!mounted) return null;
 
   return (
-    <div className="space-y-4">
+    // Top-level Settings page wrapper — matches RuntimePanel / ModelsSection
+    // / GeneralSection. AppearanceSection used to render inline at the
+    // bottom of GeneralSection; promotion to a sibling sidebar entry needs
+    // its own page-shell width + spacing so it doesn't read as half-width.
+    <div className="max-w-4xl mx-auto space-y-8">
       {/* Section header — outside card */}
       <div>
-        <h2 className="text-sm font-medium">{t("settings.appearance")}</h2>
+        <h2 className="text-xl font-semibold tracking-tight">{t("settings.appearance")}</h2>
         <p className="text-xs text-muted-foreground">{t("settings.appearanceDesc")}</p>
       </div>
 
@@ -226,7 +230,7 @@ export function AppearanceSection() {
       </FieldRow>
 
       {/* Preview */}
-      <div className="border-t border-border/30 pt-4 space-y-3">
+      <div className="mt-6 space-y-3">
         <h3 className="text-xs font-medium text-muted-foreground">Preview</h3>
         <UIPreview />
         <ShikiCodePreview isDark={isDark} />

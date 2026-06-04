@@ -1,16 +1,13 @@
 "use client";
 
 import {
-  Folder,
   CaretDown,
   CaretRight,
-  Plus,
-  FolderOpen,
   FolderMinus,
   DotsThree,
-  Copy,
   ArrowSquareOut,
 } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -21,6 +18,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { useTranslation } from '@/hooks/useTranslation';
+import { copyWithToast } from "@/lib/clipboard";
 import type { TranslationKey } from "@/i18n";
 import { useState } from "react";
 import { SPECIES_IMAGE_URL, EGG_IMAGE_URL, type Species } from "@/lib/buddy";
@@ -31,6 +29,8 @@ interface ProjectGroupHeaderProps {
   isCollapsed: boolean;
   isFolderHovered: boolean;
   isWorkspace: boolean;
+  /** Hide the caret/chevron prefix (Codex-style flat folders, expansion indicated by Folder/FolderOpen icon swap only). */
+  hideCaret?: boolean;
   onToggle: () => void;
   onMouseEnter: () => void;
   onMouseLeave: () => void;
@@ -50,6 +50,7 @@ export function ProjectGroupHeader({
   isCollapsed,
   isFolderHovered,
   isWorkspace,
+  hideCaret = false,
   onToggle,
   onMouseEnter,
   onMouseLeave,
@@ -71,15 +72,17 @@ export function ProjectGroupHeader({
       "flex items-center gap-0.5 transition-opacity",
       showActions ? "opacity-100" : "opacity-0 pointer-events-none"
     )}>
-      {/* New chat button */}
+      {/* New chat button — a "写新对话" pencil/compose icon (clearer than a
+          bare +, which read ambiguously as "add what?"). */}
       <Button
         variant="ghost"
         size="icon-xs"
         className="h-5 w-5 shrink-0 text-muted-foreground hover:text-foreground"
         tabIndex={showActions ? 0 : -1}
         onClick={onCreateSession}
+        title={t('chatList.newConversation')}
       >
-        <Plus size={14} />
+        <CodePilotIcon name="edit" size="sm" aria-hidden />
       </Button>
       {/* Three-dot menu */}
       <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
@@ -113,9 +116,11 @@ export function ProjectGroupHeader({
             <span>{t('chatList.openFolder' as TranslationKey)}</span>
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => {
-            navigator.clipboard.writeText(workingDirectory);
+            // v11 fix — see lib/clipboard.ts for why fire-and-forget
+            // writeText fails in Electron renderers after dropdown blur.
+            void copyWithToast({ text: workingDirectory, t });
           }}>
-            <Copy size={14} />
+            <CodePilotIcon name="copy" size="sm" aria-hidden />
             <span>{t('chatList.copyFolderPath' as TranslationKey)}</span>
           </DropdownMenuItem>
           {onRemoveProject && !isWorkspace && (
@@ -193,24 +198,26 @@ export function ProjectGroupHeader({
   return (
     <div
       className={cn(
-        "flex items-center gap-1 rounded-md px-2 py-1 cursor-pointer select-none transition-colors",
-        "hover:bg-accent/50"
+        "flex items-center gap-2 rounded-xl px-3 h-8 cursor-pointer select-none transition-colors",
+        "hover:bg-sidebar-accent"
       )}
       onClick={onToggle}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
-      {isCollapsed ? (
-        <CaretRight size={14} className="shrink-0 text-muted-foreground" />
-      ) : (
-        <CaretDown size={14} className="shrink-0 text-muted-foreground" />
+      {!hideCaret && (
+        isCollapsed ? (
+          <CaretRight size={14} className="shrink-0 text-muted-foreground" />
+        ) : (
+          <CaretDown size={14} className="shrink-0 text-muted-foreground" />
+        )
       )}
       {isCollapsed ? (
-        <Folder size={16} className="shrink-0 text-muted-foreground" />
+        <CodePilotIcon name="folder" size="md" className="shrink-0 text-muted-foreground" aria-hidden />
       ) : (
-        <FolderOpen size={16} className="shrink-0 text-muted-foreground" />
+        <CodePilotIcon name="folder_open" size="md" className="shrink-0 text-muted-foreground" aria-hidden />
       )}
-      <span className="flex-1 truncate text-[13px] font-medium text-sidebar-foreground">
+      <span className="flex-1 truncate text-[13px] font-normal text-sidebar-foreground/70">
         {displayName}
       </span>
       {actionButtons}

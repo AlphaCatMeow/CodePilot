@@ -12,6 +12,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { execSync } from 'child_process';
+import { getPlatformShell, platformCommandGuidance } from './platform';
 
 // ── Section: Identity ──────────────────────────────────────────
 
@@ -160,8 +161,12 @@ function buildEnvironmentSection(options: SystemPromptOptions): string | null {
 
   // Platform info
   lines.push(`- Platform: ${process.platform}`);
-  const shell = process.env.SHELL ? path.basename(process.env.SHELL) : 'unknown';
+  const shell = process.env.SHELL ? path.basename(process.env.SHELL) : getPlatformShell();
   lines.push(`- Shell: ${shell}`);
+  // #28: tell the model the target shell dialect so it doesn't emit bash-only
+  // commands on Windows. No-op off Windows-PowerShell (empty string).
+  const shellGuidance = platformCommandGuidance();
+  if (shellGuidance) lines.push(shellGuidance);
 
   try {
     const osVersion = execSync('uname -sr', { encoding: 'utf-8', timeout: 3000, stdio: 'pipe' }).trim();

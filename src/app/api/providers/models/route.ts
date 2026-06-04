@@ -1,10 +1,16 @@
-import { NextResponse } from 'next/server';
-import { getAllProviders, getDefaultProviderId, setDefaultProviderId, getProvider, getModelsForProvider, getSetting } from '@/lib/db';
+import { NextRequest, NextResponse } from 'next/server';
+import { getAllProviders, getDefaultProviderId, setDefaultProviderId, getProvider, getAllModelsForProvider, getSetting } from '@/lib/db';
 import { getContextWindow } from '@/lib/model-context';
 import { getDefaultModelsForProvider, getEffectiveProviderProtocol, findPresetForLegacy } from '@/lib/provider-catalog';
 import type { Protocol } from '@/lib/provider-catalog';
 import type { ErrorResponse, ProviderModelGroup } from '@/types';
 import { getOAuthStatus } from '@/lib/openai-oauth-manager';
+import {
+  getProviderCompat,
+  getModelCompat,
+  isOpenRouterAnthropicSkinUrl,
+} from '@/lib/runtime-compat';
+import { isChatRuntimeParam, resolveChatRuntimeParam, type ChatRuntime } from '@/lib/chat-runtime';
 
 // OpenAI models available through ChatGPT Plus/Pro OAuth (Codex API)
 // Reasoning effort defaults to 'medium' server-side (not user-configurable)
@@ -26,7 +32,7 @@ const DEFAULT_MODELS = [
   {
     value: 'sonnet',
     label: 'Sonnet 4.6',
-    upstreamModelId: 'claude-sonnet-4-20250514',
+    upstreamModelId: 'claude-sonnet-4-6',
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'max'],
     supportsAdaptiveThinking: true,
@@ -52,7 +58,7 @@ const DEFAULT_MODELS = [
 // return bare aliases (sonnet/opus/haiku). Mirrors the env provider's
 // alias table in provider-resolver.ts.
 const ENV_ALIAS_TO_UPSTREAM: Record<string, string> = {
-  sonnet: 'claude-sonnet-4-20250514',
+  sonnet: 'claude-sonnet-4-6',
   opus: 'claude-opus-4-7',
   haiku: 'claude-haiku-4-5-20251001',
 };
@@ -84,8 +90,19 @@ function deduplicateModels(models: ModelEntry[]): ModelEntry[] {
 const MEDIA_PROTOCOLS = new Set<string>(['gemini-image', 'openai-image']);
 const MEDIA_PROVIDER_TYPES = new Set(['gemini-image', 'openai-image']);
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
+    // Optional `?runtime=` query — when present, every group has its model
+    // list filtered down to entries compatible with the specified runtime.
+    // Accepts `claude_code` / `codepilot_runtime` (explicit) or `auto` (let
+    // the server resolve via `agent_runtime` setting + CLI binary check).
+    // No param at all = no filtering — used by Settings > Providers' global
+    // default-model selector that needs to see the full catalog.
+    const runtimeParam = request.nextUrl.searchParams.get('runtime');
+    const runtimeFilter: ChatRuntime | null = (runtimeParam && isChatRuntimeParam(runtimeParam))
+      ? resolveChatRuntimeParam(runtimeParam)
+      : null;
+
     const providers = getAllProviders();
     const groups: ProviderModelGroup[] = [];
 
@@ -106,6 +123,7 @@ export async function GET() {
         provider_id: 'env',
         provider_name: 'Claude Code',
         provider_type: 'anthropic',
+        compat: 'claude_code_ready',
         ...(!envHasDirectCredentials ? { sdkProxyOnly: true } : {}),
         // Use upstreamModelId for context-window lookup so the bare `opus`
         // alias doesn't get clamped to the 200K Bedrock/Vertex value.
@@ -161,59 +179,108 @@ export async function GET() {
       // Get models: DB provider_models first, then catalog defaults, then env fallback
       let rawModels: ModelEntry[];
 
-      // 1) Check DB provider_models table
-      let dbModels: { value: string; label: string; upstreamModelId?: string; capabilities?: Record<string, unknown> }[] = [];
+      // 1) Read provider_models — the *enabled* rows feed the picker, but we
+      //    also need the *full* row set as a suppression list so disabled
+      //    rows aren't re-added by the catalog fallback below.
+      const dbModels: { value: string; label: string; upstreamModelId?: string; capabilities?: Record<string, unknown>; variants?: Record<string, unknown> }[] = [];
+      const dbHiddenIds = new Set<string>();
+      let dbHasAnyRow = false;
+      // Track the most-recent `last_refreshed_at` across rows so the Provider
+      // card can show "刷新于 N 分钟前" — the user needs to tell whether a
+      // surprising picker reflects a stale catalog vs an actual upstream change.
+      let lastRefreshedAt: string | null = null;
       try {
-        const provModels = getModelsForProvider(provider.id);
-        if (provModels.length > 0) {
-          dbModels = provModels.map(m => {
-            let caps: Record<string, unknown> | undefined;
-            let vars: Record<string, unknown> | undefined;
-            try { const p = JSON.parse(m.capabilities_json || '{}'); if (Object.keys(p).length > 0) caps = p; } catch { /* ignore */ }
-            try { const v = JSON.parse(m.variants_json || '{}'); if (Object.keys(v).length > 0) vars = v; } catch { /* ignore */ }
-            return {
-              value: m.model_id,
-              label: m.display_name || m.model_id,
-              upstreamModelId: m.upstream_model_id || undefined,
-              capabilities: caps,
-              variants: vars,
-            };
+        const provModelsAll = getAllModelsForProvider(provider.id);
+        dbHasAnyRow = provModelsAll.length > 0;
+        for (const m of provModelsAll) {
+          if (m.last_refreshed_at && (!lastRefreshedAt || m.last_refreshed_at > lastRefreshedAt)) {
+            lastRefreshedAt = m.last_refreshed_at;
+          }
+          if (m.enabled === 0) {
+            dbHiddenIds.add(m.model_id);
+            continue;
+          }
+          let caps: Record<string, unknown> | undefined;
+          let vars: Record<string, unknown> | undefined;
+          try { const p = JSON.parse(m.capabilities_json || '{}'); if (Object.keys(p).length > 0) caps = p; } catch { /* ignore */ }
+          try { const v = JSON.parse(m.variants_json || '{}'); if (Object.keys(v).length > 0) vars = v; } catch { /* ignore */ }
+          dbModels.push({
+            value: m.model_id,
+            label: m.display_name || m.model_id,
+            upstreamModelId: m.upstream_model_id || undefined,
+            capabilities: caps,
+            variants: vars,
           });
         }
       } catch { /* table may not exist in old DBs */ }
 
-      // 2) Catalog defaults
+      // 2) Catalog defaults — but skip any id the user has explicitly hidden
+      //    in the Models page, otherwise the picker silently re-adds them.
       const catalogModels = getDefaultModelsForProvider(protocol, provider.base_url, provider.provider_type);
-      const catalogRaw = catalogModels.map(m => ({
-        value: m.modelId,
-        label: m.displayName,
-        upstreamModelId: m.upstreamModelId,
-        capabilities: m.capabilities as Record<string, unknown> | undefined,
-      }));
+      const catalogRaw = catalogModels
+        .filter(m => !dbHiddenIds.has(m.modelId))
+        .map(m => ({
+          value: m.modelId,
+          label: m.displayName,
+          upstreamModelId: m.upstreamModelId,
+          capabilities: m.capabilities as Record<string, unknown> | undefined,
+        }));
 
-      // Start with DB models + catalog defaults.
-      // If both are empty (e.g. Volcengine where user must specify model names),
-      // leave rawModels empty — do NOT fall back to DEFAULT_MODELS (Sonnet/Opus/Haiku).
-      if (dbModels.length > 0) {
+      if (dbHasAnyRow) {
+        // User has materialized rows for this provider — DB enabled set is
+        // authoritative. Only catalog ids that are NEITHER in the DB nor
+        // hidden show through (covers brand-new catalog additions the user
+        // hasn't seen yet).
         const dbIds = new Set(dbModels.map(m => m.value));
         rawModels = [...dbModels, ...catalogRaw.filter(m => !dbIds.has(m.value))];
       } else {
         rawModels = [...catalogRaw];
       }
 
-      // Inject models from role_models_json into the list if not already present
-      // (e.g. user configured "ark-code-latest" for a Volcengine or anthropic-thirdparty provider)
+      // Round 9 (2026-05-18) — OpenRouter Anthropic-skin alias-row
+      // canonicalization. Mirrors `normalizeOpenRouterAnthropicAlias`
+      // in provider-resolver.ts so the picker / Models page / chat
+      // send all read the same upstream slug. Pre-fix this surface
+      // also handed back `haiku → haiku` for legacy DB rows that
+      // pre-date the round-8 preset upstreams.
+      // Use the locally-inferred `protocol` (line 169) — `provider.protocol`
+      // is the raw DB column which may be NULL for legacy rows; the resolver
+      // applies the same normalize against the inferred protocol.
+      if (
+        protocol === 'openrouter' &&
+        provider.base_url &&
+        isOpenRouterAnthropicSkinUrl(provider.base_url)
+      ) {
+        const presetByAlias = new Map(catalogModels.map(m => [m.modelId, m]));
+        rawModels = rawModels.map(m => {
+          if (m.value !== 'sonnet' && m.value !== 'opus' && m.value !== 'haiku') {
+            return m;
+          }
+          const presetUpstream = presetByAlias.get(m.value)?.upstreamModelId;
+          if (!presetUpstream) return m;
+          // Same override gate as the resolver: only fill missing or
+          // self-referential upstreams; preserve full slugs.
+          if (!m.upstreamModelId || m.upstreamModelId === m.value) {
+            return { ...m, upstreamModelId: presetUpstream };
+          }
+          return m;
+        });
+      }
+
+      // Inject models from role_models_json into the list if not already
+      // present — but skip ids the user has explicitly hidden in Settings >
+      // Models. Without this guard, hiding a role/default model on the
+      // Models page wouldn't actually remove it from the chat picker.
       try {
         const rm = JSON.parse(provider.role_models_json || '{}');
-        // Collect unique model IDs from all role fields (default, reasoning, small, haiku, sonnet, opus)
         const roleEntries: { id: string; role: string }[] = [];
         for (const role of ['default', 'reasoning', 'small', 'haiku', 'sonnet', 'opus'] as const) {
           if (rm[role] && !roleEntries.some(e => e.id === rm[role])) {
             roleEntries.push({ id: rm[role], role });
           }
         }
-        // Add each role model to the list (default role first, so it appears at the top)
         for (const entry of roleEntries) {
+          if (dbHiddenIds.has(entry.id)) continue;
           if (!rawModels.some(m => m.value === entry.id || m.upstreamModelId === entry.id)) {
             const label = entry.role === 'default' ? entry.id : `${entry.id} (${entry.role})`;
             rawModels.unshift({ value: entry.id, label });
@@ -221,14 +288,15 @@ export async function GET() {
         }
       } catch { /* ignore */ }
 
-      // Legacy: inject ANTHROPIC_MODEL from env overrides if not already present
-      // Also check upstreamModelId to avoid duplicates (e.g. catalog has modelId='sonnet'
-      // with upstreamModelId='mimo-v2.5-pro', and env has ANTHROPIC_MODEL='mimo-v2.5-pro')
+      // Legacy: inject ANTHROPIC_MODEL from env overrides — same hidden-set
+      // guard, same reasoning (dedup also checks upstreamModelId, e.g. catalog
+      // modelId='sonnet' upstreamModelId='mimo-v2.5-pro' vs env ANTHROPIC_MODEL).
       try {
         const envOverrides = provider.env_overrides_json || provider.extra_env || '{}';
         const envObj = JSON.parse(envOverrides);
-        if (envObj.ANTHROPIC_MODEL && !rawModels.some(m => m.value === envObj.ANTHROPIC_MODEL || m.upstreamModelId === envObj.ANTHROPIC_MODEL)) {
-          rawModels.unshift({ value: envObj.ANTHROPIC_MODEL, label: envObj.ANTHROPIC_MODEL });
+        const envModelId = envObj.ANTHROPIC_MODEL;
+        if (envModelId && !dbHiddenIds.has(envModelId) && !rawModels.some(m => m.value === envModelId || m.upstreamModelId === envModelId)) {
+          rawModels.unshift({ value: envModelId, label: envModelId });
         }
       } catch { /* ignore */ }
 
@@ -257,11 +325,25 @@ export async function GET() {
       const preset = findPresetForLegacy(provider.base_url, provider.provider_type, protocol);
       const sdkProxyOnly = preset?.sdkProxyOnly === true;
 
+      // total_count is the user-visible "synced model count" on Provider cards.
+      // Counts everything in provider_models for this provider (enabled +
+      // hidden), or the catalog size when the table is empty (e.g. a fresh
+      // catalog-only provider whose seed already ran for the picker).
+      const totalCount = dbHasAnyRow
+        ? (dbModels.length + dbHiddenIds.size)
+        : catalogModels.length;
+
       groups.push({
         provider_id: provider.id,
         provider_name: provider.name,
         provider_type: provider.provider_type,
         ...(sdkProxyOnly ? { sdkProxyOnly: true } : {}),
+        total_count: totalCount,
+        last_refreshed_at: lastRefreshedAt,
+        compat: getProviderCompat({
+          provider_type: provider.provider_type,
+          base_url: provider.base_url,
+        }),
         models,
       });
     }
@@ -274,24 +356,146 @@ export async function GET() {
           provider_id: 'openai-oauth',
           provider_name: `OpenAI${oauthStatus.plan ? ` (${oauthStatus.plan})` : ''}`,
           provider_type: 'openai-oauth',
+          compat: 'codepilot_only',
           models: OPENAI_OAUTH_MODELS,
         });
       }
     } catch { /* OpenAI OAuth module not available */ }
 
+    // Phase 5 Phase 2 (2026-05-13) — Codex Account virtual provider.
+    //
+    // P0.3 (2026-06-01) — Codex model discovery is an OPTIONAL enhancement
+    // and must NEVER block the global model feed. A broken/old Codex
+    // app-server was hanging this route ~30s, freezing Settings overview,
+    // the chat composer ("正在准备运行环境"), and the runtime health card.
+    // So the spawn policy now depends on the requested runtime:
+    //
+    //   - `codex_runtime` (explicit): allowed to spawn, but bounded by a
+    //     short timeout so a slow/broken app-server degrades to "no Codex
+    //     group" instead of hanging the response.
+    //   - no runtime (full catalog — Settings global selector / chat feed):
+    //     MUST NOT implicitly spawn. Serve a warm cache only; no cache →
+    //     skip the codex_account group this round.
+    //   - any other runtime filter (claude_code / codepilot_runtime): skip
+    //     Codex entirely — saves an unnecessary RPC.
+    if (runtimeFilter === 'codex_runtime') {
+      try {
+        const { buildCodexProviderModelGroup } = await import('@/lib/codex/models');
+        const codexGroup = await buildCodexProviderModelGroup({ timeoutMs: 2500 });
+        if (codexGroup) groups.push(codexGroup);
+      } catch {
+        /* degraded: Codex unreachable / timed out — no Codex group. */
+      }
+    } else if (!runtimeFilter) {
+      try {
+        const { buildCodexProviderModelGroup } = await import('@/lib/codex/models');
+        // cacheOnly — never spawn from the full-catalog path.
+        const codexGroup = await buildCodexProviderModelGroup({ cacheOnly: true });
+        if (codexGroup) groups.push(codexGroup);
+      } catch {
+        /* Codex module not available; ignore. */
+      }
+    }
+
+    // Phase 6 UI收口 P2 (2026-05-14) — every model row carries its
+    // canonical compat annotations (`supportedRuntimes` +
+    // `unsupportedReasonByRuntime`). Pickers render the full catalog
+    // and use these per-row fields to disable + tooltip incompatible
+    // rows, instead of hiding them server-side. This kills three
+    // long-standing UX problems:
+    //
+    //   1. Users couldn't tell where models went when they switched
+    //      runtimes — the picker silently dropped them.
+    //   2. The chat banner had to use a prominent red disclosure to
+    //      explain what the server filter had already done invisibly.
+    //   3. Settings models page (which already showed everything with
+    //      a separate runtime-tier filter) and the chat picker
+    //      diverged on whose responsibility it was to filter.
+    //
+    // The `?runtime=X` URL param is preserved for backward compat
+    // (Settings > Providers' global default selector uses it) and
+    // still scopes the visible rows when explicitly requested. The
+    // canonical chat picker now omits it and renders disabled rows
+    // for compat.
+    //
+    // Media rows (image / video / embedding) are still dropped at
+    // the row layer regardless of runtime — those don't belong in
+    // chat pickers period.
+    let outGroups = groups.map(g => {
+      const providerCompat = g.compat ?? 'unknown';
+      // Phase 5b (2026-05-15) — the built-in `env` Claude Code default
+      // provider is explicitly excluded from Codex Runtime parity. It
+      // routes through the Claude Code subprocess (or direct API via
+      // ANTHROPIC_API_KEY env), not through any DB-configured provider
+      // record that the Codex proxy could resolve. Keeping it in
+      // `supportedRuntimes` would surface it in the Codex Runtime
+      // picker, where selecting it would fail to send (the runtime
+      // can't translate "env" into a `x-codepilot-target-provider`
+      // header). Strip codex_runtime here so the picker can render
+      // the row disabled with a clear reason.
+      const isEnvProvider = g.provider_id === 'env';
+      const annotatedModels = g.models
+        .map(m => {
+          const cap = getModelCompat({
+            modelId: m.value,
+            upstreamModelId: m.upstreamModelId,
+            providerCompat,
+            capabilities: m.capabilities as Parameters<typeof getModelCompat>[0]['capabilities'],
+          });
+          if (cap.media) return null;
+          let supportedRuntimes = cap.supportedRuntimes;
+          let unsupportedReasonByRuntime = cap.unsupportedReasonByRuntime;
+          if (isEnvProvider && supportedRuntimes?.includes('codex_runtime')) {
+            supportedRuntimes = supportedRuntimes.filter(r => r !== 'codex_runtime');
+            unsupportedReasonByRuntime = {
+              ...(unsupportedReasonByRuntime ?? {}),
+              codex_runtime:
+                'Claude Code 默认 / env provider 不接入 Codex Runtime；改用配置好的 CodePilot provider 或 Codex Account',
+            };
+          }
+          return {
+            ...m,
+            supportedRuntimes,
+            unsupportedReasonByRuntime,
+          };
+        })
+        .filter((m): m is NonNullable<typeof m> => m !== null);
+      return { ...g, models: annotatedModels };
+    });
+    if (runtimeFilter) {
+      outGroups = outGroups.map(g => {
+        const filteredModels = g.models.filter(
+          m => m.supportedRuntimes?.includes(runtimeFilter) ?? false,
+        );
+        return { ...g, models: filteredModels };
+      }).filter(g => g.models.length > 0);
+    } else {
+      // Even when no runtime filter is requested, drop providers with
+      // zero usable models so the picker doesn't render an empty
+      // section header (e.g. a freshly-created provider with no
+      // enabled models).
+      outGroups = outGroups.filter(g => g.models.length > 0);
+    }
+
     // Determine default provider — auto-heal stale references on read
     let defaultProviderId = getDefaultProviderId();
     if (defaultProviderId && !getProvider(defaultProviderId)) {
       // Stale default (provider was deleted). Fix it now.
-      const firstValid = groups.find(g => g.provider_id !== 'env');
+      const firstValid = outGroups.find(g => g.provider_id !== 'env');
       defaultProviderId = firstValid?.provider_id || '';
       setDefaultProviderId(defaultProviderId);
     }
-    defaultProviderId = defaultProviderId || groups[0]?.provider_id || '';
+    defaultProviderId = defaultProviderId || outGroups[0]?.provider_id || '';
 
     return NextResponse.json({
-      groups,
+      groups: outGroups,
       default_provider_id: defaultProviderId,
+      // Echo back which runtime the server actually used to filter so
+      // the chat picker can surface "showing models for Claude Code
+      // Runtime" without recomputing the resolution client-side. Only
+      // populated when caller asked for filtering — Settings's global
+      // default selector (no ?runtime=) gets undefined here.
+      runtime_applied: runtimeFilter ?? undefined,
     });
   } catch (error) {
     return NextResponse.json<ErrorResponse>(

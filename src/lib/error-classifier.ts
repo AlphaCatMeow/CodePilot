@@ -16,28 +16,38 @@ const SENTRY_REPORTABLE: Set<string> = new Set([
 ]);
 
 function reportToSentry(category: string, error: unknown, extra?: Record<string, unknown>) {
-  if (!SENTRY_REPORTABLE.has(category)) return;
-  // Skip aborted operations — these are user-initiated cancellations
-  const msg = error instanceof Error ? error.message : String(error);
-  if (/abort|cancel/i.test(msg)) return;
+  // Dev-server memory guardrail (2026-05-09): even though instrumentation.ts
+  // skips Sentry.init in dev, this lazy import path would still pull
+  // `@sentry/node` + the `@opentelemetry/*` chain into Turbopack's compile
+  // graph the moment a reportable error fires (NATIVE_STREAM_ERROR /
+  // MCP_CONNECTION_ERROR / PROVIDER_NOT_APPLIED / …). One unguarded code
+  // path is enough to undo the entire dev memory cut, so we mirror the
+  // instrumentation.ts contract here. Locked in by
+  // `src/__tests__/unit/sentry-dev-guard.test.ts`.
+  if (process.env.NODE_ENV !== 'development') {
+    if (!SENTRY_REPORTABLE.has(category)) return;
+    // Skip aborted operations — these are user-initiated cancellations
+    const msg = error instanceof Error ? error.message : String(error);
+    if (/abort|cancel/i.test(msg)) return;
 
-  // Fire-and-forget async import — never blocks the classifier
-  import('@sentry/node').then((Sentry) => {
-    Sentry.withScope((scope) => {
-      scope.setTag('error.category', category);
-      scope.setTag('error.provider', (extra?.providerName as string) || 'unknown');
-      scope.setTag('error.runtime', (extra?.runtime as string) || 'unknown');
-      if (extra?.baseUrl) scope.setTag('provider.baseUrl', extra.baseUrl as string);
-      if (extra?.modelId) scope.setTag('model.id', extra.modelId as string);
-      if (extra) scope.setExtras(extra);
-      scope.setFingerprint([category, msg.slice(0, 100)]);
-      if (error instanceof Error) {
-        Sentry.captureException(error);
-      } else {
-        Sentry.captureMessage(String(error), 'error');
-      }
-    });
-  }).catch(() => { /* Sentry not available */ });
+    // Fire-and-forget async import — never blocks the classifier
+    import('@sentry/node').then((Sentry) => {
+      Sentry.withScope((scope) => {
+        scope.setTag('error.category', category);
+        scope.setTag('error.provider', (extra?.providerName as string) || 'unknown');
+        scope.setTag('error.runtime', (extra?.runtime as string) || 'unknown');
+        if (extra?.baseUrl) scope.setTag('provider.baseUrl', extra.baseUrl as string);
+        if (extra?.modelId) scope.setTag('model.id', extra.modelId as string);
+        if (extra) scope.setExtras(extra);
+        scope.setFingerprint([category, msg.slice(0, 100)]);
+        if (error instanceof Error) {
+          Sentry.captureException(error);
+        } else {
+          Sentry.captureMessage(String(error), 'error');
+        }
+      });
+    }).catch(() => { /* Sentry not available */ });
+  }
 }
 
 /**

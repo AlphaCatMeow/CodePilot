@@ -1,5 +1,7 @@
 # 官网 + 文档站（apps/site）
 
+> ⏸ **本轮重构暂缓**（见 [refactor-closeout.md](./refactor-closeout.md) "暂缓清单"）— Phase 0-3 已完成；Phase 4（packages/ui 抽取）+ Phase 5（桌面端适配 + CI/CD）等大规模官网/文档站工作不主动推进。
+
 > 创建时间：2026-03-10
 > 最后更新：2026-03-10
 

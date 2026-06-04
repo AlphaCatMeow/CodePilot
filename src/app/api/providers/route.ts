@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getAllProviders, createProvider, getSetting } from '@/lib/db';
-import { getEffectiveProviderProtocol, isValidProtocol } from '@/lib/provider-catalog';
+import { getAllProviders, createProvider, getSetting, seedCatalogModelsIfEmpty } from '@/lib/db';
+import {
+  getEffectiveProviderProtocol,
+  isValidProtocol,
+  isOpenRouterProviderRecord,
+  getCatalogDefaultModelsForRecord,
+} from '@/lib/provider-catalog';
 import type { ProviderResponse, ErrorResponse, CreateProviderRequest, ApiProvider } from '@/types';
 
 function maskApiKey(provider: ApiProvider): ApiProvider {
@@ -130,6 +135,21 @@ export async function POST(request: NextRequest) {
     }
 
     const provider = createProvider(body);
+
+    // Eager catalog seed for OpenRouter — the rest of the OpenRouter UX
+    // (success toast, search-and-add dialog, validate-models refresh)
+    // assumes the 3 default aliases (sonnet/opus/haiku) are already in
+    // `provider_models` immediately after creation. Lazy GET-time seed
+    // would leave a window where the success toast claims aliases that
+    // aren't actually present. Other provider types stay on lazy seed
+    // (their toasts don't make a per-row promise).
+    if (isOpenRouterProviderRecord(provider)) {
+      const defaults = getCatalogDefaultModelsForRecord(provider);
+      if (defaults.length > 0) {
+        seedCatalogModelsIfEmpty(provider.id, defaults);
+      }
+    }
+
     return NextResponse.json<ProviderResponse>(
       { provider: maskApiKey(provider) },
       { status: 201 }

@@ -12,9 +12,10 @@
  *
  * Ad-hoc signing order (inside-out):
  *   1. All native binaries (.node, .dylib, .so)
- *   2. All Frameworks (*.framework)
- *   3. All Helper apps (*.app inside Frameworks/)
- *   4. The main .app bundle
+ *   2. Extensionless executable helpers inside Frameworks/
+ *   3. All Frameworks (*.framework)
+ *   4. All Helper apps (*.app inside Frameworks/)
+ *   5. The main .app bundle
  */
 const fs = require('fs');
 const path = require('path');
@@ -58,6 +59,38 @@ function collectFiles(dir, extensions) {
       }
     }
   }
+  return results;
+}
+
+/**
+ * Collect executable helper binaries that do not have file extensions, such as
+ * Electron Framework.framework/.../Helpers/chrome_crashpad_handler.
+ */
+function collectExecutableHelpers(dir) {
+  const results = [];
+  if (!fs.existsSync(dir)) return results;
+
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      // Helper .app bundles are signed as bundles in a later step.
+      if (entry.name.endsWith('.app')) {
+        continue;
+      }
+      results.push(...collectExecutableHelpers(fullPath));
+    } else if (entry.isFile()) {
+      try {
+        const mode = fs.statSync(fullPath).mode;
+        if ((mode & 0o111) !== 0) {
+          results.push(fullPath);
+        }
+      } catch {
+        // Ignore files that disappear during traversal.
+      }
+    }
+  }
+
   return results;
 }
 
@@ -144,7 +177,20 @@ module.exports = async function afterSign(context) {
     console.log(`[afterSign]   Signed ${nativeBinaries.length} native binaries (.node/.dylib/.so)`);
   }
 
-  // Step 2: Sign all Frameworks
+  // Step 2: Sign executable helper binaries inside frameworks before signing
+  // framework bundles. Some Electron builds ship extensionless helper binaries
+  // (e.g. chrome_crashpad_handler), and codesign requires them to be sealed
+  // before the parent framework is signed.
+  const executableHelpers = collectExecutableHelpers(frameworksPath);
+  for (const helper of executableHelpers) {
+    codesign(helper);
+    signed++;
+  }
+  if (executableHelpers.length > 0) {
+    console.log(`[afterSign]   Signed ${executableHelpers.length} executable helper binaries`);
+  }
+
+  // Step 3: Sign all Frameworks
   const frameworks = collectBundles(frameworksPath, '.framework');
   for (const fw of frameworks) {
     codesign(fw);
@@ -154,7 +200,7 @@ module.exports = async function afterSign(context) {
     console.log(`[afterSign]   Signed ${frameworks.length} frameworks`);
   }
 
-  // Step 3: Sign all Helper apps
+  // Step 4: Sign all Helper apps
   const helperApps = collectBundles(frameworksPath, '.app');
   for (const helper of helperApps) {
     codesign(helper);
@@ -164,7 +210,7 @@ module.exports = async function afterSign(context) {
     console.log(`[afterSign]   Signed ${helperApps.length} helper apps`);
   }
 
-  // Step 4: Sign the main app bundle
+  // Step 5: Sign the main app bundle
   codesign(appPath);
   signed++;
 

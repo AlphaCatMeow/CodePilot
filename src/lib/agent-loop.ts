@@ -11,7 +11,8 @@
  */
 
 import { streamText, type LanguageModel, type ToolSet, type ModelMessage } from 'ai';
-import type { SSEEvent, TokenUsage } from '@/types';
+import type { SSEEvent, TokenUsage, MediaBlock } from '@/types';
+import { subscribeBuiltinEvents } from './harness/builtin-event-bus';
 import { createModel } from './ai-provider';
 import { assembleTools, READ_ONLY_TOOLS } from './agent-tools';
 import { reportNativeError } from './error-classifier';
@@ -121,6 +122,40 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
         controller.enqueue(formatSSE({ type: 'keep_alive', data: '' }));
       }, KEEPALIVE_INTERVAL_MS);
 
+      // Phase 5e Phase 0.5 P1 (2026-05-17) — subscribe to the harness
+      // side-channel for `tool_completed` events that built-in tools
+      // (currently `codepilot_generate_image` / `codepilot_import_media`)
+      // use to ship MediaBlock[] payloads to the chat UI. The tool's
+      // `execute()` returns plain text to the model; this listener
+      // caches the structured MediaBlock by `toolCallId` so the
+      // `case 'tool-result'` handler below can splice it into the SSE
+      // `tool_result.media` field.
+      //
+      // Subscribed BEFORE the streamText loop runs so even the very
+      // first tool call's emit lands on this listener (the bus drops
+      // emits without subscribers, no buffering — see contract note
+      // in `harness/builtin-event-bus.ts`).
+      const pendingMediaByCallId = new Map<string, MediaBlock[]>();
+
+      // Phase 7 Context Accounting — per-turn ToolInvocationAccumulator.
+      // Lives in start(controller) closure so step loop tool_use/tool_result
+      // events accumulate across all steps. Drained at result emit (line ~588).
+      const { ToolInvocationAccumulator } = await import(
+        '@/lib/harness/auto-invoke-accounting'
+      );
+      const toolInvocationAccumulator = new ToolInvocationAccumulator();
+      const unsubscribeMediaSideChannel = subscribeBuiltinEvents(
+        sessionId,
+        (event) => {
+          if (event.type !== 'tool_completed') return;
+          const media = event.media;
+          if (!media || media.length === 0) return;
+          const callId = event.toolId;
+          if (!callId) return;
+          pendingMediaByCallId.set(callId, [...media]);
+        },
+      );
+
       try {
         // 0. Sync MCP servers before assembling tools (await to avoid race condition)
         if (mcpServers && Object.keys(mcpServers).length > 0) {
@@ -163,11 +198,23 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
           toolSystemPrompts = assembled.systemPrompts;
         }
 
-        // Augment system prompt with tool-specific context snippets
-        // (notification hints, media capabilities, dashboard usage, etc.)
-        const effectiveSystemPrompt = toolSystemPrompts.length > 0 && systemPrompt
-          ? systemPrompt + '\n\n' + toolSystemPrompts.join('\n\n')
-          : systemPrompt;
+        // Phase 5d Phase 2 P1 fix (2026-05-17) — augment system
+        // prompt with tool-specific context snippets EVEN WHEN no
+        // base systemPrompt was provided. The compiler-produced
+        // tool prompts are how the model learns about capability
+        // surfaces (codepilot_load_widget_guidelines, the wire
+        // format spec, image-gen / memory / tasks rules, etc.). If
+        // the upstream caller didn't pass a base systemPrompt, we
+        // STILL need to inject the capability prompts — they're a
+        // contract the bridge layer ships, not optional decoration.
+        //
+        // Pre-fix: `length > 0 && systemPrompt ? join : systemPrompt`
+        // silently dropped toolSystemPrompts whenever the base was
+        // empty. Now both halves combine through filter(Boolean) so
+        // either side can be empty without losing the other.
+        const effectiveSystemPrompt =
+          [systemPrompt, ...toolSystemPrompts].filter(Boolean).join('\n\n') ||
+          undefined;
 
         // 1. Create model
         const { languageModel, modelId, config, isThirdPartyProxy } = createModel({
@@ -260,7 +307,7 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
             effort,
             context1m,
           });
-          const isOpus47 = sanitized.isOpus47;
+          const isOpusAdaptiveThinking = sanitized.isOpusAdaptiveThinking;
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           let providerOptions: any;
           if (config.sdkType === 'anthropic') {
@@ -297,19 +344,20 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
               if (sanitized.thinking) {
                 anthropicOpts.thinking = sanitized.thinking;
               }
-              // Gate effort on Opus 4.7 to avoid the stale effort-2025-11-24
-              // beta header the installed @ai-sdk/anthropic still attaches.
-              // Other models keep the existing effort plumbing.
-              if (sanitized.effort && !isOpus47) {
+              // Gate effort on the Opus 4.7+ family (4.7 / 4.8) to avoid the
+              // stale effort-2025-11-24 beta header the installed
+              // @ai-sdk/anthropic still attaches. Other models keep the
+              // existing effort plumbing.
+              if (sanitized.effort && !isOpusAdaptiveThinking) {
                 anthropicOpts.effort = sanitized.effort;
-              } else if (sanitized.effort && isOpus47 && step === 1) {
+              } else if (sanitized.effort && isOpusAdaptiveThinking && step === 1) {
                 // Tell the user the explicit effort they picked is being
                 // dropped for this session. Only emit on the first step so
                 // we don't spam multi-turn conversations. The UI surfaces
                 // this via the status event pipeline; ChatView can treat
                 // code=RUNTIME_EFFORT_IGNORED as a one-shot toast.
                 console.warn(
-                  `[agent-loop] Opus 4.7 on native runtime: dropping explicit effort='${sanitized.effort}' — @ai-sdk/anthropic still attaches deprecated effort-2025-11-24 beta. Switch to SDK runtime for explicit effort control on 4.7.`,
+                  `[agent-loop] Opus 4.7+ (incl. 4.8) on native runtime: dropping explicit effort='${sanitized.effort}' — @ai-sdk/anthropic still attaches deprecated effort-2025-11-24 beta. Switch to SDK runtime for explicit effort control.`,
                 );
                 controller.enqueue(formatSSE({
                   type: 'status',
@@ -317,7 +365,7 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
                     notification: true,
                     code: 'RUNTIME_EFFORT_IGNORED',
                     title: 'Effort ignored on this runtime',
-                    message: `Opus 4.7 on the native runtime can't send explicit effort yet (would ship a deprecated beta header). Using API default — switch to SDK runtime to control effort.`,
+                    message: `Opus 4.7 / 4.8 on the native runtime can't send explicit effort yet (would ship a deprecated beta header). Using API default — switch to SDK runtime to control effort.`,
                   }),
                 }));
               }
@@ -443,6 +491,12 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
                 hasToolCalls = true;
                 stepToolNames.push(event.toolName);
                 distinctTools.add(event.toolName);
+                // Phase 7 — accumulate for Context Accounting at result time.
+                toolInvocationAccumulator.recordToolUse(
+                  event.toolCallId,
+                  event.toolName,
+                  event.input,
+                );
                 controller.enqueue(formatSSE({
                   type: 'tool_use',
                   data: JSON.stringify({
@@ -453,16 +507,34 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
                 }));
                 break;
 
-              case 'tool-result':
+              case 'tool-result': {
+                // Phase 5e Phase 0.5 P1 (2026-05-17) — splice any
+                // MediaBlock the tool emitted via the harness
+                // side-channel (`harness/builtin-event-bus.ts`) into
+                // the SSE `tool_result.media` field. useSSEStream on
+                // the frontend already reads `tool_result.media` and
+                // pipes it into `MediaPreview` (the same path the
+                // Codex bridge already used). Tool text stays clean
+                // — the model only sees the plain output below, never
+                // the MediaBlock payload.
+                const media = pendingMediaByCallId.get(event.toolCallId);
+                if (media) pendingMediaByCallId.delete(event.toolCallId);
+                const resultText = typeof event.output === 'string'
+                  ? event.output
+                  : JSON.stringify(event.output);
+                // Phase 7 — accumulate for Context Accounting.
+                toolInvocationAccumulator.recordToolResult(event.toolCallId, resultText);
                 controller.enqueue(formatSSE({
                   type: 'tool_result',
                   data: JSON.stringify({
                     tool_use_id: event.toolCallId,
-                    content: typeof event.output === 'string' ? event.output : JSON.stringify(event.output),
+                    content: resultText,
                     is_error: false,
+                    ...(media && media.length > 0 ? { media } : {}),
                   }),
                 }));
                 break;
+              }
 
               case 'error':
                 controller.enqueue(formatSSE({
@@ -533,11 +605,58 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
           }));
         }
 
-        // 6. Emit result event
+        // 6. Emit result event (Phase 7 — Context Accounting Runtime Contract:
+        // collectAutoInvokeSnapshot replaces produceNativeAccountingSnapshot,
+        // unifying with ClaudeCode/Codex via auto-invoke-accounting.ts.
+        // Skills/MCP/Tools now come from real per-turn invocations accumulated
+        // during streaming, not from filesystem guesses).
+        //
+        // Context window fallback (2026-05-20): Vercel AI SDK's
+        // LanguageModelUsage doesn't expose model context window, so unlike
+        // ClaudeCode (SDKResultMessage.modelUsage) and Codex
+        // (ThreadTokenUsage.modelContextWindow) which get it from upstream,
+        // Native has no native source. Fall back to the static catalog
+        // (model-context.ts) so the popover header can show capacity for
+        // GLM / Kimi / DeepSeek / etc.
+        if (!totalUsage.context_window) {
+          try {
+            const { getContextWindow } = await import('./model-context');
+            const catalogWindow = getContextWindow(modelId);
+            if (catalogWindow && catalogWindow > 0) {
+              totalUsage.context_window = catalogWindow;
+            }
+          } catch {
+            // best-effort
+          }
+        }
+
+        let nativeAccountingSnapshot:
+          | import('@/types').RuntimeContextAccountingSnapshot
+          | undefined;
+        try {
+          const { collectAutoInvokeSnapshot, resolveWorkspaceClaudeMdRules } =
+            await import('@/lib/harness/auto-invoke-accounting');
+          nativeAccountingSnapshot = collectAutoInvokeSnapshot({
+            workspacePath: workingDirectory || process.cwd(),
+            records: toolInvocationAccumulator.drain(),
+            producedBy: 'codepilot_runtime',
+            // Native unsupported list — same as ClaudeCode (system_prompt is
+            // ai-sdk preset opaque; memory not wired; files_attachments via
+            // composer pending channel not Runtime).
+            unsupported: ['system_prompt', 'memory', 'files_attachments'],
+            resolveRulesEntry: resolveWorkspaceClaudeMdRules,
+          });
+        } catch {
+          // best-effort — snapshot omitted on producer failure
+        }
+        const usageWithAccounting =
+          totalUsage && nativeAccountingSnapshot
+            ? { ...totalUsage, context_accounting: nativeAccountingSnapshot }
+            : totalUsage;
         controller.enqueue(formatSSE({
           type: 'result',
           data: JSON.stringify({
-            usage: totalUsage,
+            usage: usageWithAccounting,
             session_id: sessionId,
             num_turns: step,
           }),
@@ -566,6 +685,12 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
         onRuntimeStatusChange?.('error');
       } finally {
         clearInterval(keepAliveTimer);
+        // Phase 5e Phase 0.5 P1 — release the side-channel listener.
+        // Leaving it attached across turns would leak MediaBlock from
+        // one turn's tool call into the next turn's UI if the same
+        // session id gets reused (see contract note in
+        // harness/builtin-event-bus.ts about cross-turn leakage).
+        unsubscribeMediaSideChannel();
         controller.enqueue(formatSSE({ type: 'done', data: '' }));
         controller.close();
       }

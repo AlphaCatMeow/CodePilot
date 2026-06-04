@@ -3,7 +3,8 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card';
-import { FolderOpen, Brain, X } from '@/components/ui/icon';
+import { X } from '@/components/ui/icon';
+import { CodePilotIcon } from '@/components/ui/semantic-icon';
 import { useTranslation } from '@/hooks/useTranslation';
 import { EGG_IMAGE_URL } from '@/lib/buddy';
 
@@ -42,24 +43,24 @@ export function ChatEmptyState({
         {/* Dual entry point cards */}
         <div className="flex flex-col sm:flex-row gap-4">
           {/* Project Chat card */}
-          <Card className="flex-1 cursor-pointer transition-colors hover:border-primary/40">
+          <Card className="flex-1 cursor-pointer">
             <CardHeader>
               <div className="flex items-center gap-2">
-                <FolderOpen size={20} className="text-primary" />
+                <CodePilotIcon name="folder_open" size="lg" className="text-primary" aria-hidden />
                 <CardTitle className="text-base">{t('chat.empty.projectChat.title')}</CardTitle>
               </div>
               <CardDescription>{t('chat.empty.projectChat.description')}</CardDescription>
             </CardHeader>
             <CardFooter>
               <Button size="sm" className="gap-1.5" onClick={onSelectFolder}>
-                <FolderOpen size={14} />
+                <CodePilotIcon name="folder_open" size="sm" aria-hidden />
                 {t('chat.empty.selectFolder')}
               </Button>
             </CardFooter>
           </Card>
 
           {/* Personal Assistant card */}
-          <Card className="flex-1 cursor-pointer transition-colors hover:border-primary/40">
+          <Card className="flex-1 cursor-pointer">
             <CardHeader>
               <div className="flex items-center gap-2">
                 <img src={EGG_IMAGE_URL} alt="" width={24} height={24} className="shrink-0" />

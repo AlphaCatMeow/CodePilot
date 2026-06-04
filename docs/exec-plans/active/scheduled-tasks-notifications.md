@@ -1,5 +1,7 @@
 # 定时任务 + 通知系统
 
+> ⚠️ **Superseded by [refactor-closeout.md](./refactor-closeout.md)** — 不再单独推进，保留作历史参考。Notification MCP / TaskScheduler / Electron 系统通知 / 管理 UI 并入 refactor-closeout 的 **Phase 3（助理、定时任务、心跳通知）**。
+
 > 创建时间：2026-03-31
 > 关联：[docs/future/scheduled-tasks-and-notifications.md](../../future/scheduled-tasks-and-notifications.md)
 > 心跳边界：[docs/exec-plans/active/memory-system-v3.md](memory-system-v3.md)

@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { X, GitCommit, CloudArrowUp } from "@/components/ui/icon";
+import { X } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/hooks/useTranslation";
 
@@ -128,7 +129,7 @@ export function CommitDialog({ cwd, open, onClose, onSuccess }: CommitDialogProp
                 onChange={() => setMode("commit")}
                 className="accent-primary"
               />
-              <GitCommit size={14} className="text-muted-foreground" />
+              <CodePilotIcon name="git_commit" size="sm" className="text-muted-foreground" aria-hidden />
               {t('topBar.commit')}
             </label>
             <label className="flex items-center gap-2 cursor-pointer text-sm">
@@ -139,7 +140,7 @@ export function CommitDialog({ cwd, open, onClose, onSuccess }: CommitDialogProp
                 onChange={() => setMode("commit-and-push")}
                 className="accent-primary"
               />
-              <CloudArrowUp size={14} className="text-muted-foreground" />
+              <CodePilotIcon name="upload_cloud" size="sm" className="text-muted-foreground" aria-hidden />
               {t('git.commitAndPush')}
             </label>
           </div>
@@ -160,9 +161,9 @@ export function CommitDialog({ cwd, open, onClose, onSuccess }: CommitDialogProp
             onClick={handleSubmit}
           >
             {mode === "commit-and-push" ? (
-              <CloudArrowUp size={14} className="mr-1.5" />
+              <CodePilotIcon name="upload_cloud" size="sm" className="mr-1.5" aria-hidden />
             ) : (
-              <GitCommit size={14} className="mr-1.5" />
+              <CodePilotIcon name="git_commit" size="sm" className="mr-1.5" aria-hidden />
             )}
             {committing
               ? t('git.loading')

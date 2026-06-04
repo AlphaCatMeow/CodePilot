@@ -7,13 +7,19 @@
  * have to be duplicated across paths and drift (which is exactly what Codex
  * flagged in the Opus 4.7 review).
  *
- * Scope for Opus 4.7 (per official migration guide):
- *   - Opus 4.7 does NOT accept manual extended thinking
+ * Scope for the Opus 4.7+ adaptive-thinking family (4.7 and 4.8, per the
+ * official migration guides — they share the same request contract):
+ *   - These models do NOT accept manual extended thinking
  *     ({ type: 'enabled', budgetTokens }) — returns 400. Convert to adaptive.
- *   - Opus 4.7 supports adaptive thinking and effort-based reasoning budget.
+ *   - They support adaptive thinking + effort-based reasoning budget.
  *     (Display=summarized can be added by callers separately.)
- *   - 1M context is the default on 4.7 — context-1m-2025-08-07 beta header
- *     is unnecessary and gets skipped.
+ *   - 1M context is the default — context-1m-2025-08-07 beta header is
+ *     unnecessary and gets skipped.
+ *
+ * NOTE on effort DEFAULT (4.7 → xhigh, 4.8 → high): that per-model default
+ * is applied by the Claude Code CLI / SDK when `effort` is left unset (see
+ * claude-client.ts ~1193), NOT here. This sanitizer only normalizes thinking
+ * + the context-1m beta; it passes `effort` through untouched.
  */
 
 export type ThinkingConfig =
@@ -40,16 +46,24 @@ export interface ClaudeModelOptionsOutput {
    *  context-1m-2025-08-07 beta header. Opus 4.7 is 1M by default and
    *  returns true only for models that still need the beta. */
   applyContext1mBeta: boolean;
-  /** Whether the input model is Opus 4.7. Exposed so callers can log or
-   *  make additional runtime-specific decisions. */
-  isOpus47: boolean;
+  /** Whether the input model is in the Opus 4.7+ adaptive-thinking family
+   *  (4.7 / 4.8). Exposed so callers can log or make additional
+   *  runtime-specific decisions. */
+  isOpusAdaptiveThinking: boolean;
 }
 
-const OPUS_4_7_PATTERN = /opus-?4-?7/i;
+// Opus 4.7 and 4.8 share the adaptive-thinking contract (no manual extended
+// thinking; 1M context by default). Add future same-family versions to the
+// `[78]` character class. Matches BOTH the dash upstream (`claude-opus-4-8`,
+// first-party) and the dotted slug (`anthropic/claude-opus-4.8`, OpenRouter):
+// OpenRouter currently routes via the OpenAI SDK, but a future Anthropic-skin
+// / provider override could send the dotted form here, so we don't rely on
+// that assumption (Codex review P2, 2026-05-29).
+const OPUS_ADAPTIVE_THINKING_PATTERN = /opus-?4[-.]?[78]/i;
 
-export function isOpus47Model(model: string | undefined): boolean {
+export function isOpusAdaptiveThinkingModel(model: string | undefined): boolean {
   if (!model) return false;
-  return OPUS_4_7_PATTERN.test(model);
+  return OPUS_ADAPTIVE_THINKING_PATTERN.test(model);
 }
 
 /**
@@ -59,32 +73,32 @@ export function isOpus47Model(model: string | undefined): boolean {
 export function sanitizeClaudeModelOptions(
   input: ClaudeModelOptionsInput,
 ): ClaudeModelOptionsOutput {
-  const isOpus47 = isOpus47Model(input.model);
+  const isOpusAdaptiveThinking = isOpusAdaptiveThinkingModel(input.model);
 
   let thinking = input.thinking;
-  if (isOpus47 && thinking) {
-    // Opus 4.7 rejects manual extended thinking. Convert to adaptive so
+  if (isOpusAdaptiveThinking && thinking) {
+    // Opus 4.7+ reject manual extended thinking. Convert to adaptive so
     // the user's "thinking enabled" intent survives without triggering
     // a 400.
     if (thinking.type === 'enabled') {
       thinking = { type: 'adaptive', display: 'summarized' };
     } else if (thinking.type === 'adaptive' && !thinking.display) {
-      // Opus 4.7 adaptive thinking defaults display to 'omitted', which
-      // means the SDK will not emit thinking deltas and CodePilot's
-      // reasoning block disappears. Explicitly request 'summarized' so
-      // users still see the reasoning UI they saw on 4.6.
+      // Adaptive thinking defaults display to 'omitted', which means the
+      // SDK will not emit thinking deltas and CodePilot's reasoning block
+      // disappears. Explicitly request 'summarized' so users still see the
+      // reasoning UI they saw on 4.6.
       thinking = { ...thinking, display: 'summarized' };
     }
   }
 
-  // Opus 4.7 ships 1M by default — the beta header is unnecessary and
+  // Opus 4.7+ ship 1M by default — the beta header is unnecessary and
   // kept out to make regression hunting cleaner.
-  const applyContext1mBeta = !!input.context1m && !isOpus47;
+  const applyContext1mBeta = !!input.context1m && !isOpusAdaptiveThinking;
 
   return {
     thinking,
     effort: input.effort as string | undefined,
     applyContext1mBeta,
-    isOpus47,
+    isOpusAdaptiveThinking,
   };
 }

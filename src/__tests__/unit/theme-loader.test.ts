@@ -80,7 +80,7 @@ describe('theme-loader: getAllThemeFamilies', () => {
     const families = getAllThemeFamilies();
     assert.ok(families.some(f => f.id === 'default'), 'default family exists');
     assert.equal(families[0].id, 'default', 'default sorts first');
-    assert.equal(families[0].light.primary, 'oklch(0.546 0.245 262.881)', 'uses hardcoded fallback');
+    assert.equal(families[0].light.primary, 'oklch(0.262 0 0)', 'uses hardcoded fallback');
   });
 
   it('handles missing themes directory gracefully', () => {

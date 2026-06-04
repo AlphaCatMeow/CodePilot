@@ -1,5 +1,12 @@
 import { defineConfig } from '@playwright/test';
 
+// Worktrees often run a side-by-side dev server on a non-default port
+// (PORT=3001/3002/...) to avoid clashing with the main directory.
+// `PLAYWRIGHT_BASE_URL` lets a one-off run target the worktree's port
+// without editing this file. Default stays at :3000 so CI / main runs
+// are unchanged.
+const baseURL = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:3000';
+
 export default defineConfig({
   testDir: './src/__tests__/e2e',
   fullyParallel: true,
@@ -8,7 +15,7 @@ export default defineConfig({
   workers: process.env.CI ? 1 : undefined,
   reporter: 'html',
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL,
     trace: 'on-first-retry',
   },
   expect: {
@@ -18,7 +25,7 @@ export default defineConfig({
   },
   webServer: {
     command: 'npm run dev',
-    url: 'http://localhost:3000',
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
   },
 });

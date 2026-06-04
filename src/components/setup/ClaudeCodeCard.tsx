@@ -135,7 +135,7 @@ export function ClaudeCodeCard({ status, onStatusChange }: ClaudeCodeCardProps) 
                   {t('setup.claude.viewCleanup')}
                 </Button>
               ) : (
-                <div className="space-y-2 border-t border-border/50 pt-2">
+                <div className="space-y-2 pt-2">
                   {claudeStatus.otherInstalls?.map((inst, i) => {
                     const cmd = getUninstallCommand(inst.type);
                     return (

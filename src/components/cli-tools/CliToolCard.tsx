@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Plus, CaretDown, Star } from "@/components/ui/icon";
+import { CaretDown } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/hooks/useTranslation";
 import type { TranslationKey } from "@/i18n";
@@ -66,83 +67,98 @@ export function CliToolCard({
     onInstall?.(tool, method);
   };
 
+  const score = computeAgentScore(tool);
+  const showInstallButton =
+    variant === 'recommended' && onInstall && availableMethods.length > 0;
+
   return (
     <div
-      className="flex items-center gap-3 rounded-lg border border-border/40 px-3 py-2.5 hover:bg-muted/50 cursor-pointer transition-colors"
+      role="button"
+      tabIndex={0}
       onClick={onDetail}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onDetail();
+        }
+      }}
+      aria-label={`${tool.name} — ${summary || t('cliTools.noDescription' as TranslationKey)}`}
+      // Canonical Settings card chrome (`docs/design.md` § Card system):
+      // rounded-lg + soft border + p-5 + bg-card. Same as Skills + MCP
+      // cards so the three plugin lists read as one continuous catalogue.
+      className="rounded-lg bg-card border border-border/50 p-5 cursor-pointer transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
-      {/* Content */}
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-2">
-          <h3 className="font-medium text-sm truncate">{tool.name}</h3>
-          {/* Category tags inline */}
-          {tool.categories.map(cat => (
-            <span
-              key={cat}
-              className="inline-block rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground shrink-0"
-            >
-              {t(`cliTools.category.${cat}` as TranslationKey)}
-            </span>
-          ))}
-          {/* Version for installed */}
-          {variant === 'installed' && runtimeInfo?.version && (
-            <span className="text-xs text-muted-foreground shrink-0">
-              v{runtimeInfo.version}
-            </span>
-          )}
-        </div>
-        <p className="text-xs text-muted-foreground mt-1.5 truncate">
-          {summary || t('cliTools.noDescription' as TranslationKey)}
-        </p>
-        {/* Agent friendliness stars */}
-        {(() => {
-          const score = computeAgentScore(tool);
-          if (score === 0) return null;
-          return (
-            <div className="flex items-center gap-1 mt-0.5">
-              <span className="text-xs text-muted-foreground">{t('cliTools.agentFriendliness' as TranslationKey)}</span>
+      <div className="flex items-center gap-2 flex-wrap">
+        <h3 className="font-medium text-sm truncate min-w-0 max-w-full">{tool.name}</h3>
+        {tool.categories.map(cat => (
+          <span
+            key={cat}
+            className="inline-flex items-center rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground shrink-0"
+          >
+            {t(`cliTools.category.${cat}` as TranslationKey)}
+          </span>
+        ))}
+        {variant === 'installed' && runtimeInfo?.version && (
+          <span className="text-[10px] text-muted-foreground shrink-0">
+            v{runtimeInfo.version}
+          </span>
+        )}
+      </div>
+
+      <p className="text-xs text-muted-foreground mt-2 leading-relaxed line-clamp-3">
+        {summary || t('cliTools.noDescription' as TranslationKey)}
+      </p>
+
+      {(score > 0 || showInstallButton) && (
+        <div className="flex items-center justify-between mt-3 gap-2">
+          {score > 0 ? (
+            <div className="flex items-center gap-1">
+              <span className="text-[10px] text-muted-foreground">{t('cliTools.agentFriendliness' as TranslationKey)}</span>
               <div className="flex gap-0.5">
                 {[1, 2, 3, 4, 5].map(i => (
-                  <Star
+                  <CodePilotIcon
                     key={i}
+                    name="favorite"
                     size={10}
-                    weight={i <= score ? 'fill' : 'regular'}
+                    strokeWidth={i <= score ? 2 : undefined}
                     className={i <= score ? 'text-primary' : 'text-muted-foreground/30'}
+                    aria-hidden
                   />
                 ))}
               </div>
             </div>
-          );
-        })()}
-      </div>
-
-      {/* Right action */}
-      {variant === 'recommended' && onInstall && availableMethods.length > 0 && (
-        <div className="shrink-0 relative">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7"
-            onClick={handleInstallClick}
-            title={t('cliTools.install')}
-          >
-            {availableMethods.length > 1
-              ? <CaretDown size={16} />
-              : <Plus size={16} />}
-          </Button>
-          {showMethodPicker && availableMethods.length > 1 && (
-            <div className="absolute right-0 top-8 z-10 rounded-md border bg-popover p-1 shadow-md min-w-[140px]">
-              {availableMethods.map(m => (
-                <Button
-                  key={m.method}
-                  variant="ghost"
-                  size="sm"
-                  className="w-full justify-start px-2 py-1 text-xs h-auto"
-                  onClick={(e) => handleMethodSelect(e, m.method)}
-                >
-                  {m.method}: {m.command}
-                </Button>
-              ))}
+          ) : (
+            <span />
+          )}
+          {showInstallButton && (
+            <div className="shrink-0 relative">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={handleInstallClick}
+                title={`${t('cliTools.install')} ${tool.name}`}
+                aria-label={`${t('cliTools.install')} ${tool.name}`}
+              >
+                {availableMethods.length > 1
+                  ? <CaretDown size={16} />
+                  : <CodePilotIcon name="plus" size="md" aria-hidden />}
+              </Button>
+              {showMethodPicker && availableMethods.length > 1 && (
+                <div className="absolute right-0 top-8 z-10 rounded-md border bg-popover p-1 shadow-md min-w-[140px]">
+                  {availableMethods.map(m => (
+                    <Button
+                      key={m.method}
+                      variant="ghost"
+                      size="sm"
+                      className="w-full justify-start px-2 py-1 text-xs h-auto"
+                      onClick={(e) => handleMethodSelect(e, m.method)}
+                    >
+                      {m.method}: {m.command}
+                    </Button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>

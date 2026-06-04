@@ -2,9 +2,11 @@
 
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { X, ArrowClockwise, CaretUp, CaretDown, ChartBar, Trash, DownloadSimple, Heart, Brain, Clock, Check, Warning, Gear } from "@/components/ui/icon";
+import { X, CaretUp, CaretDown, Clock, Check, Warning } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { showToast } from "@/hooks/useToast";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { usePanel } from "@/hooks/usePanel";
 import { useTranslation } from "@/hooks/useTranslation";
 import { ResizeHandle } from "@/components/layout/ResizeHandle";
@@ -32,8 +34,19 @@ interface AssistantSummary {
   buddy?: BuddyData;
 }
 
+/**
+ * The Dashboard / Widget surface — rendered exclusively as the
+ * Workspace Sidebar's `widget` fixed Tab. The shell + Tab strip own
+ * resize / close, so this component renders just the dashboard
+ * header (refresh, auto-refresh toggle, assistant summary) and the
+ * widget grid below.
+ *
+ * Component name kept as `DashboardPanel` for module-path stability;
+ * `WidgetTabContent` re-exports it for the Workspace Sidebar's
+ * fixed-Tab router.
+ */
 export function DashboardPanel() {
-  const { setDashboardPanelOpen, workingDirectory, isAssistantWorkspace } = usePanel();
+  const { workingDirectory, isAssistantWorkspace } = usePanel();
   const { t } = useTranslation();
   const [width, setWidth] = useState(DASHBOARD_DEFAULT_WIDTH);
   const [config, setConfig] = useState<DashboardConfig | null>(null);
@@ -242,7 +255,7 @@ export function DashboardPanel() {
     }
   }, [workingDirectory, autoRefresh]);
 
-  const widgets = config?.widgets ?? [];
+  const widgets = useMemo(() => config?.widgets ?? [], [config?.widgets]);
 
   // Stable render order: sort by ID so React never reorders DOM (preserves iframes).
   // Visual order controlled by CSS `order` based on position in config.widgets.
@@ -257,15 +270,15 @@ export function DashboardPanel() {
     return m;
   }, [widgets]);
 
-  return (
-    <div ref={panelRef} className="flex h-full shrink-0 overflow-hidden">
-      <ResizeHandle side="left" onResize={handleResize} />
-      <div
-        className="flex h-full flex-1 flex-col overflow-hidden border-r border-border/40 bg-background"
-        style={{ width }}
-      >
-        {/* Header */}
-        <div className="flex h-10 shrink-0 items-center justify-between px-3">
+  // Embedded mode (`<DashboardPanel embedded />`) renders the same
+  // header + content body but skips the outer ResizeHandle + width-
+  // constrained wrapper + border + Close button. The Workspace Sidebar
+  // Tab Bar already owns those affordances, so duplicating them here
+  // would produce two close buttons and two borders next to each other.
+  const inner = (
+    <>
+      {/* Header */}
+      <div className="flex h-10 shrink-0 items-center justify-between px-3">
           <div className="flex items-center gap-2">
             {isAssistantWorkspace ? (
               assistantSummary?.buddy ? (
@@ -290,16 +303,18 @@ export function DashboardPanel() {
           <div className="flex items-center gap-1">
             {(widgets.length > 0 || isAssistantWorkspace) && (
               <>
-                {/* Auto-refresh toggle */}
-                <button
-                  onClick={handleToggleAutoRefresh}
-                  className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-                >
+                {/* Auto-refresh toggle — shadcn Switch (size="sm")
+                    in place of the hand-rolled track + thumb so the
+                    control reads the same as Settings switches. */}
+                <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
                   <span>{t('dashboard.autoRefreshLabel')}</span>
-                  <span className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full transition-colors ${autoRefresh ? 'bg-primary' : 'bg-muted'}`}>
-                    <span className={`pointer-events-none block h-3 w-3 rounded-full bg-background shadow-sm ring-0 transition-transform mt-0.5 ${autoRefresh ? 'translate-x-3.5 ml-0' : 'translate-x-0.5'}`} />
-                  </span>
-                </button>
+                  <Switch
+                    size="sm"
+                    checked={autoRefresh}
+                    onCheckedChange={() => handleToggleAutoRefresh()}
+                    aria-label={t('dashboard.autoRefreshLabel')}
+                  />
+                </label>
                 <div className="h-4 w-px bg-border/60 mx-1" />
                 {/* Refresh all */}
                 <Button
@@ -318,20 +333,13 @@ export function DashboardPanel() {
                   disabled={refreshingAll}
                   title={t('dashboard.refresh')}
                 >
-                  <ArrowClockwise size={14} className={refreshingAll ? "animate-spin" : ""} />
+                  <CodePilotIcon name="refresh" size="sm" className={refreshingAll ? "animate-spin" : ""} aria-hidden />
                   <span className="sr-only">{t('dashboard.refresh')}</span>
                 </Button>
               </>
             )}
-            {/* Close button — always visible */}
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              onClick={() => setDashboardPanelOpen(false)}
-            >
-              <X size={14} />
-              <span className="sr-only">{t('common.close')}</span>
-            </Button>
+            {/* No close button here — the Workspace Sidebar shell's
+                collapse + Tab strip own the equivalent action. */}
           </div>
         </div>
 
@@ -348,7 +356,7 @@ export function DashboardPanel() {
               )}
               {!(isAssistantWorkspace && assistantSummary?.configured) && (
                 <div className="flex flex-col items-center justify-center flex-1 text-center text-muted-foreground">
-                  <ChartBar size={32} className="mb-3 opacity-40" />
+                  <CodePilotIcon name="chart" size="xl" className="mb-3 opacity-40" aria-hidden />
                   <p className="text-sm">{t('dashboard.empty')}</p>
                 </div>
               )}
@@ -378,11 +386,20 @@ export function DashboardPanel() {
             </div>
           )}
         </div>
+    </>
+  );
 
-      </div>
+  return (
+    <div ref={panelRef} className="flex h-full w-full flex-col overflow-hidden">
+      {inner}
     </div>
   );
 }
+
+/** Re-export for Workspace Sidebar's TabPanel router. The component
+ *  is the same as `DashboardPanel`; this alias keeps the sidebar's
+ *  fixed Tab API ergonomic. */
+export const WidgetTabContent = DashboardPanel;
 
 function DashboardWidgetCard({ widget, refreshing, isFirst, isLast, style, onRefresh, onDelete, onMove }: {
   widget: DashboardWidget;
@@ -436,7 +453,7 @@ function DashboardWidgetCard({ widget, refreshing, isFirst, isLast, style, onRef
             title={t('dashboard.refreshWidget')}
             className="h-5 w-5"
           >
-            <ArrowClockwise size={12} className={refreshing ? "animate-spin" : ""} />
+            <CodePilotIcon name="refresh" size={12} className={refreshing ? "animate-spin" : ""} aria-hidden />
           </Button>
           <Button
             variant="ghost"
@@ -454,7 +471,7 @@ function DashboardWidgetCard({ widget, refreshing, isFirst, isLast, style, onRef
             title={t('dashboard.exportWidget')}
             className="h-5 w-5"
           >
-            <DownloadSimple size={12} />
+            <CodePilotIcon name="download" size={12} aria-hidden />
           </Button>
           <Button
             variant="ghost"
@@ -463,7 +480,7 @@ function DashboardWidgetCard({ widget, refreshing, isFirst, isLast, style, onRef
             title={t('dashboard.deleteWidget')}
             className="h-5 w-5 text-muted-foreground hover:text-destructive"
           >
-            <Trash size={12} />
+            <CodePilotIcon name="delete" size={12} aria-hidden />
           </Button>
         </div>
       </div>
@@ -492,16 +509,6 @@ function getRequiredMemories(rarity: string): number {
   return reqs[rarity] || 100;
 }
 
-function rarityBorderClass(rarity: string): string {
-  switch (rarity) {
-    case 'legendary': return 'border-amber-500/30 shadow-amber-500/10 shadow-md';
-    case 'epic': return 'border-purple-500/30';
-    case 'rare': return 'border-blue-500/30';
-    case 'uncommon': return 'border-green-500/30';
-    default: return 'border-primary/10';
-  }
-}
-
 /** Built-in assistant status card — injected at the top of assistant workspace dashboards. */
 function AssistantStatusCard({ summary, t }: {
   summary: AssistantSummary;
@@ -509,12 +516,14 @@ function AssistantStatusCard({ summary, t }: {
 }) {
   const router = useRouter();
   const buddy = summary.buddy;
-  const cardBorder = buddy
-    ? rarityBorderClass(buddy.rarity)
-    : 'border-primary/10';
 
+  // Round 31.1 — outer accent ring removed entirely. User feedback:
+  // even the muted rarity ring (ring-1 / 30% alpha) read as a colored
+  // "selected" outline that broke the card's blend-in look. Rarity is
+  // still expressed via the inline rarity badge in the header (see
+  // line below — RARITY_DISPLAY stars + label inside a colored chip).
   return (
-    <div className={cn('rounded-lg border bg-primary/[0.03] p-3 space-y-3', cardBorder)}>
+    <div className={cn('rounded-xl bg-muted/20 p-4 space-y-3')}>
       {/* Header: 3D image + Name + Species + Rarity + Settings gear */}
       <div className="flex items-center gap-2">
         {buddy ? (
@@ -556,9 +565,9 @@ function AssistantStatusCard({ summary, t }: {
           variant="ghost"
           size="sm"
           className="shrink-0 text-muted-foreground text-[10px] gap-1 h-6 px-1.5"
-          onClick={() => router?.push('/settings#assistant')}
+          onClick={() => router?.push('/settings/assistant')}
         >
-          <Gear size={12} />
+          <CodePilotIcon name="settings" size={12} aria-hidden />
           {t('settings.title' as TranslationKey)}
         </Button>
       </div>
@@ -589,12 +598,12 @@ function AssistantStatusCard({ summary, t }: {
       {/* Status row — compact single line */}
       <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
         <div className="flex items-center gap-1">
-          <Heart size={11} />
+          <CodePilotIcon name="health" size={11} aria-hidden />
           <span className={`h-1.5 w-1.5 rounded-full ${summary.heartbeatEnabled ? 'bg-status-success' : 'bg-muted-foreground/30'}`} />
           <span>{t('assistant.panel.heartbeat' as TranslationKey)}</span>
         </div>
         <div className="flex items-center gap-1">
-          <Brain size={11} />
+          <CodePilotIcon name="memory" size={11} aria-hidden />
           <span>{t('assistant.panel.memories' as TranslationKey)}</span>
           <span className="text-foreground">{summary.memoryCount}</span>
         </div>

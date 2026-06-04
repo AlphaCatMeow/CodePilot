@@ -110,9 +110,42 @@ After installing or registering a tool, the --help output is automatically inclu
 When listing tools with format="json", each tool includes: agentFriendly (designed for AI agents), supportsJson (structured JSON output), supportsSchema (runtime API schema introspection), supportsDryRun (preview before mutating), contextFriendly (field masks/pagination to save context window), and healthCheckCommand (verify auth/health). Prefer agent-friendly tools; use --dry-run before destructive actions; use field masks to limit response size; use healthCheckCommand after install.
 </cli-tools-capability>`;
 
+// ── Keyword gate (shared with both ClaudeCode SDK + Codex injection paths) ──
+
+/** Regex of natural-language cues that suggest the model may want to
+ *  manage CLI tools (install / list / update / etc.) in this turn. Shared
+ *  so both runtimes inject the cli MCPs on the SAME criterion (don't
+ *  per-runtime rewrite). */
+export const CLI_TOOLS_KEYWORDS = /CLI\s*工具|cli.tool|安装.*工具|卸载.*工具|添加.*工具|更新.*工具|升级.*工具|入库.*工具|工具.*入库|加入.*工具库|添加到.*库|工具库|tool\s*library|codepilot_cli_tools|帮我装|帮我安装|帮我更新|帮我升级|\binstall\s+[@\w./-]+|\buninstall\s+[@\w./-]+|\bupdate\s+[@\w./-]+|\bupgrade\s+[@\w./-]+|brew\s+install|brew\s+upgrade|pip\s+install|pipx\s+install|npm\s+install\s+-g|npm\s+update\s+-g|cargo\s+install|apt\s+install|apt-get\s+install/i;
+
+/** Decide whether to inject the CLI tools MCP for this turn. Checks the
+ *  current prompt + optionally the prior conversation. */
+export function promptNeedsCli(
+  prompt: string,
+  conversationHistory?: ReadonlyArray<{ content: string }>,
+): boolean {
+  if (CLI_TOOLS_KEYWORDS.test(prompt)) return true;
+  if (conversationHistory?.some((m) => CLI_TOOLS_KEYWORDS.test(m.content))) return true;
+  return false;
+}
+
 // ── MCP server factory ───────────────────────────────────────────────
 
-export function createCliToolsMcpServer() {
+export interface CliToolsMcpOpts {
+  /**
+   * Optional allowlist of tool names. When set, only these tools register —
+   * everything else is filtered out. Default: all 6 tools register.
+   *
+   * Used by the Codex `codepilot_cli_tools_read` / `codepilot_cli_tools_write`
+   * routes to split safe-read tools (`list` / `check_updates`, auto_accept)
+   * from mutating tools (`install` / `add` / `remove` / `update`,
+   * user_approval) into two separate MCP servers, each with its own
+   * elicitation policy.
+   */
+  includeTools?: readonly string[];
+}
+
+export function createCliToolsMcpServer(opts?: CliToolsMcpOpts) {
   return createSdkMcpServer({
     name: 'codepilot-cli-tools',
     version: '1.0.0',
@@ -860,6 +893,6 @@ export function createCliToolsMcpServer() {
           }
         },
       ),
-    ],
+    ].filter((t) => !opts?.includeTools || opts.includeTools.includes(t.name)),
   });
 }

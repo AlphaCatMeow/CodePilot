@@ -1,11 +1,17 @@
 "use client";
 
-import { SkillsManager } from "@/components/skills/SkillsManager";
+import { useEffect } from "react";
+import { useRouter } from "next/navigation";
 
-export default function SkillsPage() {
-  return (
-    <div className="flex h-full flex-col">
-      <SkillsManager />
-    </div>
-  );
+/**
+ * Phase 2D.4 (2026-05-01): `/skills` is now a deep link into the unified
+ * `/plugins` page. Kept as a thin redirect for one release so existing
+ * bookmarks / tests don't 404; the file will be deleted in the next cleanup.
+ */
+export default function SkillsRedirect() {
+  const router = useRouter();
+  useEffect(() => {
+    router.replace("/plugins#skills");
+  }, [router]);
+  return null;
 }

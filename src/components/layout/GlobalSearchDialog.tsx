@@ -300,7 +300,7 @@ export function GlobalSearchDialog({ open, onOpenChange }: GlobalSearchDialogPro
         }}
       />
       {normalizedQuery && activeScope !== 'all' && (
-        <div className="flex items-center justify-between border-b border-primary/20 bg-primary/5 px-3 py-1.5 text-xs">
+        <div className="flex items-center justify-between bg-primary/5 px-3 py-1.5 text-xs">
           <span className="inline-flex items-center gap-1.5 text-primary">
             <span className="size-1.5 rounded-full bg-primary" />
             {t('globalSearch.activeScope', { scope: t(TYPE_LABEL_KEYS[activeScope]) })}

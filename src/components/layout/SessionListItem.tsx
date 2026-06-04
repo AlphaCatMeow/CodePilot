@@ -3,14 +3,12 @@
 import { useState } from "react";
 import Link from "next/link";
 import {
-  Trash,
   Bell,
   Columns,
   X,
   DotsThree,
-  Copy,
-  PencilSimple,
 } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -23,6 +21,7 @@ import { PromptDialog } from "@/components/ui/prompt-dialog";
 import { cn } from "@/lib/utils";
 import type { ChatSession } from "@/types";
 import type { TranslationKey } from "@/i18n";
+import { copyWithToast } from "@/lib/clipboard";
 
 interface SessionListItemProps {
   session: ChatSession;
@@ -73,32 +72,37 @@ export function SessionListItem({
       <Link
         href={`/chat/${session.id}`}
         className={cn(
-          "flex items-center gap-1.5 rounded-md pl-2 pr-2 py-1.5 transition-all duration-150 min-w-0",
+          "flex items-center gap-2 rounded-xl px-3 h-8 transition-all duration-150 min-w-0",
           isWorkspace
             ? isActive
               ? "bg-primary/[0.12] text-sidebar-accent-foreground"
-              : "text-sidebar-foreground hover:bg-primary/[0.06]"
+              : "text-sidebar-foreground hover:bg-primary/[0.10]"
             : isActive
               ? "bg-sidebar-accent text-sidebar-accent-foreground"
-              : "text-sidebar-foreground hover:bg-accent/50"
+              : "text-sidebar-foreground hover:bg-sidebar-accent"
         )}
       >
-        {/* Left icon area — streaming/approval indicators */}
-        <span className="relative flex h-3.5 w-3.5 shrink-0 items-center justify-center">
-          {isSessionStreaming && (
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-success opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-status-success" />
-            </span>
-          )}
-          {needsApproval && !isSessionStreaming && (
-            <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-status-warning-muted">
-              <Bell size={10} className="text-status-warning-foreground" />
-            </span>
-          )}
-        </span>
+        {/* Left icon area — streaming/approval indicators.
+            Skip empty 14px slot for assistant (workspace) sessions when idle:
+            助理 section 是 flat list,无父 folder,空 slot 看着像无意义缩进。
+            项目下的会话保留以维持"在 folder 内"的层级感。 */}
+        {(isSessionStreaming || needsApproval || !isWorkspace) && (
+          <span className="relative flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+            {isSessionStreaming && (
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-status-success opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-status-success" />
+              </span>
+            )}
+            {needsApproval && !isSessionStreaming && (
+              <span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-status-warning-muted">
+                <Bell size={10} className="text-status-warning-foreground" />
+              </span>
+            )}
+          </span>
+        )}
         {/* Title — flex-1 + truncate ensures it shrinks */}
-        <span className="flex-1 min-w-0 line-clamp-1 text-[13px] font-medium leading-tight break-all">
+        <span className="flex-1 min-w-0 line-clamp-1 text-[13px] font-normal leading-tight break-all">
           {session.title}
         </span>
         {/* Right area — fixed width, time or dots swap via opacity */}
@@ -146,13 +150,15 @@ export function SessionListItem({
               setRenameOpen(true);
             }}
           >
-            <PencilSimple size={14} />
+            <CodePilotIcon name="edit" size="sm" aria-hidden />
             <span>{t('chatList.renameConversation' as TranslationKey)}</span>
           </DropdownMenuItem>
           <DropdownMenuItem onClick={() => {
-            navigator.clipboard.writeText(session.id);
+            // v11 fix — see lib/clipboard.ts for why fire-and-forget
+            // writeText fails in Electron renderers post-DropdownMenu blur.
+            void copyWithToast({ text: session.id, t });
           }}>
-            <Copy size={14} />
+            <CodePilotIcon name="copy" size="sm" aria-hidden />
             <span>{t('chatList.copySessionId' as TranslationKey)}</span>
           </DropdownMenuItem>
           <DropdownMenuSeparator />
@@ -160,7 +166,7 @@ export function SessionListItem({
             variant="destructive"
             onClick={(e) => onDelete(e as unknown as React.MouseEvent, session.id)}
           >
-            <Trash size={14} />
+            <CodePilotIcon name="delete" size="sm" aria-hidden />
             <span>{t('chatList.deleteConversation' as TranslationKey)}</span>
           </DropdownMenuItem>
         </DropdownMenuContent>
@@ -230,7 +236,7 @@ export function SplitGroupSection({
                 "group relative flex items-center gap-1.5 rounded-md pl-7 pr-2 py-1.5 transition-all duration-150 min-w-0 cursor-pointer",
                 isActiveInSplit
                   ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                  : "text-sidebar-foreground hover:bg-accent/50"
+                  : "text-sidebar-foreground hover:bg-sidebar-accent/50"
               )}
               onClick={(e) => {
                 e.preventDefault();

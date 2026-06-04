@@ -7,6 +7,7 @@ export const dynamic = 'force-dynamic';
 interface DbRow {
   id: string;
   type: string;
+  provider: string;
   prompt: string;
   model: string;
   aspect_ratio: string;
@@ -62,6 +63,7 @@ function mapRow(row: DbRow) {
   return {
     id: row.id,
     type: mediaType,
+    provider: row.provider,
     prompt: row.prompt,
     images,
     model: row.model,

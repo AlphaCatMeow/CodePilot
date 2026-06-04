@@ -1,39 +1,55 @@
 'use client';
 
 import { useRef, useState, useCallback, useEffect, useMemo, type KeyboardEvent, type FormEvent } from 'react';
-import { Terminal } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { useTranslation } from '@/hooks/useTranslation';
 import type { TranslationKey } from '@/i18n';
 import {
   PromptInput,
+  PromptInputBody,
   PromptInputTextarea,
   PromptInputFooter,
   PromptInputTools,
-  PromptInputButton,
+  PromptInputActionMenu,
+  PromptInputActionMenuTrigger,
+  PromptInputActionMenuContent,
+  PromptInputActionMenuItem,
+  PromptInputActionAddAttachments,
 } from '@/components/ai-elements/prompt-input';
 import type { ChatStatus } from 'ai';
 import type { FileAttachment, MentionRef } from '@/types';
-import { SlashCommandButton } from './SlashCommandButton';
 import { SlashCommandPopover } from './SlashCommandPopover';
 import { CliToolsPopover } from './CliToolsPopover';
 import { ModelSelectorDropdown } from './ModelSelectorDropdown';
 import { EffortSelectorDropdown } from './EffortSelectorDropdown';
-import { FileAwareSubmitButton, AttachFileButton, FileTreeAttachmentBridge, FileAttachmentsCapsules, CliBadge, ComposerBadgeRow } from './MessageInputParts';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
-import { useImageGen } from '@/hooks/useImageGen';
-import { PENDING_KEY, setRefImages, deleteRefImages } from '@/lib/image-ref-store';
-import { IMAGE_AGENT_SYSTEM_PROMPT } from '@/lib/constants/image-agent-prompt';
+import { FileAwareSubmitButton, FileTreeAttachmentBridge, FileAttachmentsCapsules, CliBadge, ComposerBadgeRow, DirectoryRefsCapsules, AttachmentPendingTracker } from './MessageInputParts';
+import { useMentionTokenEstimate } from '@/hooks/useMentionTokenEstimate';
 import { dataUrlToFileAttachment } from '@/lib/file-utils';
 import { usePopoverState } from '@/hooks/usePopoverState';
-import { useProviderModels } from '@/hooks/useProviderModels';
+import { useProviderModels, isComposerProviderLoading } from '@/hooks/useProviderModels';
+import { resolveComposerModelAutoCorrect } from '@/lib/model-option-match';
+// Import from `chat-runtime-shared` (client-safe). See ChatView import
+// note + `src/lib/chat-runtime-shared.ts` doc-block. Even type-only
+// imports from `chat-runtime.ts` are risky if the build leans on
+// runtime resolution paths; the shared module is the future-proof
+// choice for any client bundle.
+import type { ChatRuntimeParam } from '@/lib/chat-runtime-shared';
 import { useCommandBadge } from '@/hooks/useCommandBadge';
 import { useCliToolsFetch } from '@/hooks/useCliToolsFetch';
 import { useSlashCommands } from '@/hooks/useSlashCommands';
-import { resolveKeyAction, cycleIndex, resolveDirectSlash, dispatchBadge, buildCliAppend, parseMentionRefs, dedupeMentionsByPath } from '@/lib/message-input-logic';
+import {
+  resolveKeyAction,
+  cycleIndex,
+  resolveDirectSlash,
+  dispatchBadge,
+  buildCliAppend,
+  parseMentionRefs,
+  dedupeMentionsByPath,
+  computePendingContextTokens,
+  computePendingContextSubTotals,
+  type PendingContextSubTotals,
+  composeSubmitPayload,
+} from '@/lib/message-input-logic';
 import { QuickActions } from './QuickActions';
 
 const MAX_MENTION_FILE_BYTES = 256 * 1024; // 256KB per @file mention
@@ -42,7 +58,7 @@ const MAX_DIRECTORY_MENTION_COUNT = 3;
 const MAX_DIRECTORY_PREVIEW_ITEMS = 30;
 
 interface MessageInputProps {
-  onSend: (content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string, mentions?: MentionRef[]) => void;
+  onSend: (content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string, mentions?: MentionRef[], selectedSkills?: readonly string[]) => void;
   onCommand?: (command: string) => void;
   onStop?: () => void;
   disabled?: boolean;
@@ -51,7 +67,21 @@ interface MessageInputProps {
   modelName?: string;
   onModelChange?: (model: string) => void;
   providerId?: string;
-  onProviderModelChange?: (providerId: string, model: string) => void;
+  /**
+   * Phase 6 P0 (2026-05-15) — `opts.isAuto` differentiates the
+   * MessageInput auto-correct fallback (model→firstCompatibleModel
+   * when the user's saved model isn't reachable under the active
+   * runtime) from a manual user pick in the dropdown. Manual picks
+   * are the only path that should clear `invalidDefault` /
+   * `noCompatibleProvider`, write to localStorage as the new
+   * "recently used", or PATCH the session row. Auto-correct just
+   * synchronises display state.
+   */
+  onProviderModelChange?: (
+    providerId: string,
+    model: string,
+    opts?: { isAuto?: boolean },
+  ) => void;
   workingDirectory?: string;
   onAssistantTrigger?: () => void;
   /** Effort selection lifted to parent for inclusion in the stream chain */
@@ -65,6 +95,34 @@ interface MessageInputProps {
   isAssistantProject?: boolean;
   /** Whether the session already has messages */
   hasMessages?: boolean;
+  /** Notify parent when the total estimated tokens of currently
+   *  attached @ mention chips changes. Used to surface "+10K 待加"
+   *  in the Run status panel before the message is sent. */
+  onPendingContextTokensChange?: (tokens: number) => void;
+  /** Phase 6 Phase 3 — per-source split of the same number. When wired
+   *  on the parent, flows through to useContextUsage so the popover's
+   *  pending kinds (files_attachments) render real per-source breakdowns.
+   *  Independent from onPendingContextTokensChange — parents may listen
+   *  to either or both. */
+  onPendingContextSubTotalsChange?: (subTotals: PendingContextSubTotals) => void;
+  /**
+   * Round 2 — Run Checkpoint blocking. When non-empty, handleSubmit
+   * silently no-ops (the active banner already explains why and
+   * carries the confirm-and-send button). Bypassed by the
+   * `run-checkpoint-confirm-send` window event so the page can
+   * trigger send from the banner without flipping this prop first.
+   */
+  blockingReasonIds?: ReadonlyArray<string>;
+  /**
+   * Phase 2 Step 3b — runtime gate for the picker feed.
+   *   - `'auto'`: new chat, follow global `agent_runtime`.
+   *   - `'claude_code'` / `'codepilot_runtime'`: existing session with
+   *     a `runtime_pin` — picker shows only what THIS session can
+   *     reach, immune to global flips.
+   * Required (no default) so a new caller can't silently inherit the
+   * old "auto = follow global, drift on flip" behavior.
+   */
+  runtime: ChatRuntimeParam;
 }
 
 function joinPath(base: string, rel: string): string {
@@ -113,25 +171,45 @@ export function MessageInput({
   onProviderModelChange,
   workingDirectory,
   onAssistantTrigger,
+  runtime,
   effort: effortProp,
   onEffortChange,
   sdkInitMeta,
   initialValue,
   isAssistantProject,
   hasMessages,
+  onPendingContextTokensChange,
+  onPendingContextSubTotalsChange,
+  blockingReasonIds,
 }: MessageInputProps) {
   const { t, locale } = useTranslation();
-  const imageGen = useImageGen();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const cliSearchRef = useRef<HTMLInputElement>(null);
+  // Run Checkpoint bypass — Round 2 (2026-04-30). When the banner's
+  // confirm action fires (via the `run-checkpoint-confirm-send` window
+  // event), we set this ref true synchronously, then programmatically
+  // re-trigger the submit button. handleSubmit reads + clears the ref
+  // on each call so the bypass only applies to the immediately-next
+  // submission.
+  const bypassBlockingRef = useRef(false);
   // Persist draft per session so switching chats doesn't lose typed text.
   const draftKey = `codepilot:draft:${sessionId || 'new'}`;
   const [inputValue, setInputValueRaw] = useState(() => {
     if (initialValue) return initialValue;
     try { return sessionStorage.getItem(draftKey) || ''; } catch { return ''; }
   });
+  // Track the last `initialValue` we've reconciled so the warm-navigation
+  // sync below fires only when the prop ACTUALLY transitions (not on every
+  // render where it's stable). State (not a ref) so the reconcile can run
+  // during render — reading a ref during render is itself a React Compiler
+  // bailout. Initialised to the mount-time `initialValue`, so the first
+  // render is a no-op and we don't double-set inputValue.
+  const [seenInitialValue, setSeenInitialValue] = useState(initialValue);
   const [mentionNodeTypes, setMentionNodeTypes] = useState<Record<string, 'file' | 'directory'>>({});
+  // Directories attached via the file tree's "+" button. Kept separate
+  // from textarea-driven `@folder` mentions so the chip lives in the
+  // green-capsule attachment row (visual parity with file/image
+  // attachments) instead of writing `@path/` text into the textarea.
+  const [directoryRefs, setDirectoryRefs] = useState<string[]>([]);
   const [badgeOrder, setBadgeOrder] = useState<Record<string, number>>({});
   const [mentionOrder, setMentionOrder] = useState<Record<string, number>>({});
   const orderSeqRef = useRef(0);
@@ -142,6 +220,53 @@ export function MessageInput({
       return next;
     });
   }, [draftKey]);
+
+  // Warm-navigation prefill sync. The `useState` initialiser above only
+  // runs at mount — if `initialValue` arrives later (e.g. /chat is already
+  // mounted and the URL changes to /chat?prefill=…, or the parent reads URL
+  // via `useSearchParams` after first paint), the textarea would otherwise
+  // stay empty. React's "adjust state when a prop changes" pattern (render
+  // time, not an effect — https://react.dev/learn/you-might-not-need-an-effect):
+  // when `initialValue` transitions to a new value we adopt it; when it goes
+  // back to empty we just record the transition so a later re-arrival of the
+  // same prefill text counts as fresh. `setInputValueRaw` (not setInputValue)
+  // because we're mid-render — the persisted-draft write happens on the next
+  // user keystroke, and a URL prefill is re-derivable from the URL anyway.
+  if (initialValue !== seenInitialValue) {
+    setSeenInitialValue(initialValue);
+    if (initialValue) {
+      setInputValueRaw(initialValue);
+    }
+  }
+
+  // Phase 4 — `codepilot:add-to-chat` listener. Selection from
+  // PreviewPanel dispatches a window event with the selected text +
+  // source metadata; we wrap the quote in a markdown blockquote and
+  // append a provenance line so the AI sees both content and source.
+  // The composer treats it as a normal prefill — the user can still
+  // edit before sending, and badge / mention parsing kicks in
+  // naturally because the appended content is plain text.
+  useEffect(() => {
+    function handle(event: Event) {
+      const detail = (event as CustomEvent).detail;
+      if (!detail || typeof detail !== 'object') return;
+      const d = detail as { text?: unknown; sourcePath?: unknown; sourceAnchor?: unknown; sourceLabel?: unknown };
+      if (typeof d.text !== 'string' || typeof d.sourcePath !== 'string') return;
+      const provenance =
+        '> [来源] ' +
+        d.sourcePath +
+        (typeof d.sourceAnchor === 'string' ? d.sourceAnchor : '') +
+        (typeof d.sourceLabel === 'string' ? ' — ' + d.sourceLabel : '');
+      const quote = d.text
+        .split(/\r?\n/)
+        .map((l) => '> ' + l)
+        .join('\n');
+      const composed = `${provenance}\n${quote}\n\n`;
+      setInputValue((prev) => (prev ? `${prev}\n\n${composed}` : composed));
+    }
+    window.addEventListener('codepilot:add-to-chat', handle);
+    return () => window.removeEventListener('codepilot:add-to-chat', handle);
+  }, [setInputValue]);
 
   const mentions = useMemo(() => {
     // Render chips only for explicitly inserted/known mentions.
@@ -169,7 +294,10 @@ export function MessageInput({
 
   // --- Extracted hooks ---
   const popover = usePopoverState(modelName);
-  const { providerGroups, currentProviderIdValue, modelOptions, currentModelOption, globalDefaultModel, globalDefaultProvider } = useProviderModels(providerId, modelName);
+  const { providerGroups, runtimeApplied, currentProviderIdValue, modelOptions, currentModelOption, globalDefaultModel, globalDefaultProvider, fetchState } = useProviderModels(providerId, modelName, runtime);
+  // P0.4 — only show "正在准备运行环境…" during the genuine first load, not
+  // on a background refetch when a sendable model is already resolved.
+  const isProviderLoading = isComposerProviderLoading(fetchState, !!currentModelOption);
 
   // Auto-correct model when it doesn't exist in the current provider's model list.
   // This prevents sending an unsupported model name (e.g. 'opus' to MiniMax which only has 'sonnet').
@@ -178,11 +306,25 @@ export function MessageInput({
   // Existing sessions must keep their own selected model; if that model becomes
   // invalid (provider changed), fall back to the provider's first model, not the
   // global default, to avoid overwriting the session's model choice.
+  //
+  // Phase 6 P0 (2026-05-15) — pass `{ isAuto: true }` so the parent's
+  // handler doesn't treat this as a manual user pick. A silent
+  // auto-correct must NOT clear `invalidDefault` /
+  // `noCompatibleProvider`, write `codepilot:last-model` /
+  // `codepilot:last-provider-id` localStorage as the new "recently
+  // used", or PATCH the session row. It just synchronises display
+  // state so the picker label and the runtime-compatible fallback
+  // pair (provider, model) agree.
   useEffect(() => {
-    if (modelName && modelOptions.length > 0 && !modelOptions.some(m => m.value === modelName)) {
-      const fallback = modelOptions[0].value;
+    // Canonical-aware auto-correct (tech-debt #37). The decision lives in a pure,
+    // unit-tested helper: a model that resolves by value OR canonical upstream is
+    // NOT corrected (the old value-only check rewrote canonical ids like
+    // `claude-opus-4-7` to the first model (Sonnet), which fed `useProviderModels`
+    // and made the send path send Sonnet). Only correct genuinely-absent models.
+    const fallback = resolveComposerModelAutoCorrect(modelName, modelOptions);
+    if (fallback !== null) {
       onModelChange?.(fallback);
-      onProviderModelChange?.(currentProviderIdValue, fallback);
+      onProviderModelChange?.(currentProviderIdValue, fallback, { isAuto: true });
     }
   }, [modelName, modelOptions, currentProviderIdValue, onModelChange, onProviderModelChange]);
 
@@ -213,7 +355,6 @@ export function MessageInput({
     inputValue,
     locale,
     textareaRef,
-    cliSearchRef,
     setCliBadge,
     setInputValue,
   });
@@ -345,6 +486,17 @@ export function MessageInput({
 
   const handleSubmit = useCallback(async (msg: { text: string; files: Array<{ type: string; url: string; filename?: string; mediaType?: string }> }, e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    // Run Checkpoint blocking — Round 2. When the page reports any
+    // active reason that requires confirmation, the send is silently
+    // dropped here. The visible RunCheckpoint banner above the
+    // composer carries the "确认并发送" action; clicking it sets
+    // `bypassBlockingRef` and re-triggers this submit, so the same
+    // user-edited content + attachments flow through unchanged.
+    if (!bypassBlockingRef.current && blockingReasonIds && blockingReasonIds.length > 0) {
+      return;
+    }
+    bypassBlockingRef.current = false;
+
     const content = inputValue.trim();
 
     popover.closePopover();
@@ -376,14 +528,6 @@ export function MessageInput({
       const parsedMentions = parseMentionRefs(inputValue, mentionNodeTypes)
         .filter((m) => !!mentionNodeTypes[m.path]);
       const dedupedMentions = dedupeMentionsByPath(parsedMentions);
-      if (dedupedMentions.length === 0) {
-        return {
-          mentions: [] as MentionRef[],
-          files: [] as FileAttachment[],
-          directoryNotes: [] as string[],
-          limitNotes: [] as string[],
-        };
-      }
 
       const mentionFiles: FileAttachment[] = [];
       const directoryNotes: string[] = [];
@@ -408,48 +552,23 @@ export function MessageInput({
         if (attachment) mentionFiles.push(attachment);
         if (limitNote) limitNotes.push(limitNote);
       }
+
+      // Merge in directories the user attached via the file-tree "+" —
+      // they don't appear in `dedupedMentions` because they're tracked
+      // outside the textarea. Same MAX_DIRECTORY_MENTION_COUNT cap
+      // applies across both sources combined.
+      for (const path of directoryRefs) {
+        if (usedDirectoryMentions >= MAX_DIRECTORY_MENTION_COUNT) {
+          limitNotes.push(`${path}/: omitted (max ${MAX_DIRECTORY_MENTION_COUNT} directories per message).`);
+          continue;
+        }
+        const summary = await fetchDirectorySummary(path);
+        if (summary) directoryNotes.push(summary);
+        usedDirectoryMentions += 1;
+      }
+
       return { mentions: dedupedMentions, files: mentionFiles, directoryNotes, limitNotes };
     };
-
-    // If Image Agent toggle is on and no badge, send via normal LLM with systemPromptAppend.
-    // PENDING_KEY is a global singleton — queuing would misattach refs, so block entirely
-    // during streaming rather than letting it fall through to the plain queue path.
-    if (imageGen.state.enabled && badges.length === 0) {
-      if (isStreaming) return; // silently block — can't safely queue image-agent prompts
-      const uploadedFiles = await convertFiles();
-      const mentionPayload = await resolveMentionPayload();
-      const files = [...uploadedFiles, ...mentionPayload.files];
-      const mentionSections: string[] = [];
-      if (mentionPayload.directoryNotes.length > 0) {
-        mentionSections.push(`[Referenced Directories]\n${mentionPayload.directoryNotes.join('\n\n')}`);
-      }
-      if (mentionPayload.limitNotes.length > 0) {
-        mentionSections.push(`[Mention Limits]\n${mentionPayload.limitNotes.map((x) => `- ${x}`).join('\n')}`);
-      }
-      const mentionAppend = mentionSections.length > 0 ? `\n\n${mentionSections.join('\n\n')}` : '';
-      const finalContent = `${content}${mentionAppend}`.trim();
-      if (!finalContent && files.length === 0) return;
-
-      // Store uploaded images as pending reference images for ImageGenConfirmation
-      const imageFiles = files.filter(f => f.type.startsWith('image/'));
-      if (imageFiles.length > 0) {
-        setRefImages(PENDING_KEY, imageFiles.map(f => ({ mimeType: f.type, data: f.data })));
-      } else {
-        deleteRefImages(PENDING_KEY);
-      }
-
-      setInputValue('');
-      if (onSend) {
-        onSend(
-          finalContent,
-          files.length > 0 ? files : undefined,
-          IMAGE_AGENT_SYSTEM_PROMPT,
-          mentionPayload.mentions.length > 0 ? content : undefined,
-          mentionPayload.mentions.length > 0 ? mentionPayload.mentions : undefined,
-        );
-      }
-      return;
-    }
 
     // If one or more badges are active, dispatch by kind (multi-skill combines).
     // Block during streaming — badges carry slash/skill semantics, not safe to queue.
@@ -457,41 +576,63 @@ export function MessageInput({
       if (isStreaming) return;
       const uploadedFiles = await convertFiles();
       const mentionPayload = await resolveMentionPayload();
-      const files = [...uploadedFiles, ...mentionPayload.files];
       const { prompt, displayLabel } = dispatchBadge(badges, content);
-      const mentionSections: string[] = [];
-      if (mentionPayload.directoryNotes.length > 0) {
-        mentionSections.push(`[Referenced Directories]\n${mentionPayload.directoryNotes.join('\n\n')}`);
-      }
-      if (mentionPayload.limitNotes.length > 0) {
-        mentionSections.push(`[Mention Limits]\n${mentionPayload.limitNotes.map((x) => `- ${x}`).join('\n')}`);
-      }
-      const mentionAppend = mentionSections.length > 0 ? `\n\n${mentionSections.join('\n\n')}` : '';
-      const finalPrompt = `${prompt}${mentionAppend}`.trim();
+      // Codex review v3 P1 fix (2026-05-20) — extract agent_skill badge
+      // labels as a structured channel for Context Accounting Phase 2.
+      // Codex v5 P1 fix (2026-05-20) — canonicalize before passing.
+      // Inline (NOT importing canonicalizeSkillName from
+      // claude-code-context-accounting): that module pulls
+      // discoverSkills → `node:fs`, which Next.js Turbopack drags into
+      // the client bundle through this import — produced "Module not
+      // found: 'fs'" 500 on /chat. Keeping canonicalize inline here is
+      // client-safe; the producer module has its own copy defensively
+      // (intentional duplication for boundary safety).
+      const canonicalizeSkillNameInline = (v: string) =>
+        v.trim().replace(/^\/+/, '');
+      const selectedSkills = badges
+        .filter((b) => b.kind === 'agent_skill')
+        .map((b) => canonicalizeSkillNameInline(b.command || b.label))
+        .filter((n) => n.length > 0);
+      // Badge path: `prompt` (dispatchBadge output) takes the content slot
+      // for the model side, but the bubble's `displayLabel` is owned by the
+      // badge dispatcher (e.g. "/agent\nuser context"), not the chip-aware
+      // displayOverride. So we use composeSubmitPayload for files +
+      // finalContent + mentions, and substitute displayLabel for the bubble.
+      const payload = composeSubmitPayload({
+        content: prompt,
+        uploadedFiles,
+        mentionPayload,
+        directoryRefs,
+      });
+      const { files, finalContent: finalPrompt } = payload;
       clearBadgesWithOrder();
       setInputValue('');
+      setDirectoryRefs([]);
       onSend(
         finalPrompt,
-        files.length > 0 ? files : undefined,
+        files.length > 0 ? files.slice() : undefined,
         undefined,
         displayLabel,
-        mentionPayload.mentions.length > 0 ? mentionPayload.mentions : undefined,
+        payload.mentions ? [...payload.mentions] : undefined,
+        selectedSkills.length > 0 ? selectedSkills : undefined,
       );
       return;
     }
 
     const uploadedFiles = await convertFiles();
     const mentionPayload = await resolveMentionPayload();
-    const files = [...uploadedFiles, ...mentionPayload.files];
-    const mentionSections: string[] = [];
-    if (mentionPayload.directoryNotes.length > 0) {
-      mentionSections.push(`[Referenced Directories]\n${mentionPayload.directoryNotes.join('\n\n')}`);
-    }
-    if (mentionPayload.limitNotes.length > 0) {
-      mentionSections.push(`[Mention Limits]\n${mentionPayload.limitNotes.map((x) => `- ${x}`).join('\n')}`);
-    }
-    const mentionAppend = mentionSections.length > 0 ? `\n\n${mentionSections.join('\n\n')}` : '';
-    const finalContent = `${content}${mentionAppend}`.trim();
+    // composeSubmitPayload owns the entire normal-path payload assembly
+    // (files ordering + mention append + finalContent trim + displayOverride
+    // decision). Single helper = one place to test, one place to change.
+    // The badge + image-agent branches above don't share this path because
+    // they mutate `prompt` (dispatchBadge) before composing finalContent.
+    const payload = composeSubmitPayload({
+      content,
+      uploadedFiles,
+      mentionPayload,
+      directoryRefs,
+    });
+    const { files, finalContent } = payload;
     const hasFiles = files.length > 0;
 
     if ((!finalContent && !hasFiles) || disabled) return;
@@ -521,16 +662,20 @@ export function MessageInput({
     const cliAppend = buildCliAppend(cliBadge);
     if (cliBadge) setCliBadge(null);
 
-    const displayOverride = mentionPayload.mentions.length > 0 ? content : undefined;
+    // displayOverride keeps the bubble's text clean — when the user
+    // attached @ mentions OR + directory chips, hide the inflated
+    // `[Referenced Directories]\n...` LLM-context section from the UI
+    // (the chips above the bubble already carry that information).
     onSend(
       finalContent || 'Please review the attached file(s).',
-      hasFiles ? files : undefined,
+      hasFiles ? files.slice() : undefined,
       cliAppend,
-      displayOverride,
-      mentionPayload.mentions.length > 0 ? mentionPayload.mentions : undefined,
+      payload.displayOverride,
+      payload.mentions ? [...payload.mentions] : undefined,
     );
     setInputValue('');
-  }, [inputValue, mentionNodeTypes, onSend, onCommand, disabled, isStreaming, popover, badges, cliBadge, imageGen, addBadgeWithOrder, clearBadgesWithOrder, setCliBadge, setInputValue, fetchDirectorySummary, fetchMentionFileAttachment]);
+    setDirectoryRefs([]);
+  }, [inputValue, mentionNodeTypes, directoryRefs, onSend, onCommand, disabled, isStreaming, popover, badges, cliBadge, addBadgeWithOrder, clearBadgesWithOrder, setCliBadge, setInputValue, fetchDirectorySummary, fetchMentionFileAttachment, blockingReasonIds]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -620,28 +765,25 @@ export function MessageInput({
           break;
       }
 
-      // CLI popover keyboard navigation (not covered by resolveKeyAction)
+      // CLI popover keyboard navigation. Filtering was removed when the
+      // in-popover search bar went away, so the list always shows the full
+      // set of detected tools — drive selection straight off cliTools.
       if (popover.popoverMode === 'cli' && cliToolsFetch.cliTools.length > 0) {
-        const q = cliToolsFetch.cliFilter.toLowerCase();
-        const filtered = cliToolsFetch.cliTools.filter(t =>
-          t.name.toLowerCase().includes(q) || t.summary.toLowerCase().includes(q)
-        );
-        if (filtered.length > 0) {
-          if (e.key === 'ArrowDown') {
-            e.preventDefault();
-            popover.setSelectedIndex((prev) => Math.min(prev + 1, filtered.length - 1));
-            return;
-          }
-          if (e.key === 'ArrowUp') {
-            e.preventDefault();
-            popover.setSelectedIndex((prev) => Math.max(prev - 1, 0));
-            return;
-          }
-          if (e.key === 'Enter') {
-            e.preventDefault();
-            if (filtered[popover.selectedIndex]) cliToolsFetch.handleCliSelect(filtered[popover.selectedIndex]);
-            return;
-          }
+        const tools = cliToolsFetch.cliTools;
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          popover.setSelectedIndex((prev) => Math.min(prev + 1, tools.length - 1));
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          popover.setSelectedIndex((prev) => Math.max(prev - 1, 0));
+          return;
+        }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          if (tools[popover.selectedIndex]) cliToolsFetch.handleCliSelect(tools[popover.selectedIndex]);
+          return;
         }
       }
     },
@@ -649,6 +791,110 @@ export function MessageInput({
   );
 
   const uniqueMentions = useMemo(() => dedupeMentionsByPath(mentions), [mentions]);
+  const mentionEstimates = useMentionTokenEstimate(uniqueMentions, { sessionId, workingDirectory });
+  // Synthetic MentionRef[] for directory chips so the estimate hook can
+  // share its caching logic. The estimates feed both the per-chip
+  // "~3.2K" label and the pending total.
+  const directoryRefMentions = useMemo<MentionRef[]>(
+    () => directoryRefs.map((path) => ({
+      path,
+      display: path,
+      nodeType: 'directory' as const,
+      sourceRange: { start: 0, end: 0 },
+    })),
+    [directoryRefs],
+  );
+  const directoryRefEstimates = useMentionTokenEstimate(directoryRefMentions, { sessionId, workingDirectory });
+  // Attachment pending tokens — summed inside an embedded child of
+  // PromptInput (where `usePromptInputAttachments` resolves) and
+  // reported up via callback. See `<AttachmentPendingTracker>` below.
+  const [attachmentPendingTokens, setAttachmentPendingTokens] = useState(0);
+  // Total context tokens that will be added by the current chip
+  // selection — shown as a "+pending" annotation in the Run status
+  // panel so the user can preview the cost before sending. Includes
+  // typed @ mentions, file-tree-attached directories, and PromptInput
+  // file attachments alike.
+  const pendingContextTokens = useMemo(
+    () => computePendingContextTokens({
+      attachmentPendingTokens,
+      uniqueMentions,
+      mentionEstimates,
+      directoryRefs,
+      directoryRefEstimates,
+    }),
+    [attachmentPendingTokens, uniqueMentions, mentionEstimates, directoryRefs, directoryRefEstimates],
+  );
+  useEffect(() => {
+    onPendingContextTokensChange?.(pendingContextTokens);
+  }, [pendingContextTokens, onPendingContextTokensChange]);
+
+  // Phase 6 Phase 3 — per-source split of the same pending pool. Mirrors
+  // computePendingContextTokens so the displayed total never disagrees
+  // with the per-source rows in the Context popover breakdown.
+  const pendingContextSubTotals = useMemo(
+    () => computePendingContextSubTotals({
+      attachmentPendingTokens,
+      uniqueMentions,
+      mentionEstimates,
+      directoryRefs,
+      directoryRefEstimates,
+    }),
+    [attachmentPendingTokens, uniqueMentions, mentionEstimates, directoryRefs, directoryRefEstimates],
+  );
+  useEffect(() => {
+    onPendingContextSubTotalsChange?.(pendingContextSubTotals);
+  }, [pendingContextSubTotals, onPendingContextSubTotalsChange]);
+
+  const removeDirectoryRef = useCallback((path: string) => {
+    setDirectoryRefs((prev) => prev.filter((p) => p !== path));
+  }, []);
+
+  // File-tree "+" on a folder dispatches `attach-directory-to-chat`
+  // (rather than writing `@path/` into the textarea) so the chip lives
+  // in the same green-capsule attachment row as files and images.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ path: string }>).detail;
+      const rawPath = detail?.path;
+      if (!rawPath) return;
+      const normalized = rawPath.replace(/\/+$/, '');
+      if (!normalized) return;
+      setDirectoryRefs((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
+    };
+    window.addEventListener('attach-directory-to-chat', handler);
+    return () => window.removeEventListener('attach-directory-to-chat', handler);
+  }, []);
+
+  // Run Checkpoint Round 2 — when the banner's confirm action fires,
+  // we set the bypass flag and programmatically click the composer's
+  // submit button. PromptInput's full submission pipeline (text +
+  // attachments + mentions) then runs unchanged; handleSubmit reads
+  // the bypass and skips its blocking-reasons check exactly once.
+  useEffect(() => {
+    const handler = () => {
+      bypassBlockingRef.current = true;
+      // Find this composer's submit button via the stable
+      // `data-message-input-submit` hook on FileAwareSubmitButton.
+      // We deliberately do NOT use aria-label — that gets i18n'd
+      // ("发送消息" in zh) so a label-based query would silently
+      // miss in non-en locales and the bypass flag would leak.
+      // (Codex P2 fix, 2026-04-30.)
+      const btn = typeof document !== 'undefined'
+        ? document.querySelector('button[data-message-input-submit]') as HTMLButtonElement | null
+        : null;
+      if (btn && !btn.disabled) {
+        btn.click();
+      } else {
+        // Submit button missing or disabled (e.g. empty input). Reset
+        // the bypass so a stale flag doesn't leak into the next
+        // user-initiated submit.
+        bypassBlockingRef.current = false;
+      }
+    };
+    window.addEventListener('run-checkpoint-confirm-send', handler);
+    return () => window.removeEventListener('run-checkpoint-confirm-send', handler);
+  }, []);
+
   const removeMention = useCallback((targetMention: MentionRef) => {
     let removedPath = '';
     let stillHasSamePath = false;
@@ -728,9 +974,13 @@ export function MessageInput({
   const currentModelValue = modelName || 'sonnet';
   const chatStatus: ChatStatus = isStreaming ? 'streaming' : 'ready';
 
+  // Composer shell bg routed through the platform token (Phase 7b /
+  // Phase 2). Default = `var(--background)` matches prior
+  // `bg-background/80`; macOS profile drops alpha so vibrancy shows
+  // through the composer hood.
   return (
-    <div className="bg-background/80 backdrop-blur-lg px-4 pt-2 pb-1">
-      <div className="mx-auto">
+    <div className="bg-[var(--platform-surface-bar)] backdrop-blur-lg px-4 pt-2 pb-1">
+      <div className="mx-auto w-full max-w-3xl">
         <div className="relative">
           {/* Slash Command / File Popover */}
           <SlashCommandPopover
@@ -740,17 +990,9 @@ export function MessageInput({
             aiSuggestions={popover.aiSuggestions}
             aiSearchLoading={popover.aiSearchLoading}
             selectedIndex={popover.selectedIndex}
-            popoverFilter={popover.popoverFilter}
-            inputValue={inputValue}
-            triggerPos={popover.triggerPos}
-            searchInputRef={searchInputRef}
             allDisplayedItems={popover.allDisplayedItems}
             onInsertItem={slashCommands.insertItem}
             onSetSelectedIndex={popover.setSelectedIndex}
-            onSetPopoverFilter={popover.setPopoverFilter}
-            onSetInputValue={setInputValue}
-            onClosePopover={popover.closePopover}
-            onFocusTextarea={() => textareaRef.current?.focus()}
           />
 
           {/* CLI Tools Popover */}
@@ -758,14 +1000,10 @@ export function MessageInput({
             <CliToolsPopover
               popoverRef={popover.popoverRef}
               cliTools={cliToolsFetch.cliTools}
-              cliFilter={cliToolsFetch.cliFilter}
               selectedIndex={popover.selectedIndex}
-              cliSearchRef={cliSearchRef}
-              onSetCliFilter={cliToolsFetch.setCliFilter}
               onSetSelectedIndex={popover.setSelectedIndex}
               onCliSelect={cliToolsFetch.handleCliSelect}
               onClosePopover={popover.closePopover}
-              onFocusTextarea={() => textareaRef.current?.focus()}
             />
           )}
 
@@ -780,16 +1018,25 @@ export function MessageInput({
             }}
           />
 
-          {/* PromptInput replaces the old input area */}
+          {/* PromptInput follows the canonical ai-elements composition:
+              Body(Textarea) + Footer(Tools + Submit). Chip rows live as
+              direct children of PromptInput so they collapse to zero DOM
+              when empty (a wrapping `PromptInputHeader` would always
+              render its addon padding even with no chips). The `+` action
+              menu folds attach / insert-slash / pick-CLI into one entry. */}
           <PromptInput
             onSubmit={handleSubmit}
             accept=""
             multiple
             onDirectoriesDropped={handleDirectoriesDropped}
+            className="[&_[data-slot=input-group]]:shadow-[var(--shadow-diffuse)]"
           >
-            {/* Bridge: listens for file tree "+" button events */}
             <FileTreeAttachmentBridge />
-            {/* Unified command + mention badges row */}
+            {/* Chip rows: each carries its own `pt-2.5 px-3 order-first`
+                so they float above the textarea via flex `order` and
+                produce zero DOM when their data is empty — wrapping them
+                in `PromptInputHeader` would re-introduce the addon's
+                always-on padding even with no chips. */}
             <ComposerBadgeRow
               badges={badges}
               mentions={uniqueMentions}
@@ -797,44 +1044,62 @@ export function MessageInput({
               mentionOrder={mentionOrder}
               onRemoveBadge={removeBadgeWithOrder}
               onRemoveMention={removeMention}
+              mentionEstimates={mentionEstimates}
             />
-            {/* CLI badge */}
             {cliBadge && (
               <CliBadge name={cliBadge.name} onRemove={removeCliBadge} />
             )}
-            {/* File attachment capsules */}
             <FileAttachmentsCapsules />
-            <PromptInputTextarea
-              ref={textareaRef}
-              placeholder={badges.length > 0 ? "Add details (optional), then press Enter..." : cliBadge ? "Describe what you want to do..." : "Message Claude..."}
-              value={inputValue}
-              onChange={(e) => slashCommands.handleInputChange(e.currentTarget.value)}
-              onKeyDown={handleKeyDown}
-              onFocus={handleAssistantFocus}
-              disabled={disabled}
-              className="min-h-10"
+            <AttachmentPendingTracker onChange={setAttachmentPendingTokens} />
+            <DirectoryRefsCapsules
+              paths={directoryRefs}
+              onRemove={removeDirectoryRef}
+              estimates={directoryRefEstimates}
             />
+
+            <PromptInputBody>
+              <PromptInputTextarea
+                ref={textareaRef}
+                placeholder={
+                  isProviderLoading
+                    ? t('messageInput.placeholderLoading' as TranslationKey)
+                    : badges.length > 0
+                      ? t('messageInput.placeholderWithBadges' as TranslationKey)
+                      : cliBadge
+                        ? t('messageInput.placeholderCli' as TranslationKey)
+                        : t('messageInput.placeholderDefault' as TranslationKey)
+                }
+                value={inputValue}
+                onChange={(e) => slashCommands.handleInputChange(e.currentTarget.value)}
+                onKeyDown={handleKeyDown}
+                onFocus={handleAssistantFocus}
+                disabled={disabled}
+                className="min-h-12 px-4 py-3"
+              />
+            </PromptInputBody>
+
             <PromptInputFooter>
               <PromptInputTools>
-                {/* Attach file button */}
-                <AttachFileButton />
+                <PromptInputActionMenu>
+                  <PromptInputActionMenuTrigger
+                    aria-label={t('messageInput.actionMenuTooltip' as TranslationKey)}
+                    tooltip={t('messageInput.actionMenuTooltip' as TranslationKey)}
+                  />
+                  <PromptInputActionMenuContent>
+                    <PromptInputActionAddAttachments
+                      label={t('messageInput.actionAddContext' as TranslationKey)}
+                    />
+                    <PromptInputActionMenuItem onSelect={() => slashCommands.handleInsertSlash()}>
+                      <CodePilotIcon name="code" size="md" className="mr-2" aria-hidden />
+                      {t('messageInput.actionInsertCommand' as TranslationKey)}
+                    </PromptInputActionMenuItem>
+                    <PromptInputActionMenuItem onSelect={() => { void cliToolsFetch.handleOpenCliPopover(); }}>
+                      <CodePilotIcon name="cli" size="md" className="mr-2" aria-hidden />
+                      {t('messageInput.actionCallCli' as TranslationKey)}
+                    </PromptInputActionMenuItem>
+                  </PromptInputActionMenuContent>
+                </PromptInputActionMenu>
 
-                {/* Slash command button */}
-                <SlashCommandButton onInsertSlash={slashCommands.handleInsertSlash} />
-
-                {/* CLI tools button */}
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <PromptInputButton onClick={cliToolsFetch.handleOpenCliPopover}>
-                      <Terminal size={16} />
-                    </PromptInputButton>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {t('cliTools.selectTool' as TranslationKey)}
-                  </TooltipContent>
-                </Tooltip>
-
-                {/* Model selector */}
                 <ModelSelectorDropdown
                   currentModelValue={currentModelValue}
                   currentProviderIdValue={currentProviderIdValue}
@@ -844,9 +1109,10 @@ export function MessageInput({
                   onProviderModelChange={onProviderModelChange}
                   globalDefaultModel={globalDefaultModel}
                   globalDefaultProvider={globalDefaultProvider}
+                  runtimeApplied={runtimeApplied}
+                  isLoading={isProviderLoading}
                 />
 
-                {/* Effort selector — only visible when model supports effort */}
                 {showEffortSelector && (
                   <EffortSelectorDropdown
                     selectedEffort={selectedEffort}
@@ -854,7 +1120,6 @@ export function MessageInput({
                     supportedEffortLevels={currentModelMeta?.supportedEffortLevels}
                   />
                 )}
-
               </PromptInputTools>
 
               <FileAwareSubmitButton
@@ -863,7 +1128,6 @@ export function MessageInput({
                 disabled={disabled}
                 inputValue={inputValue}
                 hasBadge={hasBadge}
-                isImageAgentOn={imageGen.state.enabled}
               />
             </PromptInputFooter>
           </PromptInput>

@@ -25,6 +25,8 @@ import fs from 'fs';
 import net from 'net';
 import os from 'os';
 import { TerminalManager } from './terminal-manager';
+import { sanitizeLogLine } from './log-sanitize';
+import { getTrayMenuLabels } from '../src/lib/tray-menu-labels';
 
 /**
  * Return a copy of process.env without __NEXT_PRIVATE_* variables.
@@ -189,55 +191,118 @@ async function stopBridge(): Promise<void> {
 }
 
 /**
- * Create a system tray icon for background bridge mode.
- * Called when all windows are closed but the bridge is still active.
+ * URL to load when re-creating a destroyed main window. P2 review fix
+ * (2026-05-09): this used to be `\`http://127.0.0.1:${serverPort || 3000}\``,
+ * but the production server binds to a stable range of 47823–47830, never
+ * 3000. If the tray "Open CodePilot" or `activate` (dock click) fires
+ * before `serverPort` is set — possible now that the tray is created
+ * BEFORE `await startServerOnStablePort()` resolves — the old fallback
+ * would open a window pointing at the wrong port and dead-end.
+ *
+ * Behavior:
+ *   - serverPort known → return the real URL.
+ *   - serverPort unknown → return undefined so `createWindow()` paints
+ *     the inline LOADING_HTML splash. The startup flow's
+ *     `mainWindow.loadURL(realUrl)` runs once `startServerOnStablePort()`
+ *     resolves and replaces the splash with the actual page on whichever
+ *     `mainWindow` is current at that moment.
+ *
+ * Dev path is exempt — `serverPort` is set immediately at boot from
+ * `process.env.PORT` (or 3000 default), well before any tray click could
+ * fire, so this helper safely returns the dev URL there too.
  */
-function createTray(): void {
+function chatWindowUrlForRevival(): string | undefined {
+  if (serverPort == null) return undefined;
+  return `http://127.0.0.1:${serverPort}`;
+}
+
+/**
+ * Show / focus the main window. Re-creates it if the user previously hit
+ * Cmd+Q during a hidden state and it was destroyed; otherwise just unhides
+ * an existing hidden window. Called from tray menu, tray double-click and
+ * notification clicks.
+ */
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow(chatWindowUrlForRevival());
+    return;
+  }
+  if (!mainWindow.isVisible()) mainWindow.show();
+  mainWindow.focus();
+}
+
+/**
+ * Quit the app explicitly — the only path that bypasses the close-to-hide
+ * interceptor. Triggered by the tray "Quit CodePilot" menu item.
+ */
+function quitApp(): void {
+  isQuitting = true;
+  app.quit();
+}
+
+/**
+ * Build / rebuild the tray context menu using OS-locale-derived labels.
+ * Kept as a separate function so locale changes (rare) or future menu
+ * items don't require recreating the Tray instance.
+ */
+function rebuildTrayMenu(): void {
+  if (!tray) return;
+  const locale = (() => {
+    try { return app.getLocale(); } catch { return 'en'; }
+  })();
+  const labels = getTrayMenuLabels(locale);
+  tray.setToolTip(labels.tooltip);
+  const contextMenu = Menu.buildFromTemplate([
+    { label: labels.open, click: () => showMainWindow() },
+    { type: 'separator' },
+    { label: labels.quit, click: () => quitApp() },
+  ]);
+  tray.setContextMenu(contextMenu);
+}
+
+/**
+ * Create the menubar / tray icon. Called once at app startup so the icon is
+ * present whether the main window is visible, hidden, or destroyed. Bridge
+ * state is no longer relevant — local macOS notifications and the scheduler
+ * keep running as long as the app is alive, with or without the bridge.
+ */
+function ensureTray(): void {
   if (tray) return;
 
-  const iconPath = getIconPath();
-  const trayIcon = nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 });
-  tray = new Tray(trayIcon);
-  tray.setToolTip('CodePilot — Bridge Active');
-
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: 'Open CodePilot',
-      click: () => {
-        if (BrowserWindow.getAllWindows().length === 0) {
-          createWindow(`http://127.0.0.1:${serverPort || 3000}`);
-        } else {
-          mainWindow?.focus();
-        }
-      },
-    },
-    { type: 'separator' },
-    {
-      label: 'Bridge Status: Active',
-      enabled: false,
-    },
-    { type: 'separator' },
-    {
-      label: 'Stop Bridge & Quit',
-      click: async () => {
-        await stopBridge();
-        destroyTray();
-        await killServer();
-        app.quit();
-      },
-    },
-  ]);
-
-  tray.setContextMenu(contextMenu);
-
-  // Double-click on tray icon opens the window (macOS/Windows)
-  tray.on('double-click', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow(`http://127.0.0.1:${serverPort || 3000}`);
+  let trayIcon: Electron.NativeImage;
+  if (process.platform === 'darwin') {
+    // macOS menubar: dedicated monochrome TEMPLATE image (auto-loads @2x),
+    // marked as a template so macOS tints it for light/dark menubars. Do NOT
+    // resize — the asset is already 16x16 / 32x32. Fall back to the colored
+    // app icon only if the template asset is missing (e.g. not packaged), so
+    // we never end up with an invisible menubar icon.
+    trayIcon = nativeImage.createFromPath(getTrayIconPath());
+    if (trayIcon.isEmpty()) {
+      trayIcon = nativeImage.createFromPath(getIconPath()).resize({ width: 16, height: 16 });
     } else {
-      mainWindow?.focus();
+      trayIcon.setTemplateImage(true);
     }
-  });
+  } else {
+    // Windows / Linux: keep the full-color app icon resized to tray size.
+    trayIcon = nativeImage.createFromPath(getIconPath()).resize({ width: 16, height: 16 });
+  }
+  tray = new Tray(trayIcon);
+  rebuildTrayMenu();
+
+  // Platform conventions:
+  // - macOS: single click on a menubar icon already pops the context menu
+  //   (via setContextMenu); attaching a `click` handler too would
+  //   simultaneously yank the main window forward, contradicting the
+  //   "menubar-resident, click to see menu" affordance the user expects.
+  //   So single-click is intentionally NOT bound on darwin; double-click
+  //   is the explicit "open window" gesture.
+  // - Windows / Linux: tray icons normally open the primary window on
+  //   single click and the context menu on right-click. Bind both so the
+  //   menu is reachable either way.
+  if (process.platform !== 'darwin') {
+    tray.on('click', () => showMainWindow());
+  }
+  tray.on('double-click', () => showMainWindow());
 }
 
 function destroyTray(): void {
@@ -250,11 +315,24 @@ function destroyTray(): void {
 
 /**
  * Parse notification API response. Canonical version: src/lib/bg-notify-parser.ts
+ *
+ * Phase 3 Step 3: surfaces `event_id` / `task_id` / `session_id` so the
+ * bg-poller can ack delivery and route clicks. We tolerate missing
+ * fields (older payloads / external sources) by keeping them optional.
  */
-function parseBgNotifications(json: string): Array<{ title: string; body: string; priority: string }> {
+interface BgNotificationPayload {
+  title: string;
+  body: string;
+  priority: string;
+  event_id?: string;
+  task_id?: string;
+  session_id?: string;
+}
+
+function parseBgNotifications(json: string): BgNotificationPayload[] {
   try {
     const parsed = JSON.parse(json);
-    const notifications: Array<{ title: string; body: string; priority: string }> = parsed.notifications || [];
+    const notifications: BgNotificationPayload[] = parsed.notifications || [];
     return notifications.filter((n: { title: string }) => n.title);
   } catch {
     return [];
@@ -262,20 +340,73 @@ function parseBgNotifications(json: string): Array<{ title: string; body: string
 }
 
 /**
- * Background notification poller — runs in main process when no renderer window
- * is open (tray-only mode). Drains the server-side notification queue and shows
- * native Notification directly, bypassing the renderer's useNotificationPoll.
+ * Phase 3 Step 3 — ack a delivery row from the Electron main process.
+ * Used by the bg-poller after `notification.show()` succeeds.
+ *
+ * Best effort: if the server is unreachable or the ack fails, we just
+ * log; the user-visible notification has already fired, the worst case
+ * is the delivery row stays `queued` (which the UI represents
+ * honestly as "shown, ack pending" — see v3 plan ack-loss path).
+ */
+function ackDelivery(
+  port: number,
+  payload: { event_id: string; channel: string; status: 'delivered' | 'error'; error?: string },
+): void {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const http = require('http');
+  const body = JSON.stringify(payload);
+  const req = http.request(
+    {
+      hostname: '127.0.0.1',
+      port,
+      path: '/api/tasks/notify/ack',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      },
+    },
+    () => { /* ignore response */ },
+  );
+  req.on('error', () => { /* best effort */ });
+  req.setTimeout(2000, () => { req.destroy(); });
+  req.write(body);
+  req.end();
+}
+
+/**
+ * Background notification poller — runs in the main process whenever the
+ * main window is hidden or destroyed, so local macOS notifications continue
+ * working even after the user closes the window into the menubar. When the
+ * window is visible the renderer's `useNotificationPoll` hook handles the
+ * same queue, so we self-stop to avoid duplicate delivery.
+ *
+ * This is intentionally bridge-independent: bridges (Telegram / 飞书 / QQ /
+ * Discord) are optional remote channels. Local notifications must work with
+ * just CodePilot menubar-resident, no bridge configured.
  */
 function startBgNotifyPoll(): void {
   if (bgNotifyTimer) return;
-  const port = serverPort || 3000;
 
   bgNotifyTimer = setInterval(async () => {
-    // Stop polling if a renderer window exists (frontend will handle it)
-    if (BrowserWindow.getAllWindows().length > 0) {
+    // Stop polling whenever the renderer is on screen — it will drain the
+    // queue itself via useNotificationPoll. We check `isVisible()` instead
+    // of "window count" because in the new menubar-resident model the main
+    // window stays alive (just hidden) when the user clicks close.
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
       stopBgNotifyPoll();
       return;
     }
+
+    // Re-read the port each tick. In prod the loading window is created
+    // BEFORE startServerOnStablePort() resolves; if the user closes that
+    // loading window during boot, `hide` fires and startBgNotifyPoll()
+    // runs while serverPort is still null. Caching `serverPort || 3000`
+    // at start would then pin the poller to 3000 forever, even after the
+    // real port lands. Skipping the tick keeps the timer armed; it'll
+    // succeed on the next 5s wakeup once the server is ready.
+    const port = serverPort;
+    if (!port) return;
 
     try {
       const http = await import('http');
@@ -296,16 +427,63 @@ function startBgNotifyPoll(): void {
             title: notif.title,
             body: notif.body || '',
           });
+          // #34 observability — bg (window-hidden) show path. supported=false
+          // OR no banner despite supported=true ⇒ macOS notification permission
+          // for this app (esp. an unsigned dev Electron binary) is the suspect.
+          console.log(`[notify] bg-poller OS notification: supported=${Notification.isSupported()} title=${JSON.stringify(notif.title)}`);
+          // Phase 3 Step 3: click → re-open window AND forward payload
+          // to renderer so it can route to /settings/tasks?focus=<id>
+          // (or the relevant chat session). The IPC channel is the
+          // same one notification:show uses for in-renderer display.
           notification.on('click', () => {
-            // Re-open the main window when user clicks the notification
-            if (BrowserWindow.getAllWindows().length === 0) {
-              createWindow(`http://127.0.0.1:${port}`);
+            showMainWindow();
+            if (notif.task_id || notif.session_id) {
+              mainWindow?.webContents.send('notification:click', {
+                taskId: notif.task_id,
+                sessionId: notif.session_id,
+                event_id: notif.event_id,
+              });
             }
-            mainWindow?.show();
-            mainWindow?.focus();
           });
           notification.show();
-        } catch { /* best effort */ }
+          // v6 fix (P1): unify on `electron-native`. `sendNotification`
+          // pre-writes a `electron-native` row in queued state when
+          // priority is normal/urgent; the bg-poller MUST ack THAT
+          // row, not introduce a new `electron-bg-native` channel
+          // that leaves the original queued forever. Whether the OS
+          // notification was rendered by the bg-poller (window hidden)
+          // or by the renderer's `useNotificationPoll` (window visible)
+          // is the same surface from the user's POV — one row tracking
+          // both is the honest representation.
+          if (notif.event_id) {
+            ackDelivery(port, {
+              event_id: notif.event_id,
+              channel: 'electron-native',
+              status: 'delivered',
+            });
+            // The drain consumed the queue, so the renderer (when the
+            // window returns visible) will NOT see this notification
+            // again. Mark its `renderer-toast` candidate as skipped so
+            // the UI can show "in-app toast: skipped (window hidden)"
+            // instead of perpetual queued. UPSERT semantics make this
+            // safe to call even if the row was already acked.
+            ackDelivery(port, {
+              event_id: notif.event_id,
+              channel: 'renderer-toast',
+              status: 'skipped',
+              error: 'window hidden — bg-poller delivered native notification only',
+            });
+          }
+        } catch (err) {
+          if (notif.event_id) {
+            ackDelivery(port, {
+              event_id: notif.event_id,
+              channel: 'electron-native',
+              status: 'error',
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
       }
     } catch {
       // Server may not be reachable — ignore
@@ -732,6 +910,21 @@ function getIconPath(): string {
   return path.join(process.resourcesPath, 'icon.icns');
 }
 
+/**
+ * macOS menubar Tray icon path — a DEDICATED monochrome template PNG
+ * (`trayTemplate.png`, with a sibling `trayTemplate@2x.png` that
+ * `nativeImage.createFromPath` auto-loads for retina), NOT the full-color
+ * app icon. Resizing `icon.icns` for the menubar produced a blurry,
+ * non-adapting blob and on some packaged builds no visible icon at all;
+ * a template image renders crisply and follows the light/dark menubar.
+ * Generated by scripts/gen-tray-icon.mjs. Dock/app icon stays on getIconPath().
+ */
+function getTrayIconPath(): string {
+  return isDev
+    ? path.join(process.cwd(), 'build', 'trayTemplate.png')
+    : path.join(process.resourcesPath, 'trayTemplate.png');
+}
+
 /** Inline loading HTML shown while the server starts up */
 const LOADING_HTML = `data:text/html;charset=utf-8,${encodeURIComponent(`<!DOCTYPE html>
 <html>
@@ -781,7 +974,67 @@ function createWindow(url?: string) {
 
   if (process.platform === 'darwin') {
     windowOptions.titleBarStyle = 'hiddenInset';
-    windowOptions.vibrancy = 'sidebar';
+    // Phase 7c-E — shell padding-top reduced to 8 (sides + bottom
+    // stay 16). Topbar h-10 → items center y = 8 + 20 = 28. Dot
+    // cluster center should align with items center, so
+    // trafficLightPosition.y = 28 - 7 = 21. The +7 offset is the
+    // half-height of the macOS traffic-light cluster (~14px tall);
+    // see Phase 7c plan D-3 — actual AppKit offset may be ±2px so
+    // verify with Electron screenshot before finalizing.
+    windowOptions.trafficLightPosition = { x: 20, y: 21 };
+    // macOS material POC matrix — Codex round 3 (2026-05-23).
+    // Reviewer asked for a real matrix, not single-flag guessing.
+    // Env-driven so anyone can rerun a candidate without editing src:
+    //
+    //   ELECTRON_VIBRANCY=menu|sidebar|under-window|content|fullscreen-ui|off
+    //   ELECTRON_TRANSPARENT=true|false                   (default: true)
+    //
+    // Defaults reflect what we know so far:
+    //   - `'menu'` is what /Applications/Codex.app actually uses
+    //     as its primary window material (verified in app.asar).
+    //   - `transparent: true` makes Electron honor an alpha-0
+    //     backgroundColor on macOS — required for `vibrancy` to
+    //     surface unless we go the davidcann route of native
+    //     NSVisualEffectView injection.
+    //
+    // `off` is the explicit no-vibrancy variant so the matrix can
+    // include an opaque baseline. Electron's setter accepts `null`
+    // to clear vibrancy.
+    const VIBRANCY_CANDIDATES = new Set([
+      'menu', 'sidebar', 'under-window', 'content', 'fullscreen-ui',
+      'titlebar', 'selection', 'popover', 'header', 'sheet', 'window',
+      'hud', 'tooltip', 'under-page',
+    ]);
+    const envVibrancy = process.env.ELECTRON_VIBRANCY;
+    const vibrancyChoice = envVibrancy && (VIBRANCY_CANDIDATES.has(envVibrancy) || envVibrancy === 'off')
+      ? envVibrancy
+      : 'menu';
+    const envTransparent = process.env.ELECTRON_TRANSPARENT;
+    const transparentChoice = envTransparent === 'false' ? false : true;
+
+    if (vibrancyChoice !== 'off') {
+      windowOptions.vibrancy = vibrancyChoice as Electron.BrowserWindowConstructorOptions['vibrancy'];
+    }
+    // CRITICAL: use `#00ffffff` not `#00000000`. Electron's macOS
+    // color parser has a long-standing bug where rgb=0 alpha=0 is
+    // treated as opaque white (issue #20357). `#00ffffff` (white
+    // rgb, alpha=0) is the documented workaround that actually
+    // produces a transparent backing layer.
+    windowOptions.backgroundColor = '#00ffffff';
+    windowOptions.transparent = transparentChoice;
+    windowOptions.visualEffectState = 'followWindow';
+
+    console.log('[macos-vibrancy-poc] window options:', {
+      vibrancy: vibrancyChoice,
+      transparent: transparentChoice,
+      // Mirror the actual value set above. Previously hardcoded as
+      // '#00000000' which misleadingly suggested we'd hit Electron's
+      // parser bug; the real value is '#00ffffff' (the documented
+      // workaround for issue #20357).
+      backgroundColor: windowOptions.backgroundColor,
+      titleBarStyle: 'hiddenInset',
+      hint: 'override via ELECTRON_VIBRANCY / ELECTRON_TRANSPARENT env vars',
+    });
   } else if (process.platform === 'win32') {
     windowOptions.titleBarStyle = 'hidden';
     windowOptions.titleBarOverlay = {
@@ -812,16 +1065,334 @@ function createWindow(url?: string) {
 
   mainWindow.loadURL(url || LOADING_HTML);
 
-  if (isDev) {
-    mainWindow.webContents.openDevTools();
+  // Codex round 3 + Electron issue #20357 fix — re-apply
+  // setBackgroundColor / setVibrancy AFTER loadURL. loadURL resets
+  // the chromium compositor's backing colour to opaque (this is
+  // why "constructor option only" repros white window after every
+  // navigation). Re-calling here on macOS reattaches the
+  // NSVisualEffectView. We mirror Codex.app's belt-and-braces
+  // pattern (constructor options + runtime setters).
+  if (process.platform === 'darwin') {
+    try {
+      mainWindow.setBackgroundColor('#00ffffff');
+      const v = windowOptions.vibrancy;
+      if (v) {
+        mainWindow.setVibrancy(v);
+      } else {
+        mainWindow.setVibrancy(null);
+      }
+    } catch (err) {
+      console.warn('[macos-vibrancy-poc] runtime setBackgroundColor/setVibrancy failed:', err);
+    }
   }
+
+  if (isDev) {
+    // CRITICAL: docked DevTools force the window to render with an
+    // opaque white background regardless of transparent/vibrancy
+    // settings (Electron issue #20357 comment). Always open in a
+    // detached panel so the main window can still surface vibrancy.
+    mainWindow.webContents.openDevTools({ mode: 'undocked' });
+
+    // macOS material POC diagnostic — Phase 7b Phase 2 round 3.
+    // Print platform / token / surface state to the MAIN process
+    // console (visible in the same terminal that ran electron:dev)
+    // 1.5 s after the renderer finishes loading. Keeps the loop
+    // tight: change a vibrancy or CSS value, restart Electron,
+    // read the diagnostic line, no DevTools needed.
+    //
+    // Logged keys:
+    //   - dataPlatform / dataPlatformStyle: <html> attrs from
+    //     anti-FOUC inline script — proves the cascade can see them
+    //   - electronApiPlatform: process.platform forwarded through
+    //     preload contextBridge — proves the bridge works
+    //   - bodyBg / chatListBg / topbarBg: computed background-color
+    //     on each candidate chrome surface — should read 'rgba(0,0,0,0)'
+    //     on macOS profile when vibrancy is meant to surface
+    //   - surfaceSidebarToken / surfaceBarToken: resolved CSS var
+    //     values on the root — should be `transparent` under the
+    //     darwin profile, `color-mix(...)` elsewhere
+    //   - vibrancyOption / transparentOption / backgroundColorOption:
+    //     the actual NSWindow-side options we set above
+    if (process.platform === 'darwin') {
+      mainWindow.webContents.on('did-finish-load', () => {
+        // 4 s — give Next dev time to mount lazy ChatListPanel /
+        // WorkspaceSidebar / topbar tree. The walker below is
+        // expensive on the renderer for a single fire; we don't run
+        // it on a timer.
+        setTimeout(() => {
+          mainWindow?.webContents
+            .executeJavaScript(`(() => {
+              const html = document.documentElement;
+              const cs = getComputedStyle(html);
+              // Walk every visible element, list the ones with an
+              // opaque background. ANY opaque ancestor inside
+              // <body> covers the NSVisualEffectView. The earlier
+              // diag only checked five named surfaces — that's not
+              // enough; if even one wrapper (#__next, an error
+              // boundary, a portal root, ThemeProvider div) is
+              // opaque, vibrancy never surfaces.
+              const opaqueOffenders = [];
+              const all = document.querySelectorAll('*');
+              for (const el of all) {
+                const s = getComputedStyle(el);
+                const bg = s.backgroundColor;
+                if (!bg || bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent') continue;
+                // Treat anything with non-zero alpha as opaque enough
+                // to block the material underneath.
+                const m = bg.match(/rgba?\\(([^)]+)\\)/);
+                if (!m) continue;
+                const parts = m[1].split(',').map((p) => parseFloat(p.trim()));
+                const alpha = parts.length === 4 ? parts[3] : 1;
+                if (alpha < 0.05) continue;
+                const rect = el.getBoundingClientRect();
+                if (rect.width < 10 || rect.height < 10) continue;
+                opaqueOffenders.push({
+                  tag: el.tagName.toLowerCase(),
+                  // Truncate so the log stays readable
+                  cls: (el.className?.toString() || '').slice(0, 120),
+                  id: el.id || null,
+                  bg,
+                  w: Math.round(rect.width),
+                  h: Math.round(rect.height),
+                });
+              }
+              // Cap to top 30 by area so we don't flood the log
+              opaqueOffenders.sort((a, b) => (b.w * b.h) - (a.w * a.h));
+              return {
+                dataPlatform: html.getAttribute('data-platform'),
+                dataShell: html.getAttribute('data-shell'),
+                dataPlatformStyle: html.getAttribute('data-platform-style'),
+                electronApiPlatform: window.electronAPI?.versions?.platform ?? null,
+                htmlBg: cs.backgroundColor,
+                bodyBg: getComputedStyle(document.body).backgroundColor,
+                surfaceSidebarToken: cs.getPropertyValue('--platform-surface-sidebar').trim(),
+                surfaceBarToken: cs.getPropertyValue('--platform-surface-bar').trim(),
+                opaqueElementCount: opaqueOffenders.length,
+                top30OpaqueOffenders: opaqueOffenders.slice(0, 30),
+              };
+            })()`)
+            .then((r) => {
+              console.log('[macos-vibrancy-diag] renderer state:', JSON.stringify(r, null, 2));
+              console.log('[macos-vibrancy-diag] window options:', JSON.stringify({
+                vibrancyOption: windowOptions.vibrancy,
+                transparentOption: windowOptions.transparent,
+                backgroundColorOption: windowOptions.backgroundColor,
+                visualEffectStateOption: windowOptions.visualEffectState,
+                titleBarStyle: windowOptions.titleBarStyle,
+              }, null, 2));
+            })
+            .catch((err) => {
+              console.warn('[macos-vibrancy-diag] failed:', err?.message ?? err);
+            });
+        }, 4000);
+      });
+    }
+  }
+
+  // Menubar-resident behavior: clicking close hides the window instead of
+  // quitting the app. Only `isQuitting` (set by the tray "Quit CodePilot"
+  // menu item or by `before-quit`) lets the close go through to a real
+  // teardown. The scheduler and local notifications keep running while
+  // hidden — see startBgNotifyPoll().
+  mainWindow.on('close', (event) => {
+    if (isQuitting) return;
+    event.preventDefault();
+    mainWindow?.hide();
+  });
+
+  // When the window goes hidden, hand off notification polling to the main
+  // process (the renderer's useNotificationPoll may be throttled by Chromium
+  // background heuristics on hidden BrowserWindows). When it returns visible,
+  // the renderer takes over and the main-process poller self-stops.
+  mainWindow.on('hide', () => { startBgNotifyPoll(); });
+  mainWindow.on('show', () => { stopBgNotifyPoll(); });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
 }
 
+/**
+ * Phase 2C.6 + follow-ups: persistent log file for the main process.
+ * `app.getPath('logs')` resolves to `~/Library/Logs/{appName}` on macOS,
+ * `%APPDATA%\{appName}\logs` on Windows, `~/.config/{appName}/logs` on
+ * Linux. Electron creates the dir lazily; we capture console.log /
+ * console.warn / console.error output, run each line through
+ * `sanitizeLogLine`, and append to a file in that dir so users can
+ * grab it when filing an issue. About → "打开日志文件夹" opens the
+ * directory (not a specific file) so all of the below are visible.
+ *
+ * Three filenames live in the directory:
+ *   - `codepilot-main.log`
+ *       Canonical, fully-sanitized log. About promises this is the
+ *       safe-to-share file. Used as the active stream when rotation
+ *       has either already completed (marker present) or completes
+ *       successfully this run.
+ *   - `codepilot-main.unsanitized-legacy.log`
+ *       Pre-sanitizer raw history rotated out on first activation.
+ *       Kept for forensic / archive purposes; never appended to once
+ *       rotation completes. Users can delete it manually.
+ *   - `codepilot-main-sanitized.log`
+ *       Per-session fallback used when rotation FAILS this run (FS
+ *       readonly, permission denied, etc). The canonical filename
+ *       still contains pre-sanitizer content in that case, so we
+ *       open the stream on this parallel file instead — the user's
+ *       "已脱敏" promise stays honest. Once a future launch rotates
+ *       successfully, writes go back to canonical and this file is
+ *       no longer used (left in place for the user to clean up or
+ *       attach as needed).
+ *
+ * Rotation marker — `.codepilot-sanitized` — pins the migration as
+ * a one-shot. Written ONLY when rotation completed (or no rotation
+ * was needed). On rotation failure the marker is intentionally NOT
+ * written, so the next launch retries from scratch.
+ *
+ * No size-based rotation: the file is bounded by user session length
+ * + how often they restart, not by retention. Add log4js-style
+ * rotation later if real-world files grow uncomfortably large.
+ */
+function setupPersistentMainLog() {
+  try {
+    const logsDir = app.getPath('logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    const logFile = path.join(logsDir, 'codepilot-main.log');
+    const sanitizedMarker = path.join(logsDir, '.codepilot-sanitized');
+    const legacyFile = path.join(logsDir, 'codepilot-main.unsanitized-legacy.log');
+
+    // One-time rotation. Pre-sanitizer builds appended raw lines to
+    // `codepilot-main.log`. Now that About promotes the file as the
+    // headline support entry and tells users it's auto-scrubbed, we
+    // must not point that promise at a file with mixed history.
+    // First time the sanitizer runs in a given logs dir, rename the
+    // existing live file to `.unsanitized-legacy.log` and start a
+    // fresh, fully-sanitized `codepilot-main.log`. The marker file
+    // pins this as a one-shot — subsequent starts skip rotation.
+    //
+    // **Marker is only written on success.** If rename / append /
+    // unlink fails (permission denied, readonly FS), do NOT write
+    // the marker — next launch will retry. Writing the marker after
+    // a failed rotation would permanently strand the live file in a
+    // mixed-content state while About's "已脱敏" copy still points
+    // at it.
+    const liveFileExisted = fs.existsSync(logFile);
+    const markerExisted = fs.existsSync(sanitizedMarker);
+    // Rotation is "completed" when there's nothing to rotate (fresh
+    // install) or a previous run already wrote the marker. Otherwise
+    // it stays false until the rename / append succeeds *this* run.
+    let rotationCompleted = !liveFileExisted || markerExisted;
+
+    if (liveFileExisted && !markerExisted) {
+      try {
+        if (fs.existsSync(legacyFile)) {
+          // Defensive: legacy file already exists from some earlier
+          // partial rotation. Append the suspect content to it then
+          // unlink the live file so we still start clean.
+          const buf = fs.readFileSync(logFile);
+          fs.appendFileSync(legacyFile, buf);
+          fs.unlinkSync(logFile);
+        } else {
+          fs.renameSync(logFile, legacyFile);
+        }
+        rotationCompleted = true;
+      } catch {
+        // Rotation failed. Skip marker write; next launch retries.
+      }
+    }
+
+    if (rotationCompleted && !markerExisted) {
+      try {
+        fs.writeFileSync(
+          sanitizedMarker,
+          `Sanitizer activated at ${new Date().toISOString()}.\n` +
+          (liveFileExisted
+            ? `Pre-sanitizer log content rotated to ${legacyFile}.\n`
+            : `Started with no prior log file.\n`),
+        );
+      } catch { /* marker write failures are tolerable */ }
+    }
+
+    // Decide where THIS session writes. If rotation failed this run
+    // the live `codepilot-main.log` may still contain pre-sanitizer
+    // raw lines; appending sanitized output to it would produce a
+    // mixed file that contradicts About's "已脱敏" promise. Switch
+    // to a parallel `codepilot-main-sanitized.log` instead — the
+    // user opens the folder via About and sees both files (the old
+    // mixed one + the new clean one). Once a future launch
+    // successfully rotates, this fallback is no longer needed and
+    // writes go back to the canonical filename.
+    const sanitizedFallbackFile = path.join(logsDir, 'codepilot-main-sanitized.log');
+    const activeLogFile = rotationCompleted ? logFile : sanitizedFallbackFile;
+
+    const stream = fs.createWriteStream(activeLogFile, { flags: 'a' });
+    const sessionMarker = rotationCompleted
+      ? `\n=== session start ${new Date().toISOString()} (sanitized) ===\n`
+      : `\n=== session start ${new Date().toISOString()} (sanitized — fallback file; rotation pending) ===\n`;
+    stream.write(sessionMarker);
+
+    const origLog = console.log.bind(console);
+    const origWarn = console.warn.bind(console);
+    const origError = console.error.bind(console);
+
+    const fmt = (level: string, args: unknown[]): string => {
+      const ts = new Date().toISOString();
+      const msg = args
+        .map((a) => {
+          if (typeof a === 'string') return a;
+          if (a instanceof Error) return a.stack || a.message;
+          try { return JSON.stringify(a); } catch { return String(a); }
+        })
+        .join(' ');
+      // Phase 2C.6 follow-up: scrub before append. About promotes
+      // this file as the primary support entry, so leaking a key /
+      // bearer token / home path here would be a credential leak
+      // channel. Stdout (terminal output the dev sees) stays raw —
+      // only the on-disk copy that the user might attach to an
+      // issue gets sanitized.
+      const sanitized = sanitizeLogLine(msg);
+      return `${ts} [${level}] ${sanitized}\n`;
+    };
+
+    console.log = (...args: unknown[]) => { stream.write(fmt('log', args)); origLog(...args); };
+    console.warn = (...args: unknown[]) => { stream.write(fmt('warn', args)); origWarn(...args); };
+    console.error = (...args: unknown[]) => { stream.write(fmt('error', args)); origError(...args); };
+  } catch (err) {
+    // Logging is best-effort — don't block app startup if disk is full / readonly.
+
+    console.warn('Failed to set up persistent main log:', err);
+  }
+}
+
+// ── Single-instance lock (Windows multi-tray / multi-process feedback) ──────
+// Without this, relaunching CodePilot (double-clicking the shortcut, reopening
+// from the tray, etc.) starts a SECOND main process — each with its own tray
+// icon and background Next server — which is the duplicate-tray + multiple-
+// background-task report on Windows. Acquire the lock before app init; a losing
+// second instance quits immediately and hands focus back to the primary via the
+// 'second-instance' event. macOS already single-instances .app bundles, so the
+// lock is a harmless no-op there.
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  // Not the primary — bail before spinning up a duplicate tray/server. A bare
+  // app.quit() is correct here; do NOT set isQuitting (that flag drives the
+  // PRIMARY's teardown path).
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    // User tried to launch another copy — surface the existing window instead
+    // (respects the menubar-resident hide-on-close model).
+    showMainWindow();
+  });
+}
+
 app.whenReady().then(async () => {
+  // A losing second instance is on its way out via app.quit() above — don't
+  // initialize tray/server/windows in it.
+  if (!gotSingleInstanceLock) return;
+
+  // Set up persistent main-process log first so subsequent startup
+  // logs (env load, ABI check, server boot) are captured.
+  setupPersistentMainLog();
+
   // Load user's full shell environment (API keys, PATH, etc.)
   userShellEnv = loadUserShellEnv();
 
@@ -1337,6 +1908,18 @@ app.whenReady().then(async () => {
     return shell.openPath(folderPath);
   });
 
+  // Phase 2C.6 follow-up: expose the persistent log directory to the
+  // renderer so About → "打开日志文件夹" can route the user there. The
+  // path is platform-specific; resolved lazily on first call so it
+  // matches whatever `setupPersistentMainLog` actually wrote to.
+  ipcMain.handle('app:get-log-path', async () => {
+    try {
+      return app.getPath('logs');
+    } catch {
+      return null;
+    }
+  });
+
   // Bridge status IPC
   ipcMain.handle('bridge:is-active', async () => {
     return isBridgeActive();
@@ -1584,21 +2167,42 @@ app.whenReady().then(async () => {
   // --- End terminal IPC handlers ---
 
   // --- Notification IPC handler ---
+  // Phase 3 Step 3: payload extended with `taskId` / `sessionId` /
+  // `event_id` so a click → re-open + route to /settings/tasks?focus=…
+  // works whether the notification was rendered here (window visible)
+  // or by the bg-poller (window hidden). The legacy `onClick` field is
+  // kept for backward compatibility with non-task notifications.
   ipcMain.handle('notification:show', async (_event, options: {
     title: string;
     body: string;
     onClick?: { type: string; payload: string };
+    taskId?: string;
+    sessionId?: string;
+    event_id?: string;
   }) => {
     try {
       const notification = new Notification({
         title: options.title,
         body: options.body || '',
       });
-      if (options.onClick) {
+      // #34 observability — renderer (window-visible) show path. On macOS the
+      // OS banner is SUPPRESSED while the app is focused (focused=true) — the
+      // in-app toast from useNotificationPoll is the visible fallback there.
+      console.log(`[notify] notification:show renderer path: supported=${Notification.isSupported()} focused=${mainWindow?.isFocused() ?? 'n/a'} title=${JSON.stringify(options.title)}`);
+      const hasTaskPayload = !!(options.taskId || options.sessionId);
+      if (options.onClick || hasTaskPayload) {
         notification.on('click', () => {
           mainWindow?.show();
           mainWindow?.focus();
-          mainWindow?.webContents.send('notification:click', options.onClick);
+          if (hasTaskPayload) {
+            mainWindow?.webContents.send('notification:click', {
+              taskId: options.taskId,
+              sessionId: options.sessionId,
+              event_id: options.event_id,
+            });
+          } else if (options.onClick) {
+            mainWindow?.webContents.send('notification:click', options.onClick);
+          }
         });
       }
       notification.show();
@@ -1627,10 +2231,22 @@ app.whenReady().then(async () => {
       console.log(`Dev mode: connecting to http://127.0.0.1:${port}`);
       serverPort = port;
       createWindow(`http://127.0.0.1:${port}`);
+      ensureTray();
     } else {
       // Show window immediately with loading screen so user sees progress
       // even if port acquisition takes a moment.
       createWindow();
+
+      // P2 review fix (2026-05-09): create the tray BEFORE awaiting
+      // server ready. The promise the menubar-resident model makes is
+      // "the icon is there from app launch" — if the user closes the
+      // loading window mid-boot, hide-on-close keeps mainWindow alive
+      // but the user needs a visible re-entry path; without the tray
+      // they're staring at an app with no icon and no window. Tray
+      // doesn't depend on serverPort to draw — its only server-touching
+      // action is showMainWindow(), which now handles "no port yet"
+      // by showing a loading screen instead of pinning to 3000.
+      ensureTray();
 
       // startServerOnStablePort actually binds the subprocess on each
       // candidate port and advances on EADDRINUSE — closing the TOCTOU
@@ -1671,49 +2287,63 @@ app.whenReady().then(async () => {
   }
 });
 
-app.on('window-all-closed', async () => {
-  // If bridge is active, keep the server running and show a tray icon
-  const bridgeActive = await isBridgeActive();
-  if (bridgeActive) {
-    console.log('Bridge is active — keeping server alive in background with tray icon');
-    createTray();
-    // Start background notification polling since no renderer will be available
-    startBgNotifyPoll();
-    return;
-  }
-
-  destroyTray();
-  await killServer();
-  if (process.platform !== 'darwin') {
-    app.quit();
+app.on('window-all-closed', () => {
+  // In the menubar-resident model, `close` is intercepted on the main
+  // window and turns into `hide()` instead of a real destroy. So this
+  // event only fires when the user explicitly chose "Quit CodePilot"
+  // from the tray menu (which sets `isQuitting=true` then calls
+  // `app.quit()` → `before-quit` does the real teardown).
+  //
+  // We deliberately do NOT call `app.quit()` here on non-Darwin: that
+  // would defeat the menubar-resident promise on Windows / Linux where
+  // the tray icon must keep the app alive after the last window goes
+  // away. Real shutdown happens from the tray Quit item.
+  if (!isQuitting) {
+    // Defensive: should not be reachable while the close-to-hide handler
+    // is in place, but log if we ever get here so regressions are loud.
+    console.warn('[lifecycle] window-all-closed fired without isQuitting — menubar-resident may be broken');
   }
 });
 
 app.on('activate', async () => {
-  // If tray is active (bridge background mode), destroy it when user re-opens
-  destroyTray();
+  // Dock click on macOS: if we still have a hidden main window, just show it;
+  // otherwise re-create. The tray stays alive across this — menubar icon is
+  // permanent until the user explicitly chooses "Quit CodePilot".
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    showMainWindow();
+    return;
+  }
 
-  if (BrowserWindow.getAllWindows().length === 0) {
-    try {
-      if (!isDev && !serverProcess) {
-        // Show loading window immediately so user sees progress
-        createWindow();
-        const port = await startServerOnStablePort();
-        serverPort = port;
-        if (mainWindow) {
-          mainWindow.loadURL(`http://127.0.0.1:${port}`);
-        }
-      } else {
-        createWindow(`http://127.0.0.1:${serverPort || 3000}`);
+  try {
+    if (!isDev && !serverProcess) {
+      // Show loading window immediately so user sees progress
+      createWindow();
+      const port = await startServerOnStablePort();
+      serverPort = port;
+      if (mainWindow) {
+        mainWindow.loadURL(`http://127.0.0.1:${port}`);
       }
-
-    } catch (err) {
-      console.error('Failed to restart server:', err);
+    } else {
+      // P2 review fix (2026-05-09): no `serverPort || 3000` here either.
+      // If we land in this branch with serverPort unset (dock click during
+      // a brief race where serverProcess exists but port hasn't latched
+      // yet), `chatWindowUrlForRevival()` returns undefined → loading
+      // splash, and the in-flight startup will load the real URL. Pinning
+      // to 3000 in production opens a window against the wrong port range.
+      createWindow(chatWindowUrlForRevival());
     }
+  } catch (err) {
+    console.error('Failed to restart server:', err);
   }
 });
 
 app.on('before-quit', async (e) => {
+  // First firing: tear down resources, then re-emit quit. Any subsequent
+  // firing (after we re-call app.quit() below) just proceeds to exit. The
+  // `isQuitting` flag also tells the main window's `close` handler to let
+  // the close go through instead of hiding.
+  isQuitting = true;
+
   // Kill all terminal processes
   terminalManager.killAll();
 
@@ -1732,11 +2362,26 @@ app.on('before-quit', async (e) => {
 
   destroyTray();
 
-  if (serverProcess && !isQuitting) {
-    isQuitting = true;
+  if (serverProcess) {
     e.preventDefault();
     // Stop bridge gracefully before killing the server
     await stopBridge();
+    // Phase 5 Phase 6 (2026-05-14) — graceful Codex app-server dispose
+    // before the Next server gets hard-killed. The Codex JSON-RPC child
+    // is owned by the Next server process; if we kill the Next server
+    // without telling Codex first, the Rust binary can orphan (no
+    // parent-death signal handler upstream). 1.5s budget — failure /
+    // timeout is non-fatal, we still kill the server below.
+    if (serverPort) {
+      try {
+        await Promise.race([
+          fetch(`http://127.0.0.1:${serverPort}/api/codex/dispose`, { method: 'POST' }),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 1500)),
+        ]);
+      } catch {
+        /* best-effort — proceed to killServer regardless */
+      }
+    }
     await killServer();
     app.quit();
   }

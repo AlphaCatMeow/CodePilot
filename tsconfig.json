@@ -36,9 +36,11 @@
     "dist-electron",
     "scripts",
     "release",
+    "release-*",
     "apps",
     "packages",
     ".claude",
-    "资料"
+    "资料",
+    ".next/dev/types/validator.ts"
   ]
 }

@@ -376,7 +376,17 @@ describe('WIDGET_SYSTEM_PROMPT', () => {
 
   it('is smaller than the original full prompt but includes core rules', () => {
     assert.ok(WIDGET_SYSTEM_PROMPT.length > 500, 'should include core hard constraints');
-    assert.ok(WIDGET_SYSTEM_PROMPT.length < 2000, 'should be smaller than original ~2500 char full prompt');
+    // Phase 5c slice 6 (2026-05-16, post-smoke) — ceiling bumped from
+    // 2000 → 3500. Real GLM/Kimi smoke (session 2e2f8c6d3ab99fbc...)
+    // showed the original loose-format prompt let the model emit a
+    // raw HTML show-widget fence; adding the explicit
+    // WIDGET_WIRE_FORMAT_SPEC + image-gen rule needs ~1100 extra
+    // chars. Still well under the original ~2500 full prompt because
+    // the on-demand getGuidelines() output stays modular.
+    assert.ok(
+      WIDGET_SYSTEM_PROMPT.length < 3500,
+      `should stay under 3500 char ceiling (post-smoke bump from 2000); current=${WIDGET_SYSTEM_PROMPT.length}`,
+    );
   });
 
   it('includes critical hard constraints for valid widget output', () => {

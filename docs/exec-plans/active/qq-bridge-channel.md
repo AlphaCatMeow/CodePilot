@@ -1,5 +1,7 @@
 # QQ Bridge Channel Integration
 
+> ⏸ **本轮重构暂缓**（见 [refactor-closeout.md](./refactor-closeout.md) "暂缓清单"）— 更多 Bridge 渠道不在本轮 6 条主线内；保留作未来参考。
+
 ## Status: IN PROGRESS
 
 ## Scope

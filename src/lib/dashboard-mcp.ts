@@ -19,6 +19,24 @@ import {
 import { resolveGlobs, readSourceFiles } from '@/lib/dashboard-file-reader';
 import type { DashboardWidget, DashboardDataSource } from '@/types/dashboard';
 
+// ── Keyword gate (shared with both ClaudeCode SDK + Codex injection paths) ──
+
+/** Regex of natural-language cues that suggest the model may want to manage
+ *  dashboard widgets in this turn. Shared so both runtimes inject the
+ *  dashboard MCPs on the SAME criterion (don't per-runtime rewrite). */
+export const DASHBOARD_KEYWORDS = /dashboard|仪表盘|看板|pin.*widget|pinned.*widget|refresh.*widget|固定.*组件|刷新.*组件|codepilot_dashboard/i;
+
+/** Decide whether to inject the dashboard MCP for this turn. Checks the
+ *  current prompt + optionally the prior conversation. */
+export function promptNeedsDashboard(
+  prompt: string,
+  conversationHistory?: ReadonlyArray<{ content: string }>,
+): boolean {
+  if (DASHBOARD_KEYWORDS.test(prompt)) return true;
+  if (conversationHistory?.some((m) => DASHBOARD_KEYWORDS.test(m.content))) return true;
+  return false;
+}
+
 // ── System prompt ────────────────────────────────────────────────────────────
 
 export const DASHBOARD_MCP_SYSTEM_PROMPT = `<dashboard-capability>
@@ -43,7 +61,24 @@ RULES:
 
 // ── MCP Server factory ───────────────────────────────────────────────────────
 
-export function createDashboardMcpServer(sessionId?: string, workingDirectory?: string) {
+export interface DashboardMcpOpts {
+  /**
+   * Optional allowlist of tool names. When set, only these tools register —
+   * everything else is filtered out. Default: all 5 tools register.
+   *
+   * Used by the Codex `codepilot_dashboard_read` / `codepilot_dashboard_write`
+   * routes to split safe-read tools (`list` / `refresh`, auto_accept) from
+   * mutating tools (`pin` / `update` / `remove`, user_approval) into two
+   * separate MCP servers, each with its own elicitation policy.
+   */
+  includeTools?: readonly string[];
+}
+
+export function createDashboardMcpServer(
+  sessionId?: string,
+  workingDirectory?: string,
+  opts?: DashboardMcpOpts,
+) {
   const workDir = workingDirectory || '';
 
   return createSdkMcpServer({
@@ -292,6 +327,6 @@ export function createDashboardMcpServer(sessionId?: string, workingDirectory?: 
           };
         },
       ),
-    ],
+    ].filter((t) => !opts?.includeTools || opts.includeTools.includes(t.name)),
   });
 }

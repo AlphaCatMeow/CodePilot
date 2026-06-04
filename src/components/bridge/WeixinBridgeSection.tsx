@@ -244,7 +244,7 @@ export function WeixinBridgeSection() {
   void qrSessionId;
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="max-w-3xl mx-auto space-y-6">
       {/* Risk Warning */}
       <StatusBanner variant="warning" className="text-sm">
         <Warning size={16} className="shrink-0 mr-2 mt-0.5" />

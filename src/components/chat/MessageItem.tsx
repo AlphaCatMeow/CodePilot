@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback, useRef, useEffect, useMemo, memo } from 'react';
+import { motion } from 'motion/react';
 import { cn } from '@/lib/utils';
 import type { Message, TokenUsage, FileAttachment, MediaBlock } from '@/types';
 import {
@@ -12,16 +13,22 @@ import { ToolActionsGroup } from '@/components/ai-elements/tool-actions-group';
 import { MediaPreview } from './MediaPreview';
 import { DiffSummary } from './DiffSummary';
 import { Button } from "@/components/ui/button";
-import { Copy, Check, CaretDown, CaretUp, CaretRight, PushPin, DownloadSimple } from "@/components/ui/icon";
+import { Check, CaretDown, CaretUp, CaretRight } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { FileAttachmentDisplay } from './FileAttachmentDisplay';
 import { ImageGenConfirmation } from './ImageGenConfirmation';
 import { ImageGenCard } from './ImageGenCard';
 import { BatchPlanInlinePreview } from './batch-image-gen/BatchPlanInlinePreview';
 import { WidgetRenderer } from './WidgetRenderer';
 import { buildReferenceImages } from '@/lib/image-ref-store';
-import { SPECIES_IMAGE_URL, EGG_IMAGE_URL, RARITY_BG_GRADIENT, type Species, type Rarity } from '@/lib/buddy';
+// SPECIES_IMAGE_URL / EGG_IMAGE_URL / RARITY_BG_GRADIENT were used by
+// the assistant-chat avatar (removed 2026-05-21); the imports are kept
+// out to avoid stale references.
 import { parseDBDate } from '@/lib/utils';
 import { usePanel } from '@/hooks/usePanel';
+import { classifyPath } from '@/lib/preview-source';
+import { isWriteTool, isCreateTool, extractWritePath, resolveToolPath } from '@/lib/file-write-tools';
+import { DevOutputSegment } from './DevOutputChips';
 import type { PlannerOutput } from '@/types';
 
 interface ImageGenRequest {
@@ -147,10 +154,15 @@ export function parseShowWidget(text: string): { beforeText: string; widget: Sho
   for (const seg of segments) {
     if (!foundWidget) {
       if (seg.type === 'text') { beforeText = seg.content; }
-      else { widget = seg.data; foundWidget = true; }
+      else if (seg.type === 'widget') { widget = seg.data; foundWidget = true; }
+      // Legacy parseShowWidget returns only the first SUCCESSFUL
+      // widget — malformed_widget segments are skipped here. The
+      // multi-segment renderer (parseAllShowWidgets caller) still
+      // shows the error block; this legacy wrapper exists for older
+      // call sites that only care about the happy path.
     } else {
       if (seg.type === 'text') afterParts.push(seg.content);
-      else afterParts.push(''); // subsequent widgets handled by parseAllShowWidgets
+      else afterParts.push(''); // subsequent widgets / malformed handled by parseAllShowWidgets
     }
   }
   if (!widget) return null;
@@ -159,7 +171,22 @@ export function parseShowWidget(text: string): { beforeText: string; widget: Sho
 
 export type WidgetSegment =
   | { type: 'text'; content: string }
-  | { type: 'widget'; data: ShowWidgetData };
+  | { type: 'widget'; data: ShowWidgetData }
+  /**
+   * Phase 5c slice 6 (2026-05-16, post-smoke) — emitted when a
+   * `show-widget` marker is in the text but the body cannot be
+   * parsed into the JSON-wrapper wire format (raw HTML / invalid
+   * JSON / missing `widget_code`). Pre-fix all three failure modes
+   * were dropped silently and the chat appeared to have "no widget"
+   * even though the model produced something. The UI now renders
+   * a visible error block so the user can ask the model to fix it.
+   *
+   * `reason` is a short human-readable summary of WHICH failure
+   * mode triggered. `raw` is the original fence body (truncated to
+   * 2 KB) so the user can read it inline without hunting through
+   * the transcript.
+   */
+  | { type: 'malformed_widget'; reason: string; raw: string };
 
 /**
  * Fence-format-agnostic widget parser.
@@ -186,7 +213,26 @@ function findJsonEnd(text: string, start: number): number {
   return -1; // unclosed
 }
 
-/** Parse ALL show-widget blocks in text, returning alternating text/widget segments. */
+/** Cap raw fence body before surfacing in a malformed-widget UI segment.
+ *  2 KB is enough to recognise what the model produced without
+ *  bloating the persisted message JSON if the broken fence was huge. */
+function clipMalformedRaw(raw: string): string {
+  const MAX = 2048;
+  if (raw.length <= MAX) return raw;
+  return raw.slice(0, MAX) + '\n[…truncated…]';
+}
+
+/** Parse ALL show-widget blocks in text, returning alternating text/widget segments.
+ *
+ *  Three failure modes used to drop silently — Phase 5c slice 6
+ *  surfaces each as a `malformed_widget` segment so the user knows
+ *  the model tried to make a widget and can ask it to retry:
+ *
+ *    a) marker present but no JSON within 20 chars (the smoke S4
+ *       failure mode: model wrote a raw HTML fence body)
+ *    b) JSON parses successfully but is missing `widget_code`
+ *    c) malformed/unparseable JSON inside the fence
+ */
 export function parseAllShowWidgets(text: string): WidgetSegment[] {
   const segments: WidgetSegment[] = [];
   // Match any backtick(s) + show-widget, capturing the full marker to strip it
@@ -195,17 +241,40 @@ export function parseAllShowWidgets(text: string): WidgetSegment[] {
   let match: RegExpExecArray | null;
   let foundAny = false;
 
+  /** Push the text slice between the last consumed position and this
+   *  marker, if non-empty. Both the success and the malformed branches
+   *  use this so the preceding prose still renders. */
+  const flushBeforeText = (markerStart: number) => {
+    const before = text.slice(lastIndex, markerStart).trim();
+    if (before) segments.push({ type: 'text', content: before });
+  };
+
   while ((match = markerRegex.exec(text)) !== null) {
     const afterMarker = match.index + match[0].length;
     // Find the JSON object start
     const jsonStart = text.indexOf('{', afterMarker);
     if (jsonStart === -1 || jsonStart > afterMarker + 20) {
-      // No JSON nearby — skip this malformed marker, advance past any fence block
+      // (a) No JSON nearby — surface as malformed_widget so the
+      // user sees the broken fence instead of the chat looking
+      // empty. The smoke S4 failure ended here.
       const fenceClose = text.indexOf('```', afterMarker);
-      if (fenceClose !== -1 && fenceClose < afterMarker + 200) {
+      const bodyEnd = fenceClose !== -1 && fenceClose < afterMarker + 4096
+        ? fenceClose
+        : Math.min(text.length, afterMarker + 4096);
+      const raw = text.slice(afterMarker, bodyEnd).trim();
+      foundAny = true;
+      flushBeforeText(match.index);
+      segments.push({
+        type: 'malformed_widget',
+        reason: 'No JSON wrapper found inside `show-widget` fence — the body looked like raw HTML / SVG. Widgets must be wrapped as `{"title":"…","widget_code":"…"}` so the runtime can sandbox them.',
+        raw: clipMalformedRaw(raw),
+      });
+      if (fenceClose !== -1) {
         lastIndex = fenceClose + 3;
         markerRegex.lastIndex = fenceClose + 3;
-        foundAny = true; // so trailing text is captured
+      } else {
+        lastIndex = bodyEnd;
+        markerRegex.lastIndex = bodyEnd;
       }
       continue;
     }
@@ -217,8 +286,7 @@ export function parseAllShowWidgets(text: string): WidgetSegment[] {
       const widget = extractTruncatedWidget(partialBody);
       if (widget) {
         foundAny = true;
-        const before = text.slice(lastIndex, match.index).trim();
-        if (before) segments.push({ type: 'text', content: before });
+        flushBeforeText(match.index);
         segments.push({ type: 'widget', data: widget });
         lastIndex = text.length;
       }
@@ -230,8 +298,7 @@ export function parseAllShowWidgets(text: string): WidgetSegment[] {
       const json = JSON.parse(jsonStr);
       if (json.widget_code) {
         foundAny = true;
-        const before = text.slice(lastIndex, match.index).trim();
-        if (before) segments.push({ type: 'text', content: before });
+        flushBeforeText(match.index);
         segments.push({ type: 'widget', data: { title: json.title || undefined, widget_code: String(json.widget_code) } });
         // Skip past the JSON and any trailing fence/backticks
         let endPos = jsonEnd + 1;
@@ -240,15 +307,38 @@ export function parseAllShowWidgets(text: string): WidgetSegment[] {
         if (trailingFence) endPos += trailingFence[0].length;
         lastIndex = endPos;
         markerRegex.lastIndex = endPos;
+      } else {
+        // (b) JSON parsed but missing `widget_code` — surface as
+        // malformed_widget. Pre-fix this fell through to the
+        // implicit "no segment pushed" path; the user saw nothing.
+        const fenceClose = text.indexOf('```', jsonEnd + 1);
+        const bodyEnd = fenceClose !== -1 ? fenceClose : text.length;
+        foundAny = true;
+        flushBeforeText(match.index);
+        segments.push({
+          type: 'malformed_widget',
+          reason: 'The `show-widget` JSON parsed but did not include a `widget_code` field. The minimal shape is `{"title":"…","widget_code":"<escaped HTML>"}`.',
+          raw: clipMalformedRaw(text.slice(afterMarker, bodyEnd).trim()),
+        });
+        lastIndex = fenceClose !== -1 ? fenceClose + 3 : text.length;
+        markerRegex.lastIndex = lastIndex;
       }
-    } catch {
-      // Malformed JSON — skip past the fence block
+    } catch (parseErr) {
+      // (c) Malformed JSON — surface as malformed_widget instead of
+      // skipping. `parseErr` carries the position so the message
+      // can hint at the issue (escape sequence, trailing comma, etc.).
       const fenceClose = text.indexOf('```', jsonStart);
-      if (fenceClose !== -1) {
-        markerRegex.lastIndex = fenceClose + 3;
-        lastIndex = fenceClose + 3;
-        foundAny = true; // Mark as found so trailing text is captured
-      }
+      const bodyEnd = fenceClose !== -1 ? fenceClose : text.length;
+      foundAny = true;
+      flushBeforeText(match.index);
+      const errText = parseErr instanceof Error ? parseErr.message : String(parseErr);
+      segments.push({
+        type: 'malformed_widget',
+        reason: `The \`show-widget\` JSON failed to parse: ${errText}. Common causes: unescaped quotes inside \`widget_code\`, unescaped newlines, trailing commas.`,
+        raw: clipMalformedRaw(text.slice(afterMarker, bodyEnd).trim()),
+      });
+      lastIndex = fenceClose !== -1 ? fenceClose + 3 : text.length;
+      markerRegex.lastIndex = lastIndex;
     }
   }
 
@@ -502,7 +592,7 @@ function CopyButton({ text }: { text: string }) {
       {copied ? (
         <Check size={12} className="text-status-success-foreground" />
       ) : (
-        <Copy size={12} />
+        <CodePilotIcon name="copy" size={12} aria-hidden />
       )}
     </Button>
   );
@@ -585,21 +675,15 @@ export const MessageItem = memo(function MessageItem({ message, sessionId, isAss
     minute: '2-digit',
   });
 
-  const showAssistantAvatar = !isUser && isAssistantProject;
-  const buddyInfo = isAssistantProject ? (globalThis as Record<string, unknown>).__codepilot_buddy_info__ as { emoji?: string; species?: string; rarity?: string } | undefined : undefined;
+  // Assistant chat avatar removed (2026-05-21) — message bubbles already
+  // carry assistant/user attribution via tone + alignment; the buddy
+  // egg/species portrait next to every AI reply was visual noise and
+  // duplicated identity already shown elsewhere (sidebar, composer
+  // header). `isAssistantProject` is kept on the props since other
+  // assistant-aware paths in this file may still reference it.
 
   return (
-    <div className={showAssistantAvatar ? 'flex gap-2.5 items-start' : ''}>
-      {showAssistantAvatar && (
-        buddyInfo?.species
-          ? <img
-              src={SPECIES_IMAGE_URL[buddyInfo.species as Species] || ''}
-              alt="" width={28} height={28}
-              className="mt-0.5 shrink-0 rounded-lg"
-              style={{ background: RARITY_BG_GRADIENT[buddyInfo.rarity as Rarity] || '' }}
-            />
-          : <img src={EGG_IMAGE_URL} alt="egg" width={28} height={28} className="mt-0.5 shrink-0" />
-      )}
+    <div>
       <div className="flex-1 min-w-0">
     <AIMessage from={isUser ? 'user' : 'assistant'}>
       <MessageContent>
@@ -633,19 +717,29 @@ export const MessageItem = memo(function MessageItem({ message, sessionId, isAss
         {displayText && (
           isUser ? (
             <div className="relative">
-              <div
+              {/* Round 14 (2026-05-23): switched the long-message
+                  collapse from a CSS `transition: max-height` to
+                  framer-motion `animate={{ height }}`. The CSS path
+                  toggled between `maxHeight: 300px` and `undefined`
+                  (== auto), which cannot interpolate — so expanding
+                  and collapsing snapped instantly and looked like a
+                  jarring flicker. motion.div measures the real
+                  content height at run-time and tweens between the
+                  collapsed pixel value and "auto" smoothly.
+                  `initial={false}` skips a play on first paint so
+                  long messages don't unfurl when they're rendered.
+                  `overflow: hidden` clips the in-flight measure. */}
+              <motion.div
                 ref={contentRef}
-                className="text-sm whitespace-pre-wrap break-words transition-[max-height] duration-300 ease-in-out overflow-hidden"
-                style={
-                  isOverflowing && !isExpanded
-                    ? { maxHeight: `${COLLAPSE_HEIGHT}px` }
-                    : undefined
-                }
+                className="text-sm whitespace-pre-wrap break-words overflow-hidden"
+                initial={false}
+                animate={{ height: isOverflowing && !isExpanded ? COLLAPSE_HEIGHT : "auto" }}
+                transition={{ duration: 0.28, ease: [0.32, 0.72, 0, 1] }}
               >
                 {displayText}
-              </div>
+              </motion.div>
               {isOverflowing && !isExpanded && (
-                <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-secondary to-transparent pointer-events-none" />
+                <div className="absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-muted to-transparent pointer-events-none" />
               )}
               {isOverflowing && (
                 <Button
@@ -674,38 +768,18 @@ export const MessageItem = memo(function MessageItem({ message, sessionId, isAss
 
       {/* Diff summary for assistant messages with file modifications */}
       {!isUser && (() => {
-        const WRITE_TOOLS = new Set(['write', 'edit', 'writefile', 'write_file', 'create_file', 'createfile', 'notebookedit', 'notebook_edit']);
-        // Tools whose semantics are "new file"; everything else in WRITE_TOOLS
-        // counts as "modify an existing file" (edit + notebookedit variants).
-        // This is a heuristic — some tools (e.g. write) do upsert — but the
-        // label is surfaced to the user only as a hint, not a correctness claim.
-        const CREATE_TOOLS = new Set(['write', 'writefile', 'write_file', 'create_file', 'createfile']);
-
-        // Assistant tools can emit either absolute paths ("/home/.../foo.md")
-        // or workspace-relative ones ("src/foo.md"). We treat the latter as
-        // relative to workingDirectory so the preview API's path-safety check
-        // and /api/files/write's baseDir enforcement both resolve to the
-        // right file. Windows drive paths (C:\...) are absolute too.
-        // (Codex P2.)
-        const isAbsolute = (p: string): boolean =>
-          p.startsWith('/') || /^[A-Za-z]:[/\\]/.test(p);
-        const resolveToolPath = (p: string): string => {
-          if (!p) return p;
-          if (isAbsolute(p)) return p;
-          if (!workingDirectory) return p;
-          const sep = workingDirectory.includes('\\') ? '\\' : '/';
-          return `${workingDirectory}${sep}${p}`;
-        };
-
+        // Phase 4: write-tool classification + path resolution now live
+        // in `src/lib/file-write-tools.ts` so the same set powers both
+        // the DiffSummary cards here and the codepilot:file-changed
+        // dispatch in stream-session-manager. Anywhere a new variant
+        // (e.g. multi_edit) lands, both surfaces pick it up.
         const modifiedFiles = pairedTools
-          .filter(t => WRITE_TOOLS.has(t.name.toLowerCase()) && !t.isError)
+          .filter(t => isWriteTool(t.name) && !t.isError)
           .map(t => {
-            const inp = t.input as Record<string, unknown> | undefined;
-            const rawPath = (inp?.file_path || inp?.path || inp?.filePath || '') as string;
-            const resolvedPath = resolveToolPath(rawPath);
+            const rawPath = extractWritePath(t.input);
+            const resolvedPath = resolveToolPath(rawPath, workingDirectory);
             const parts = resolvedPath.split(/[/\\]/);
-            const toolName = t.name.toLowerCase();
-            const operation: 'created' | 'modified' = CREATE_TOOLS.has(toolName) ? 'created' : 'modified';
+            const operation: 'created' | 'modified' = isCreateTool(t.name) ? 'created' : 'modified';
             return { path: resolvedPath, name: parts[parts.length - 1] || resolvedPath, operation };
           })
           .filter(f => f.path);
@@ -718,7 +792,23 @@ export const MessageItem = memo(function MessageItem({ message, sessionId, isAss
         return (
           <DiffSummary
             files={unique}
-            onPreview={(file) => setPreviewSource({ kind: 'file', filePath: file.path })}
+            onPreview={(file) => {
+              // Phase 4: classify the path against the session's
+              // workingDirectory. Inside the workspace → workspace trust
+              // + baseDir, opens directly. Outside → agent-referenced,
+              // which makes PreviewPanel render a confirm card and
+              // delay fetch until the user explicitly accepts (path
+              // could be a sensitive location named by the AI). The
+              // panel transitions to user-selected/readonly on confirm.
+              const { trust, baseDir, readonly } = classifyPath(file.path, workingDirectory);
+              setPreviewSource({
+                kind: 'file',
+                filePath: file.path,
+                trust,
+                ...(baseDir ? { baseDir } : {}),
+                readonly,
+              });
+            }}
             // Phase 3: export long screenshot via the Electron IPC. Only
             // .html/.htm rows pass the PREVIEWABLE+LONGSHOT gate in
             // DiffSummary; for those, we fetch the raw file contents from
@@ -765,6 +855,40 @@ export const MessageItem = memo(function MessageItem({ message, sessionId, isAss
   );
 });
 
+/**
+ * Phase 5c slice 6 (2026-05-16, post-smoke) — visible error block
+ * for `show-widget` fences the parser couldn't render. Surfaces
+ * three failure modes:
+ *   - raw HTML body (no JSON wrapper) — the S4 smoke failure
+ *   - JSON parsed but no `widget_code` field
+ *   - JSON itself malformed
+ *
+ * Each case lands here with a structured `reason` and the original
+ * fence body so the user can read it inline and ask the model to
+ * retry. Pre-fix the chat looked empty in all three cases.
+ */
+export function MalformedWidgetNotice({ reason, raw }: { reason: string; raw: string }) {
+  const [showRaw, setShowRaw] = useState(false);
+  return (
+    <div className="my-3 rounded-md border border-status-warning-border bg-status-warning-muted p-3 text-sm">
+      <div className="font-medium text-status-warning-foreground">Malformed `show-widget` block</div>
+      <div className="mt-1 text-status-warning-foreground/80">{reason}</div>
+      <button
+        type="button"
+        className="mt-2 text-xs text-status-warning-foreground underline-offset-2 hover:underline"
+        onClick={() => setShowRaw(s => !s)}
+      >
+        {showRaw ? 'Hide source' : 'Show source'}
+      </button>
+      {showRaw && (
+        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-all rounded bg-background p-2 text-xs">
+          {raw}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 /** Widget wrapper with "Pin to Dashboard" button.
  * Pin triggers a chat message → AI uses codepilot_dashboard_pin MCP tool.
  * Button is a pure trigger — no local pin/unpin state tracking.
@@ -795,23 +919,35 @@ function PinnableWidget({ widgetCode, title }: {
     }
   }, [widgetCode, title]);
 
+  // Card action button class — shared geometry / colors used by widget
+  // toolbar and (round 12 onwards) the Markdown table + code block
+  // toolbars. h-7 / text-xs / rounded-md gives a readable hit target
+  // without dominating the card chrome. Permanent (no opacity-0
+  // hover gate) per round 12 design refresh.
+  // `justify-center` (round 13) keeps the icon centered inside
+  // icon-only variants (h-7 w-7 px-0). Without it, the icon hugs
+  // the button's left edge and the hover background visibly offsets
+  // from the glyph.
+  const cardActionBtn = "h-7 px-2 gap-1 inline-flex items-center justify-center rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors disabled:opacity-40 disabled:pointer-events-none";
+
   const buttons = (
     <>
       {workingDirectory && (
         <button
-          className="text-[10px] px-1.5 py-0.5 rounded text-muted-foreground/50 hover:text-muted-foreground hover:bg-muted/50 disabled:opacity-30 flex items-center gap-0.5"
+          className={cardActionBtn}
           onClick={handlePin}
           disabled={cooldown}
         >
-          <PushPin size={12} />
+          <CodePilotIcon name="pin" size="sm" aria-hidden />
           Pin
         </button>
       )}
       <button
-        className="text-[10px] px-1.5 py-0.5 rounded text-muted-foreground/50 hover:text-muted-foreground hover:bg-muted/50 flex items-center gap-0.5"
+        className={cn(cardActionBtn, "h-7 w-7 px-0")}
         onClick={handleExport}
+        aria-label="Export PNG"
       >
-        <DownloadSimple size={12} />
+        <CodePilotIcon name="download" size="sm" aria-hidden />
       </button>
     </>
   );
@@ -832,11 +968,15 @@ const AssistantContent = memo(function AssistantContent({ displayText, messageId
     if (widgetSegments.length > 0) {
       return (
         <>
-          {widgetSegments.map((seg, i) =>
-            seg.type === 'text'
-              ? <MessageResponse key={`t-${i}`}>{seg.content}</MessageResponse>
-              : <PinnableWidget key={`w-${i}`} widgetCode={seg.data.widget_code} title={seg.data.title} messageId={messageId} sessionId={sessionId} />
-          )}
+          {widgetSegments.map((seg, i) => {
+            if (seg.type === 'text') {
+              return <MessageResponse key={`t-${i}`}>{seg.content}</MessageResponse>;
+            }
+            if (seg.type === 'malformed_widget') {
+              return <MalformedWidgetNotice key={`mw-${i}`} reason={seg.reason} raw={seg.raw} />;
+            }
+            return <PinnableWidget key={`w-${i}`} widgetCode={seg.data.widget_code} title={seg.data.title} messageId={messageId} sessionId={sessionId} />;
+          })}
         </>
       );
     }
@@ -873,7 +1013,7 @@ const AssistantContent = memo(function AssistantContent({ displayText, messageId
         return (
           <>
             {genResult.beforeText && <MessageResponse>{genResult.beforeText}</MessageResponse>}
-            <div className="rounded-md border border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/30 p-3">
+            <div className="rounded-md border border-status-error-border bg-status-error-muted p-3">
               <p className="text-sm text-status-error-foreground">{result.error || 'Image generation failed'}</p>
             </div>
             {genResult.afterText && <MessageResponse>{genResult.afterText}</MessageResponse>}
@@ -932,6 +1072,11 @@ const AssistantContent = memo(function AssistantContent({ displayText, messageId
       .replace(/```batch-plan[\s\S]*?```/g, '')
       .replace(/```show-widget[\s\S]*?(```|$)/g, '')
       .trim();
-    return stripped ? <MessageResponse>{stripped}</MessageResponse> : null;
+    // Phase 4.D — DevOutputSegment tokenizes the assistant text for
+    // file references (/abs/path:12, foo.md#L12) and localhost URLs,
+    // rendering them as clickable chips alongside the streamdown
+    // markdown render. Plain text without dev-output tokens falls
+    // through to a normal <MessageResponse> with zero overhead.
+    return stripped ? <DevOutputSegment text={stripped} /> : null;
   }, [displayText, messageId, sessionId]);
 });

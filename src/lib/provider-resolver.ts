@@ -24,12 +24,18 @@ import {
   getActiveProvider,
   getAllProviders,
   getSetting,
-  getModelsForProvider,
+  getAllModelsForProvider,
   getProviderOptions,
 } from './db';
 import { ensureTokenFresh } from './openai-oauth-manager';
 import { CODEX_API_ENDPOINT } from './openai-oauth';
 import { hasClaudeSettingsCredentials } from './claude-settings';
+import {
+  getProviderCompat,
+  getModelCompat,
+  isOpenRouterAnthropicSkinUrl,
+} from './runtime-compat';
+import type { ChatRuntime } from './chat-runtime';
 
 // ── Resolution result ───────────────────────────────────────────
 
@@ -60,6 +66,31 @@ export interface ResolvedProvider {
   settingSources: string[];
   /** Internal: true when resolved as OpenAI OAuth (Codex API) virtual provider */
   _openaiOAuth?: boolean;
+  /**
+   * Phase 5 review round 4 (2026-05-13) — true when resolved as the
+   * Codex Account virtual provider. CodexRuntime takes over the
+   * upstream call via its own app-server thread/turn flow; resolvers
+   * downstream of this point MUST NOT try to build a transport
+   * against this provider.
+   */
+  _codexAccount?: boolean;
+  /**
+   * Phase 2 Step 2 — invalid-session signal. Set ONLY by
+   * `resolveProviderForSession` when the session's stored
+   * `provider_id` is non-empty but no longer points at a real DB
+   * provider (deleted by the user, lost in import, etc.). The send
+   * route must check this field and refuse to send rather than
+   * silently routing through the env fallback the resolver picks
+   * for the same input shape today. Frontend already has the
+   * matching gate via `RunCheckpoint`; this is the resolver-side
+   * surface so the route can't be reached with a stale session.
+   *
+   * Other callers (`resolveProvider` directly, anything not session-
+   * scoped) do NOT set this — they keep the legacy "fall through to
+   * env" behaviour, because they don't have a session intent to
+   * compare against.
+   */
+  invalidReason?: 'provider-missing' | 'model-missing' | 'runtime-incompatible';
 }
 
 // ── Public API ──────────────────────────────────────────────────
@@ -75,6 +106,21 @@ export interface ResolveOptions {
   sessionModel?: string;
   /** Use case — affects which role model to pick */
   useCase?: 'default' | 'reasoning' | 'small';
+  /**
+   * Active chat-side runtime. When set, the default-model fallback chain
+   * (globalDefault → roleModels.default → setting → availableModels[0])
+   * skips models whose `getModelCompat()` flag doesn't match this runtime,
+   * alongside the existing hidden-id guard.
+   *
+   * Explicit `opts.model` / `opts.sessionModel` are still honored even when
+   * incompatible — the caller asked for them by name. Mismatches surface
+   * downstream (route layer, SDK error) rather than being silently rewritten.
+   *
+   * Omit (or leave undefined) to keep the legacy behavior of considering
+   * every enabled model — used by Settings > Providers' global default-model
+   * picker which surfaces the full catalog regardless of current runtime.
+   */
+  runtime?: ChatRuntime;
 }
 
 /**
@@ -88,6 +134,71 @@ export interface ResolveOptions {
  *
  * Special value 'env' = use environment variables (skip DB lookup).
  */
+/**
+ * Phase 5b round-9 (2026-05-18) — alias-row canonicalization for
+ * OpenRouter Anthropic-skin providers.
+ *
+ * Pre-round-8 the preset's `defaultModels` was alias-only
+ * (`ANTHROPIC_DEFAULT_MODELS` — no `upstreamModelId`). Provider
+ * records created in that window have `provider_models` rows whose
+ * `upstream_model_id` is either NULL or equal to the alias itself
+ * (`'haiku' → 'haiku'`). Round 8 added the upstream slugs to the
+ * preset (`OPENROUTER_ANTHROPIC_MODELS`), but `resolveProvider`'s
+ * DB-wins merge shadowed them — so the resolver kept handing the
+ * bare alias to upstream, which OpenRouter rejects with "is not a
+ * valid model ID".
+ *
+ * Fix: after the DB merge, take any alias entry whose upstream is
+ * missing or self-referential and fill it from the preset slug.
+ * Don't override a user-configured full slug (`anthropic/...`) —
+ * customization wins. Exported so `/api/providers/models` route
+ * can apply the same shape so chat send + picker + resolver agree.
+ */
+export function normalizeOpenRouterAnthropicAlias(
+  model: CatalogModel,
+  presetModels: readonly CatalogModel[],
+): CatalogModel {
+  if (model.modelId !== 'sonnet' && model.modelId !== 'opus' && model.modelId !== 'haiku') {
+    return model;
+  }
+  const preset = presetModels.find(m => m.modelId === model.modelId);
+  const presetUpstream = preset?.upstreamModelId;
+  if (!presetUpstream) return model;
+  // Override only when the DB row carries no upstream (NULL) or
+  // points at the alias itself (legacy shape). A user who set
+  // `anthropic/claude-haiku-4.6` manually should keep that.
+  if (!model.upstreamModelId || model.upstreamModelId === model.modelId) {
+    return { ...model, upstreamModelId: presetUpstream };
+  }
+  return model;
+}
+
+/**
+ * Canonical upstream IDs for the bare Anthropic UI aliases. Mirrors the env
+ * provider's model table (`envModels` below) + route.ts `DEFAULT_MODELS`.
+ */
+export const ANTHROPIC_ALIAS_UPSTREAM: Record<string, string> = {
+  sonnet: 'claude-sonnet-4-6',
+  opus: 'claude-opus-4-7',
+  haiku: 'claude-haiku-4-5-20251001',
+};
+
+/**
+ * P0.5 (2026-06-01) — map a bare Anthropic alias (`sonnet` / `opus` / `haiku`)
+ * to its real upstream id; returns undefined for anything else.
+ *
+ * This is DETERMINISTIC (a fixed alias→upstream table), unlike the
+ * single-model "first model in list" fallback — so it's safe to apply even
+ * for multi-model Claude-compat gateways. Without it, a legacy DB row
+ * `model_id='sonnet'` with a NULL / self upstream reaches a New-API /
+ * Claude-compat gateway verbatim as `sonnet` → "分组 auto 下模型 sonnet 无可用
+ * 渠道" 503 (observed 2026-06-01; tech-debt #23).
+ */
+export function canonicalAnthropicAliasUpstream(modelId: string | undefined | null): string | undefined {
+  if (!modelId) return undefined;
+  return ANTHROPIC_ALIAS_UPSTREAM[modelId];
+}
+
 export function resolveProvider(opts: ResolveOptions = {}): ResolvedProvider {
   const effectiveProviderId = opts.providerId || opts.sessionProviderId || '';
 
@@ -100,6 +211,16 @@ export function resolveProvider(opts: ResolveOptions = {}): ResolvedProvider {
   // Special virtual provider: OpenAI OAuth (Codex API)
   if (effectiveProviderId === 'openai-oauth') {
     return buildOpenAIOAuthResolution(opts);
+  }
+
+  // Phase 5 review round 4 (2026-05-13) — Codex Account is a virtual
+  // provider produced by `src/lib/codex/models.ts:buildCodexProviderModelGroup`
+  // when the user is logged into Codex. It's NOT a DB row, so it needs
+  // the same virtual-provider exemption as `env` and `openai-oauth`.
+  // Codex Runtime takes over the actual upstream call via its own
+  // app-server thread/turn flow; this resolver just needs to NOT 409.
+  if (effectiveProviderId === 'codex_account') {
+    return buildCodexAccountResolution(opts);
   }
 
   if (effectiveProviderId && effectiveProviderId !== 'env') {
@@ -210,6 +331,21 @@ export function toClaudeCodeEnv(
   resolved: ResolvedProvider,
 ): Record<string, string> {
   const env = { ...baseEnv };
+  const roleModelForEnv = (modelId: string | undefined): string | undefined => {
+    if (!modelId) return undefined;
+    const catalogEntry = resolved.availableModels.find(model => model.modelId === modelId);
+    const resolvedId = catalogEntry?.upstreamModelId
+      || (modelId === resolved.model ? resolved.upstreamModel : undefined)
+      || modelId;
+    // P0.5 — this builds the Claude Code (Anthropic) env. When the provider
+    // LISTS this alias as a model (catalogEntry) but the resolved id is still a
+    // bare alias (legacy self-referential / NULL upstream), canonicalize it so
+    // it can't ship to the gateway as `sonnet`/`opus`/`haiku` → 503 "no channel".
+    // If the alias isn't a listed model, preserve it (let upstream surface the
+    // real error — the existing multi-model contract).
+    if (catalogEntry) return canonicalAnthropicAliasUpstream(resolvedId) ?? resolvedId;
+    return resolvedId;
+  };
 
   // Managed env vars that must be cleaned when switching providers to prevent leaks
   const MANAGED_ENV_KEYS = new Set([
@@ -264,23 +400,29 @@ export function toClaudeCodeEnv(
     }
 
     // Inject role models as env vars
-    if (resolved.roleModels.default) {
-      env.ANTHROPIC_MODEL = resolved.roleModels.default;
+    const defaultModel = roleModelForEnv(resolved.roleModels.default);
+    const reasoningModel = roleModelForEnv(resolved.roleModels.reasoning);
+    const smallModel = roleModelForEnv(resolved.roleModels.small);
+    const haikuModel = roleModelForEnv(resolved.roleModels.haiku);
+    const sonnetModel = roleModelForEnv(resolved.roleModels.sonnet);
+    const opusModel = roleModelForEnv(resolved.roleModels.opus);
+    if (defaultModel) {
+      env.ANTHROPIC_MODEL = defaultModel;
     }
-    if (resolved.roleModels.reasoning) {
-      env.ANTHROPIC_REASONING_MODEL = resolved.roleModels.reasoning;
+    if (reasoningModel) {
+      env.ANTHROPIC_REASONING_MODEL = reasoningModel;
     }
-    if (resolved.roleModels.small) {
-      env.ANTHROPIC_SMALL_FAST_MODEL = resolved.roleModels.small;
+    if (smallModel) {
+      env.ANTHROPIC_SMALL_FAST_MODEL = smallModel;
     }
-    if (resolved.roleModels.haiku) {
-      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = resolved.roleModels.haiku;
+    if (haikuModel) {
+      env.ANTHROPIC_DEFAULT_HAIKU_MODEL = haikuModel;
     }
-    if (resolved.roleModels.sonnet) {
-      env.ANTHROPIC_DEFAULT_SONNET_MODEL = resolved.roleModels.sonnet;
+    if (sonnetModel) {
+      env.ANTHROPIC_DEFAULT_SONNET_MODEL = sonnetModel;
     }
-    if (resolved.roleModels.opus) {
-      env.ANTHROPIC_DEFAULT_OPUS_MODEL = resolved.roleModels.opus;
+    if (opusModel) {
+      env.ANTHROPIC_DEFAULT_OPUS_MODEL = opusModel;
     }
 
     // Inject extra headers
@@ -289,16 +431,24 @@ export function toClaudeCodeEnv(
     }
 
     // Inject env overrides (empty string = delete).
-    // Skip auth-related keys — they were already correctly injected above based on authStyle.
-    // Legacy extra_env often contains placeholder entries like {"ANTHROPIC_AUTH_TOKEN":""} or
-    // {"ANTHROPIC_API_KEY":""} that would delete the freshly-injected credentials.
-    const AUTH_ENV_KEYS = new Set([
+    // Skip provider-owned Anthropic keys — they were already correctly
+    // injected above based on authStyle + role model resolution. Legacy
+    // extra_env often contains placeholder auth entries, and older gateway
+    // configs may carry bare UI aliases like ANTHROPIC_MODEL=sonnet; letting
+    // either override this resolver reintroduces stale-model failures.
+    const HOST_MANAGED_ANTHROPIC_ENV_KEYS = new Set([
       'ANTHROPIC_API_KEY',
       'ANTHROPIC_AUTH_TOKEN',
       'ANTHROPIC_BASE_URL',
+      'ANTHROPIC_MODEL',
+      'ANTHROPIC_REASONING_MODEL',
+      'ANTHROPIC_SMALL_FAST_MODEL',
+      'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+      'ANTHROPIC_DEFAULT_SONNET_MODEL',
+      'ANTHROPIC_DEFAULT_OPUS_MODEL',
     ]);
     for (const [key, value] of Object.entries(resolved.envOverrides)) {
-      if (AUTH_ENV_KEYS.has(key)) continue; // already handled by auth injection
+      if (HOST_MANAGED_ANTHROPIC_ENV_KEYS.has(key)) continue; // already handled above
       if (typeof value === 'string') {
         if (value === '') {
           delete env[key];
@@ -410,8 +560,24 @@ export function toAiSdkConfig(
         modelId = onlyUpstream;
       }
     }
+
+    // 4. P0.5 — a bare Anthropic alias that the provider LISTS as a model
+    //    (legacy materialized row with NULL/self upstream) on an anthropic
+    //    protocol provider: canonicalize to the real upstream id. Gated on
+    //    "alias is in availableModels" so we DON'T rewrite an alias the
+    //    provider doesn't offer (that stays bare → upstream surfaces the real
+    //    error, preserving the multi-model contract in step 3's note). Unlike
+    //    step 3 this is a fixed alias→upstream map, not "first model in list".
+    if (
+      SHORT_ALIASES.has(modelId) &&
+      resolved.protocol === 'anthropic' &&
+      resolved.availableModels.some(m => m.modelId === modelId)
+    ) {
+      const canon = canonicalAnthropicAliasUpstream(modelId);
+      if (canon) modelId = canon;
+    }
   } else {
-    modelId = resolved.upstreamModel || resolved.model || 'claude-sonnet-4-5-20250929';
+    modelId = resolved.upstreamModel || resolved.model || 'claude-sonnet-4-6';
   }
   const provider = resolved.provider;
   const protocol = resolved.protocol;
@@ -516,16 +682,46 @@ export function toAiSdkConfig(
       };
     }
 
-    case 'openrouter':
+    case 'openrouter': {
+      // Phase 5b round-7 fix (2026-05-18) — OpenRouter exposes TWO
+      // skin endpoints under the same `openrouter` preset:
+      //   - `https://openrouter.ai/api/v1` — OpenAI Chat Completions skin
+      //   - `https://openrouter.ai/api`    — Anthropic Messages skin
+      // Pre-fix this case hardcoded `sdkType: 'openai'` for both,
+      // which meant Anthropic-skin requests (e.g. `anthropic/claude-haiku`)
+      // were sent in OpenAI Chat Completions wire format against the
+      // Messages endpoint. Result on real smoke: HTTP 200 but only
+      // `response.created → response.completed` with empty text;
+      // non-stream returned "Invalid JSON response". `runtime-compat.ts`
+      // already classifies this as `openrouter_anthropic_skin` (the
+      // detection predicate is `isOpenRouterAnthropicSkinUrl` — exported
+      // for reuse here), but the resolver never read the same predicate.
+      // Fix: branch on the same predicate. Anthropic skin → route through
+      // `claude-code-compat` (third-party Anthropic-compatible adapter
+      // we already use for sdkProxyOnly proxies like Zhipu/Kimi —
+      // same wire format, just a different base URL).
+      const baseUrl = provider?.base_url || 'https://openrouter.ai/api/v1';
+      if (provider?.base_url && isOpenRouterAnthropicSkinUrl(provider.base_url)) {
+        return {
+          sdkType: 'claude-code-compat',
+          apiKey: provider?.api_key || undefined,
+          authToken: undefined,
+          baseUrl,
+          modelId,
+          headers,
+          processEnvInjections,
+        };
+      }
       return {
         sdkType: 'openai',
         apiKey: provider?.api_key || undefined,
         authToken: undefined,
-        baseUrl: provider?.base_url || 'https://openrouter.ai/api/v1',
+        baseUrl,
         modelId,
         headers,
         processEnvInjections,
       };
+    }
 
     case 'openai-compatible':
       return {
@@ -636,6 +832,39 @@ const OPENAI_CODEX_MODELS: CatalogModel[] = [
  * Build resolution for the virtual OpenAI OAuth provider.
  * Uses OAuth Bearer token + Codex API endpoint.
  */
+/**
+ * Phase 5 review round 4 (2026-05-13) — Codex Account virtual provider
+ * resolution. Returns a minimal ResolvedProvider so callers that
+ * destructure it don't crash; the actual upstream call goes through
+ * Codex Runtime's app-server thread/turn flow, NOT through this
+ * resolver's transport. We populate `hasCredentials: true` because
+ * Codex's account/read endpoint is the real gate — by the time the
+ * picker shows a codex_account model, the account is already logged
+ * in (codex-models.ts:buildCodexProviderModelGroup returns null
+ * otherwise).
+ */
+function buildCodexAccountResolution(opts: ResolveOptions): ResolvedProvider {
+  const model = opts.model || opts.sessionModel || '';
+  return {
+    provider: undefined,
+    protocol: 'openai-compatible',
+    authStyle: 'api_key',
+    model,
+    upstreamModel: model,
+    modelDisplayName: model,
+    headers: {},
+    envOverrides: {},
+    roleModels: { default: model },
+    // Account-managed: Codex app-server owns credentials. The resolver
+    // never makes the upstream call for this provider — CodexRuntime
+    // bypasses provider-transport entirely.
+    hasCredentials: true,
+    availableModels: [],
+    settingSources: [],
+    _codexAccount: true,
+  } as ResolvedProvider;
+}
+
 function buildOpenAIOAuthResolution(opts: ResolveOptions): ResolvedProvider {
   const model = opts.model || opts.sessionModel || 'gpt-5.5';
 
@@ -687,7 +916,7 @@ function buildResolution(
     const envModels: CatalogModel[] = [
       {
         modelId: 'sonnet',
-        upstreamModelId: 'claude-sonnet-4-20250514',
+        upstreamModelId: 'claude-sonnet-4-6',
         displayName: 'Sonnet 4.6',
         capabilities: {
           supportsEffort: true,
@@ -699,6 +928,16 @@ function buildResolution(
         modelId: 'opus',
         upstreamModelId: 'claude-opus-4-7',
         displayName: 'Opus 4.7',
+        capabilities: {
+          supportsEffort: true,
+          supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+          supportsAdaptiveThinking: true,
+        },
+      },
+      {
+        modelId: 'opus-4-8',
+        upstreamModelId: 'claude-opus-4-8',
+        displayName: 'Opus 4.8',
         capabilities: {
           supportsEffort: true,
           supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
@@ -755,23 +994,66 @@ function buildResolution(
     }
   }
 
-  // Get available models: DB provider_models take priority, then catalog defaults
-  let availableModels = getDefaultModelsForProvider(protocol, provider.base_url, provider.provider_type);
+  // Get available models: DB provider_models is authoritative when populated.
+  // The user's hidden ids (enabled=0 rows) MUST suppress the catalog fallback,
+  // otherwise the runtime sees models the user explicitly hid in Settings >
+  // Models. We fetch all rows and partition into enabled-set + hidden-set.
+  // `dbHiddenIds` is also used downstream to guard the role-default fallback.
+  //
+  // Round 9 (2026-05-18): capture the preset catalog BEFORE the DB merge so
+  // we can canonicalize alias rows that pre-date the round-8 catalog
+  // update. Detail: round 8 added OpenRouter upstream slugs to the preset
+  // (anthropic/claude-haiku-4.5 etc.), but a provider record created
+  // BEFORE that change had `provider_models` rows with
+  // upstream_model_id='haiku' (or NULL). The DB-wins merge below then
+  // shadowed the preset slug. The normalize step below fills the missing
+  // upstream from the preset for OpenRouter Anthropic-skin only — never
+  // overrides a user-configured full slug.
+  const presetModels = getDefaultModelsForProvider(protocol, provider.base_url, provider.provider_type);
+  let availableModels: CatalogModel[] = [...presetModels];
+  let dbHiddenIds = new Set<string>();
   try {
-    const dbModels = getModelsForProvider(provider.id);
-    if (dbModels.length > 0) {
-      // Convert DB rows to CatalogModel and merge (DB models override catalog by modelId)
-      const dbCatalog: CatalogModel[] = dbModels.map(m => ({
+    const dbAll = getAllModelsForProvider(provider.id);
+    if (dbAll.length > 0) {
+      dbHiddenIds = new Set(dbAll.filter(m => m.enabled === 0).map(m => m.model_id));
+      const dbEnabled = dbAll.filter(m => m.enabled === 1);
+      const dbCatalog: CatalogModel[] = dbEnabled.map(m => ({
         modelId: m.model_id,
         upstreamModelId: m.upstream_model_id || undefined,
         displayName: m.display_name || m.model_id,
         capabilities: safeParseCapabilities(m.capabilities_json),
       }));
-      // Merge: DB models first, then catalog models not already in DB
       const dbIds = new Set(dbCatalog.map(m => m.modelId));
-      availableModels = [...dbCatalog, ...availableModels.filter(m => !dbIds.has(m.modelId))];
+      availableModels = [
+        ...dbCatalog,
+        ...availableModels.filter(m => !dbIds.has(m.modelId) && !dbHiddenIds.has(m.modelId)),
+      ];
     }
   } catch { /* provider_models table may not exist in old DBs */ }
+
+  // Round 9 (2026-05-18): historical-data canonicalization for OpenRouter
+  // Anthropic-skin. Apply preset upstream slugs to any alias rows whose
+  // upstream is missing or equals the alias itself (legacy DB shape).
+  // Gates strictly:
+  //   - inferred `protocol === 'openrouter'` (the LOCAL var computed at
+  //     line 894 above, NOT `provider.protocol` — that DB column may be
+  //     NULL on legacy rows and is normalized via inferProtocolFromProvider)
+  //   - base_url passes `isOpenRouterAnthropicSkinUrl` (i.e. ends with `/api`,
+  //     not `/api/v1` — runtime-compat.ts:49 owns the predicate)
+  //   - modelId is one of the three aliases
+  //   - upstreamModelId is undefined OR === modelId (alias self-reference)
+  // User-configured full slugs (anything else, e.g. `anthropic/claude-haiku-4.6`)
+  // are preserved. Same normalize is applied by `/api/providers/models` so
+  // chat send + picker + resolver all see the same shape.
+  if (
+    protocol === 'openrouter' &&
+    provider.base_url &&
+    isOpenRouterAnthropicSkinUrl(provider.base_url)
+  ) {
+    availableModels = availableModels.map(m =>
+      normalizeOpenRouterAnthropicAlias(m, presetModels),
+    );
+  }
 
   // Read per-provider options
   const providerOpts = getProviderOptions(provider.id);
@@ -782,20 +1064,91 @@ function buildResolution(
   const applicableGlobalDefault = (globalDefaultModel && globalDefaultProvider === provider.id)
     ? globalDefaultModel : undefined;
 
+  // Pre-compute provider compat + a model-id index so the runtime guard
+  // below can check capabilities in O(1). Only built when a runtime is
+  // requested — keeps the no-runtime path the same shape as before.
+  const providerCompat = getProviderCompat({
+    provider_type: provider.provider_type,
+    base_url: provider.base_url,
+  });
+  const modelIndex: Map<string, CatalogModel> = opts.runtime
+    ? new Map(availableModels.map(m => [m.modelId, m]))
+    : new Map();
+  /** Runtime-compat guard for default-model fallback selection.
+   *  - No runtime requested → always pass (legacy behavior).
+   *  - Unknown id → fall back to the upstream defaults of the runtime
+   *    (resolved via `getModelCompat({ providerCompat })`); this matters
+   *    for ids that are referenced from `roleModels` / settings but
+   *    haven't materialized into `availableModels` yet (e.g. preset
+   *    role default before discovery has been run). */
+  const runtimeOk = (id: string | undefined): boolean => {
+    if (!opts.runtime) return true;
+    if (!id) return false;
+    const entry = modelIndex.get(id);
+    const cap = getModelCompat({
+      modelId: id,
+      upstreamModelId: entry?.upstreamModelId,
+      providerCompat,
+      capabilities: entry?.capabilities,
+    });
+    if (cap.media) return false;
+    // Phase 0.5 Slice E.1 (2026-05-13) — filter by the canonical
+    // `supportedRuntimes` array. Adding Codex Runtime later requires
+    // zero changes here: `getModelCompat` populates supportedRuntimes
+    // for every provider tier, and Codex's adapter / catalog entry
+    // adds 'codex_runtime' to the array. The legacy boolean branch
+    // hard-coded a two-runtime world.
+    return cap.supportedRuntimes?.includes(opts.runtime) ?? false;
+  };
+  // For the final fallback `availableModels[0]?.modelId` step we want the
+  // first model that is both enabled (already encoded in `availableModels`,
+  // which excludes `dbHiddenIds`) AND compatible with the active runtime.
+  const runtimeFilteredAvailable = opts.runtime
+    ? availableModels.filter(m => runtimeOk(m.modelId))
+    : availableModels;
+
   // Resolve model — priority:
-  //   1. Explicit request model (opts.model)
-  //   2. Session's stored model (opts.sessionModel)
+  //   1. Explicit request model (opts.model)        ← honored even if hidden /
+  //                                                   runtime-incompatible;
+  //                                                   user asked for it explicitly
+  //   2. Session's stored model (opts.sessionModel) ← stored at the session level,
+  //                                                   trust it
   //   3. Global default model (only if it belongs to this provider)
   //   4. Provider's roleModels.default (preset default, e.g. "ark-code-latest")
   //   5. Global default_model setting (legacy)
-  const requestedModel = opts.model || opts.sessionModel || applicableGlobalDefault || roleModels.default || getSetting('default_model') || undefined;
+  //
+  // Steps 3-5 fall through to the next entry when the candidate is in
+  // `dbHiddenIds` OR is incompatible with `opts.runtime` — a hidden model
+  // must never be silently selected as a default, and a model the active
+  // runtime can't reach should not be picked as the default either (it
+  // would fail at the route / SDK layer with a confusing error). Final
+  // fallback: the first enabled+compatible entry in `availableModels`,
+  // and only if that filter yields nothing do we fall back to the first
+  // enabled model regardless of runtime — that lets us still produce a
+  // resolution for users with no compatible model configured.
+  const visibleOrUndef = (id: string | undefined) =>
+    (!id || dbHiddenIds.has(id) || !runtimeOk(id)) ? undefined : id;
+  const requestedModel = opts.model
+    || opts.sessionModel
+    || visibleOrUndef(applicableGlobalDefault)
+    || visibleOrUndef(roleModels.default)
+    || visibleOrUndef(getSetting('default_model') || undefined)
+    || runtimeFilteredAvailable[0]?.modelId
+    || availableModels[0]?.modelId
+    || undefined;
   let model = requestedModel;
   let upstreamModel: string | undefined;
   let modelDisplayName: string | undefined;
 
-  // If a use case is specified, check role models for that use case
+  // If a use case is specified, check role models for that use case — but
+  // skip if that role's mapped model is hidden or runtime-incompatible
+  // (fall back to the request model). Same precedence as the default chain
+  // above; useCase routing must not bypass the runtime gate.
   if (opts.useCase && opts.useCase !== 'default' && roleModels[opts.useCase]) {
-    model = roleModels[opts.useCase];
+    const roleModel = roleModels[opts.useCase];
+    if (roleModel && !dbHiddenIds.has(roleModel) && runtimeOk(roleModel)) {
+      model = roleModel;
+    }
   }
 
   // Find display name and upstream model ID from catalog
@@ -812,12 +1165,48 @@ function buildResolution(
     upstreamModel = model;
   }
 
-  // Ensure roleModels.default reflects the upstream model for the current request,
-  // so toClaudeCodeEnv() sets ANTHROPIC_MODEL to the correct upstream ID.
-  // Only override when the request explicitly specifies a model (opts.model) and
-  // we found a different upstream ID via catalog lookup.
-  if (upstreamModel && opts.model && upstreamModel !== roleModels.default) {
-    roleModels = { ...roleModels, default: upstreamModel };
+  // Strip role slots that would leak the wrong model into the SDK subprocess
+  // env via `toClaudeCodeEnv()`. Two gates apply, both targeting
+  // `ANTHROPIC_MODEL` / `ANTHROPIC_DEFAULT_*_MODEL` / `ANTHROPIC_REASONING_MODEL`
+  // / `ANTHROPIC_SMALL_FAST_MODEL`:
+  //   - Hidden:  user explicitly turned the model off in Settings > Models;
+  //              honoring it in the subprocess violates that intent.
+  //   - Runtime: when the active chat-side runtime is requested, slots that
+  //              point at runtime-incompatible models can't be served by the
+  //              Claude Code subprocess (e.g. a `codepilot_only` row used as
+  //              `roleModels.default` would set `ANTHROPIC_MODEL` to a model
+  //              that Claude Code can't reach).
+  // `runtimeOk` returns `true` when no `opts.runtime` was given, so the
+  // legacy no-runtime caller path keeps the hidden-only behavior.
+  if (dbHiddenIds.size > 0 || opts.runtime) {
+    let dirty = false;
+    const cleaned: RoleModels = { ...roleModels };
+    for (const key of Object.keys(cleaned) as Array<keyof RoleModels>) {
+      const v = cleaned[key];
+      if (!v) continue;
+      if (dbHiddenIds.has(v) || !runtimeOk(v)) {
+        cleaned[key] = undefined;
+        dirty = true;
+      }
+    }
+    if (dirty) roleModels = cleaned;
+  }
+
+  // Ensure roleModels.default points at a model the user actually wants:
+  //   1. Explicit override path: caller passed opts.model and catalog mapped
+  //      it to a different upstream id (existing behaviour).
+  //   2. Fill-stripped path: the original default was just stripped as hidden
+  //      above, so default is now empty — fill it with the picked fallback
+  //      so toClaudeCodeEnv() still sets ANTHROPIC_MODEL. Without this,
+  //      ANTHROPIC_MODEL would be unset and the Claude Code subprocess would
+  //      fall back to its own internal default, which may not match what
+  //      the chat picker actually surfaces to the user.
+  if (upstreamModel) {
+    const explicitOverride = !!opts.model && upstreamModel !== roleModels.default;
+    const fillStrippedDefault = !roleModels.default;
+    if (explicitOverride || fillStrippedDefault) {
+      roleModels = { ...roleModels, default: upstreamModel };
+    }
   }
 
   // Has credentials?
@@ -1185,4 +1574,121 @@ function safeParseRoleModels(json: string | undefined | null): RoleModels {
     if (typeof parsed === 'object' && parsed !== null) return parsed as RoleModels;
   } catch { /* ignore */ }
   return {};
+}
+
+// ── Phase 2 Step 2 — session-aware wrapper ───────────────────────────
+
+/**
+ * Minimal shape consumed from a `ChatSession`. Avoids importing the
+ * full DB type so the wrapper stays callable from anywhere a session
+ * record is in scope (route handlers, resolver tests, future bridge
+ * adapters) without dragging the DB module into client bundles.
+ */
+export interface SessionRuntimeIntent {
+  /** Stored session provider id ('' = "no commitment yet, follow global"). */
+  provider_id: string;
+  /** Stored session model id ('' = "no commitment yet, follow global"). */
+  model: string;
+  /**
+   * Per-message provider from the request body.
+   *
+   * **Important**: this can be either (a) a *real* user override (the
+   * user just picked a different provider in the composer) or (b) just
+   * the session's current provider echoed back through the wire — the
+   * default `ChatView` send path includes `provider_id` on every
+   * request. The wrapper does NOT use this field to decide "skip
+   * validation"; it validates whichever provider will actually be sent
+   * to (override if it differs from session, otherwise the session
+   * value). See the `effectiveProviderId` logic below.
+   *
+   * If a future caller wants to explicitly mark "user just clicked
+   * switch", surface that intent through a separate flag — don't piggy-
+   * back on the request body, because the request body looks the same
+   * for "user override" and "normal echo".
+   */
+  requestProviderId?: string;
+  /** Per-message model override (same caveat as `requestProviderId`). */
+  requestModel?: string;
+}
+
+/**
+ * Phase 2 Step 2: session-aware provider resolver.
+ *
+ * Wraps `resolveProvider` and adds **one** behavior on top: when the
+ * session committed to a specific provider id but that provider no
+ * longer exists in the DB (deleted, lost in import, never created),
+ * the wrapper returns a `ResolvedProvider` carrying
+ * `invalidReason: 'provider-missing'`. Callers (chat send route,
+ * future RunCheckpoint signal) can then refuse to send instead of
+ * silently falling through to the env provider — which is what the
+ * raw `resolveProvider` does today and what the user is afraid of.
+ *
+ * Everything else delegates straight to `resolveProvider` with the
+ * session's data plumbed in: per-message request overrides win, then
+ * session.model / session.provider_id, then global defaults. This is
+ * the same priority chain the existing resolver enforces — we are
+ * not changing it, just labelling the missing-provider case.
+ *
+ * Caller contract:
+ *   - Pass the session's stored fields explicitly. The wrapper does
+ *     NOT call `getSession()` — keeps the function pure and testable,
+ *     and avoids accidental coupling to DB mocks.
+ *   - To opt out of the invalid-session check (e.g. legacy paths
+ *     that still want silent env fallback), call `resolveProvider`
+ *     directly. Phase 2 Step 3 will progressively migrate callers.
+ */
+export function resolveProviderForSession(
+  intent: SessionRuntimeIntent,
+  extras: Pick<ResolveOptions, 'useCase' | 'runtime'> = {},
+): ResolvedProvider {
+  const sessionProviderId = intent.provider_id;
+  const requestProviderId = intent.requestProviderId;
+  // Validate whichever provider id will *actually* be sent to. We
+  // can't use the request body's mere presence as a "user explicitly
+  // overrode, so trust it" signal — the chat composer wires the
+  // session's current provider id into every send, so `requestProviderId
+  // === sessionProviderId === <ghost id>` is a perfectly normal echo,
+  // and gating on `!requestProviderId` would let a deleted session
+  // provider quietly slip past this check (Step 2 review caught this).
+  //
+  // Effective id rule (matches `resolveProvider`'s own priority):
+  //   - request override differs from session → override is the real
+  //     destination; validate THAT one.
+  //   - request matches session OR no request → session value is the
+  //     destination; validate it.
+  // Either way, if the destination doesn't resolve to a DB row, surface
+  // `invalidReason: 'provider-missing'` so the send route can refuse
+  // instead of silently rerouting through env.
+  const isExplicitOverride = !!requestProviderId && requestProviderId !== sessionProviderId;
+  const effectiveProviderId = isExplicitOverride ? requestProviderId : sessionProviderId;
+  if (
+    effectiveProviderId
+    && effectiveProviderId !== 'env'
+    && effectiveProviderId !== 'openai-oauth'
+    && effectiveProviderId !== 'codex_account'
+    && !getProvider(effectiveProviderId)
+  ) {
+    // Still produce a ResolvedProvider shape so destructuring callers
+    // don't crash; the env-fallback fields are populated so a route
+    // that forgets to check `invalidReason` at least doesn't behave
+    // worse than the resolver did pre-Step-2.
+    const fallback = resolveProvider({
+      providerId: undefined,
+      sessionProviderId: undefined,
+      model: intent.requestModel,
+      sessionModel: intent.model || undefined,
+      useCase: extras.useCase,
+      runtime: extras.runtime,
+    });
+    return { ...fallback, invalidReason: 'provider-missing' };
+  }
+  // Healthy path — same priority chain as the legacy resolver.
+  return resolveProvider({
+    providerId: requestProviderId || undefined,
+    sessionProviderId: sessionProviderId || undefined,
+    model: intent.requestModel,
+    sessionModel: intent.model || undefined,
+    useCase: extras.useCase,
+    runtime: extras.runtime,
+  });
 }

@@ -17,7 +17,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { SpinnerGap, CheckCircle, XCircle, Sparkle } from "@/components/ui/icon";
+import { SpinnerGap, CheckCircle, XCircle } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { useTranslation } from "@/hooks/useTranslation";
 import type { TranslationKey } from "@/i18n";
 
@@ -194,7 +195,7 @@ export function CliToolBatchDescribeDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Sparkle size={18} />
+            <CodePilotIcon name="assistant" size={18} aria-hidden />
             {t('cliTools.batchDescribe')}
           </DialogTitle>
           <DialogDescription>
@@ -329,7 +330,7 @@ export function CliToolBatchDescribeDialog({
                 disabled={!selectedModel || toolsToProcessCount === 0}
                 className="gap-1.5"
               >
-                <Sparkle size={14} />
+                <CodePilotIcon name="assistant" size="sm" aria-hidden />
                 {t('cliTools.batchStart')}
               </Button>
               )}

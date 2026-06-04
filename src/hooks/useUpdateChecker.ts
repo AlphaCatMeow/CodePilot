@@ -5,6 +5,17 @@ import type { UpdateInfo, UpdateContextValue } from "@/hooks/useUpdate";
 
 const CHECK_INTERVAL = 8 * 60 * 60 * 1000; // 8 hours
 const DISMISSED_VERSION_KEY = "codepilot_dismissed_update_version";
+// Per-session dismiss: clicking "稍后" in this run shouldn't make the
+// dialog re-appear on every page navigation. Stored in sessionStorage
+// so a fresh tab / app restart will still nudge the user once.
+const SESSION_DISMISSED_VERSION_KEY = "codepilot_session_dismissed_update_version";
+
+function isVersionDismissed(version: string | undefined | null): boolean {
+  if (!version || typeof window === "undefined") return false;
+  if (localStorage.getItem(DISMISSED_VERSION_KEY) === version) return true;
+  if (sessionStorage.getItem(SESSION_DISMISSED_VERSION_KEY) === version) return true;
+  return false;
+}
 
 /**
  * Encapsulates all update-checking logic (native Electron updater + browser fallback).
@@ -39,8 +50,7 @@ export function useUpdateChecker(): UpdateContextValue {
           }));
           {
             const ver = event.info?.version;
-            const dismissed = localStorage.getItem(DISMISSED_VERSION_KEY);
-            if (ver && dismissed !== ver) {
+            if (ver && !isVersionDismissed(ver)) {
               setShowDialog(true);
             }
           }
@@ -98,11 +108,8 @@ export function useUpdateChecker(): UpdateContextValue {
       };
       setUpdateInfo(info);
 
-      if (info.updateAvailable) {
-        const dismissed = localStorage.getItem(DISMISSED_VERSION_KEY);
-        if (dismissed !== info.latestVersion) {
-          setShowDialog(true);
-        }
+      if (info.updateAvailable && !isVersionDismissed(info.latestVersion)) {
+        setShowDialog(true);
       }
     } catch {
       // silently ignore network errors
@@ -134,7 +141,20 @@ export function useUpdateChecker(): UpdateContextValue {
 
   const dismissUpdate = useCallback(() => {
     setShowDialog(false);
-  }, []);
+    // Mark this version as dismissed for the current session so later
+    // page navigations / hot reloads / chat-page mounts don't re-trigger
+    // the "有新版本可用" dialog. localStorage value (set elsewhere if
+    // the user has a permanent-dismiss path in the future) takes
+    // precedence; sessionStorage is the per-tab fallback.
+    if (typeof window !== "undefined") {
+      const ver = updateInfo?.latestVersion;
+      if (ver) {
+        try {
+          sessionStorage.setItem(SESSION_DISMISSED_VERSION_KEY, ver);
+        } catch { /* private browsing / quota — silently degrade */ }
+      }
+    }
+  }, [updateInfo]);
 
   const downloadUpdate = useCallback(async () => {
     if (isNativeUpdater) {

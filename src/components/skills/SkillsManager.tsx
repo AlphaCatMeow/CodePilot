@@ -1,107 +1,117 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { usePanel } from "@/hooks/usePanel";
+/**
+ * Skills manager — embeddable into the ExtensionsPage.
+ *
+ * Phase 2D.4 P2 (2026-05-01) restructure: this component no longer owns
+ * its own page chrome (title / description / segmented control / search
+ * box / Create button). The unified `/plugins` shell renders all of
+ * those and pushes data in via props. SkillsManager focuses purely on
+ * grouped card rendering + detail dialog + delete.
+ *
+ * - Each source group (global / project / installed / plugin / sdk)
+ *   renders as a heading + count, followed by a 2-col card grid.
+ * - Cards use the canonical Settings chrome from `docs/design.md`
+ *   (`rounded-lg bg-card border border-border/50 p-5`, no shadow).
+ * - Click → `<SkillDetailDialog>` shows description + read-only
+ *   markdown body + Delete (when editable).
+ *
+ * Marketplace browsing was moved out of this component into a dialog
+ * triggered from the ExtensionsPage Create dropdown — keeping the body
+ * a single grid surface instead of a nested tab-in-tab layout.
+ */
 
-import { Plus, MagnifyingGlass, Lightning, SpinnerGap } from "@/components/ui/icon";
-import { SkillListItem } from "./SkillListItem";
-import { SkillEditor } from "./SkillEditor";
-import { CreateSkillDialog } from "./CreateSkillDialog";
-import { MarketplaceBrowser } from "./MarketplaceBrowser";
+import { useState, useEffect, useCallback, useImperativeHandle, forwardRef } from "react";
+import { Button } from "@/components/ui/button";
+import { Plus, SpinnerGap, Lock } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
+import { SkillDetailDialog } from "./SkillDetailDialog";
 import { useTranslation } from "@/hooks/useTranslation";
 import type { TranslationKey } from "@/i18n";
 import { cn } from "@/lib/utils";
-import type { SkillItem } from "./SkillListItem";
+import type { SkillItem, SkillSource } from "./SkillListItem";
 
-type ViewTab = "local" | "marketplace";
+interface SkillsManagerProps {
+  /**
+   * Active workspace directory used to scan project-level skills and to
+   * compute editability. ExtensionsPage resolves this from PanelContext
+   * (or the recent-session fallback) and passes it down.
+   */
+  cwd?: string;
+  /**
+   * Active chat session id, used to resolve providerId for the SDK
+   * commands cache. Falls back to 'env' on the server when omitted.
+   */
+  sessionId?: string;
+  /**
+   * Free-text filter from the parent's search input. Empty string =
+   * show everything.
+   */
+  search?: string;
+  /**
+   * Notification when the parent should re-render anything that depends
+   * on group counts (e.g. the global filter pill labels). Optional.
+   */
+  onCountsChange?: (counts: Record<SkillSource, number>) => void;
+  /**
+   * Optional handler for the "create new skill" action. When omitted
+   * the empty-state still falls back to a no-op.
+   */
+  onCreateSkill?: () => void;
+}
 
-export function SkillsManager() {
-  const { workingDirectory } = usePanel();
+/** Imperative API the parent uses to refresh the list after an external
+ *  action (CreateSkillDialog success, Marketplace install). */
+export interface SkillsManagerHandle {
+  refresh: () => Promise<void>;
+}
+
+export const SkillsManager = forwardRef<SkillsManagerHandle, SkillsManagerProps>(function SkillsManager(
+  { cwd, sessionId, search = "", onCountsChange, onCreateSkill },
+  ref,
+) {
   const { t } = useTranslation();
   const [skills, setSkills] = useState<SkillItem[]>([]);
-  const [selected, setSelected] = useState<SkillItem | null>(null);
+  const [openSkill, setOpenSkill] = useState<SkillItem | null>(null);
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
-  const [showCreate, setShowCreate] = useState(false);
-  const [viewTab, setViewTab] = useState<ViewTab>("local");
 
   const fetchSkills = useCallback(async () => {
     try {
-      const cwdParam = workingDirectory ? `?cwd=${encodeURIComponent(workingDirectory)}` : '';
-      const res = await fetch(`/api/skills${cwdParam}`);
+      const params = new URLSearchParams();
+      if (cwd) params.set("cwd", cwd);
+      if (sessionId) params.set("sessionId", sessionId);
+      const qs = params.toString();
+      const res = await fetch(`/api/skills${qs ? `?${qs}` : ""}`);
       if (res.ok) {
         const data = await res.json();
-        setSkills((data.skills || []).filter((s: SkillItem) => s.source !== "project"));
+        setSkills(data.skills || []);
       }
     } catch {
       // ignore
     } finally {
       setLoading(false);
     }
-  }, [workingDirectory]);
+  }, [cwd, sessionId]);
 
   useEffect(() => {
     fetchSkills();
   }, [fetchSkills]);
 
-  const handleCreate = useCallback(
-    async (name: string, scope: "global" | "project", content: string) => {
-      const res = await fetch("/api/skills", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, content, scope, cwd: workingDirectory || undefined }),
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to create skill");
-      }
-      const data = await res.json();
-      setSkills((prev) => [...prev, data.skill]);
-      setSelected(data.skill);
-    },
-    [workingDirectory]
-  );
+  useImperativeHandle(ref, () => ({ refresh: fetchSkills }), [fetchSkills]);
 
-  const buildSkillUrl = useCallback((skill: SkillItem) => {
-    const params = new URLSearchParams();
-    if (skill.source === "installed" && skill.installedSource) {
-      params.set("source", skill.installedSource);
-    }
-    if (workingDirectory) {
-      params.set("cwd", workingDirectory);
-    }
-    const qs = params.toString();
-    return `/api/skills/${encodeURIComponent(skill.name)}${qs ? `?${qs}` : ""}`;
-  }, [workingDirectory]);
-
-  const handleSave = useCallback(
-    async (skill: SkillItem, content: string) => {
-      const res = await fetch(buildSkillUrl(skill), {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
-      });
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Failed to save skill");
+  const buildSkillUrl = useCallback(
+    (skill: SkillItem) => {
+      const params = new URLSearchParams();
+      if (skill.source === "installed" && skill.installedSource) {
+        params.set("source", skill.installedSource);
       }
-      const data = await res.json();
-      // Update in list
-      setSkills((prev) =>
-        prev.map((s) =>
-          s.name === skill.name &&
-          s.source === data.skill.source &&
-          s.installedSource === data.skill.installedSource
-            ? data.skill
-            : s
-        )
-      );
-      // Update selected
-      setSelected(data.skill);
+      if (cwd) {
+        params.set("cwd", cwd);
+      }
+      const qs = params.toString();
+      return `/api/skills/${encodeURIComponent(skill.name)}${qs ? `?${qs}` : ""}`;
     },
-    [buildSkillUrl]
+    [cwd],
   );
 
   const handleDelete = useCallback(
@@ -115,233 +125,184 @@ export function SkillsManager() {
                 s.name === skill.name &&
                 s.source === skill.source &&
                 s.installedSource === skill.installedSource
-              )
-          )
+              ),
+          ),
         );
-        if (
-          selected?.name === skill.name &&
-          selected?.source === skill.source &&
-          selected?.installedSource === skill.installedSource
-        ) {
-          setSelected(null);
-        }
       }
     },
-    [buildSkillUrl, selected]
+    [buildSkillUrl],
   );
 
-  const filtered = skills.filter(
-    (s) =>
-      s.name.toLowerCase().includes(search.toLowerCase()) ||
-      s.description.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = search
+    ? skills.filter(
+        (s) =>
+          s.name.toLowerCase().includes(search.toLowerCase()) ||
+          s.description.toLowerCase().includes(search.toLowerCase()),
+      )
+    : skills;
 
-  const globalSkills = filtered.filter((s) => s.source === "global");
-  const installedSkills = filtered.filter((s) => s.source === "installed");
-  const pluginSkills = filtered.filter((s) => s.source === "plugin");
+  // Picker source order: global → project → installed → plugin → sdk.
+  const groups: Array<{
+    source: SkillSource;
+    labelKey: TranslationKey;
+    items: SkillItem[];
+  }> = [
+    { source: "global", labelKey: "skills.source.global", items: filtered.filter((s) => s.source === "global") },
+    { source: "project", labelKey: "skills.source.project", items: filtered.filter((s) => s.source === "project") },
+    { source: "installed", labelKey: "skills.source.installed", items: filtered.filter((s) => s.source === "installed") },
+    { source: "plugin", labelKey: "skills.source.plugin", items: filtered.filter((s) => s.source === "plugin") },
+    { source: "sdk", labelKey: "skills.source.sdk", items: filtered.filter((s) => s.source === "sdk") },
+  ];
+
+  // Counts include filtered set (so the parent's filter pill matches
+  // what the body renders). Suppress while still loading so a cold
+  // visit to /plugins#cli doesn't briefly mount Skills with skills=[],
+  // ship a 0-count to the host, and freeze "Skills 0" on the pill
+  // until the user actually visits Skills (Phase 2D.4 P2 round 2,
+  // 2026-05-02).
+  useEffect(() => {
+    if (!onCountsChange || loading) return;
+    const next = {
+      global: groups[0].items.length,
+      project: groups[1].items.length,
+      installed: groups[2].items.length,
+      plugin: groups[3].items.length,
+      sdk: groups[4].items.length,
+    };
+    onCountsChange(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filtered, loading]);
 
   if (loading) {
     return (
-      <div className="flex h-64 items-center justify-center">
+      <div className="flex h-full items-center justify-center">
         <SpinnerGap size={20} className="animate-spin text-muted-foreground" />
         <span className="ml-2 text-sm text-muted-foreground">
-          {t('skills.loadingSkills')}
+          {t("skills.loadingSkills")}
         </span>
       </div>
     );
   }
 
-  return (
-    <div className="flex h-full flex-col">
-      {/* Fixed header */}
-      <div className="shrink-0 border-b border-border/50 px-6 pt-4 pb-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-semibold">{t('extensions.skills')}</h1>
-            <p className="text-sm text-muted-foreground mt-1">{t('skills.description' as TranslationKey)}</p>
-          </div>
-          {viewTab === "local" && (
-            <Button size="sm" onClick={() => setShowCreate(true)} className="gap-1">
-              <Plus size={14} />
-              {t('skills.newSkill')}
-            </Button>
-          )}
-        </div>
-        {/* Segmented control */}
-        <div className="flex items-center bg-muted rounded-md p-0.5 mt-3 w-fit">
-          <Button
-            variant="ghost"
-            size="sm"
-            className={cn(
-              "px-3 py-1 text-xs font-medium rounded h-auto",
-              viewTab === "local"
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-            onClick={() => setViewTab("local")}
-          >
-            {t('skills.mySkills')}
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            className={cn(
-              "px-3 py-1 text-xs font-medium rounded h-auto",
-              viewTab === "marketplace"
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            )}
-            onClick={() => setViewTab("marketplace")}
-          >
-            {t('skills.marketplace')}
-          </Button>
-        </div>
-      </div>
-
-      {/* Main content */}
-      {viewTab === "marketplace" ? (
-        <MarketplaceBrowser onInstalled={fetchSkills} />
-      ) : (
-      <div className="flex flex-1 min-h-0">
-        {/* Left: skill list */}
-        <div className="w-64 shrink-0 flex flex-col overflow-hidden pl-4">
-          <div className="px-2 pt-4 pb-2">
-            <div className="relative">
-              <MagnifyingGlass size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder={t('skills.searchSkills')}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="pl-7 h-8 text-sm"
-              />
-            </div>
-          </div>
-          <div className="flex-1 overflow-y-auto min-h-0">
-            <div className="p-1">
-              {globalSkills.length > 0 && (
-                <div className="mb-1">
-                  <span className="px-3 py-1 text-[10px] font-medium uppercase text-muted-foreground">
-                    Global
-                  </span>
-                  {globalSkills.map((skill) => (
-                    <SkillListItem
-                      key={`${skill.source}:${skill.installedSource ?? "default"}:${skill.name}`}
-                      skill={skill}
-                      selected={
-                        selected?.name === skill.name &&
-                        selected?.source === skill.source &&
-                        selected?.installedSource === skill.installedSource
-                      }
-                      onSelect={() => setSelected(skill)}
-                      onDelete={handleDelete}
-                    />
-                  ))}
-                </div>
-              )}
-              {installedSkills.length > 0 && (
-                <div className="mb-1">
-                  <span className="px-3 py-1 text-[10px] font-medium uppercase text-muted-foreground">
-                    Installed
-                  </span>
-                  {installedSkills.map((skill) => (
-                    <SkillListItem
-                      key={`${skill.source}:${skill.installedSource ?? "default"}:${skill.name}`}
-                      skill={skill}
-                      selected={
-                        selected?.name === skill.name &&
-                        selected?.source === skill.source &&
-                        selected?.installedSource === skill.installedSource
-                      }
-                      onSelect={() => setSelected(skill)}
-                      onDelete={handleDelete}
-                    />
-                  ))}
-                </div>
-              )}
-              {pluginSkills.length > 0 && (
-                <div className="mb-1">
-                  <span className="px-3 py-1 text-[10px] font-medium uppercase text-muted-foreground">
-                    Plugins
-                  </span>
-                  {pluginSkills.map((skill) => (
-                    <SkillListItem
-                      key={skill.filePath || `${skill.source}:${skill.installedSource ?? "default"}:${skill.name}`}
-                      skill={skill}
-                      selected={
-                        selected?.name === skill.name &&
-                        selected?.source === skill.source &&
-                        selected?.installedSource === skill.installedSource
-                      }
-                      onSelect={() => setSelected(skill)}
-                      onDelete={handleDelete}
-                    />
-                  ))}
-                </div>
-              )}
-              {filtered.length === 0 && (
-                <div className="flex flex-col items-center gap-2 py-8 text-muted-foreground">
-                  <Lightning size={32} className="opacity-40" />
-                  <p className="text-xs">
-                    {search ? t('skills.noSkillsFound') : t('skills.noSkillsFound')}
-                  </p>
-                  {!search && (
-                    <Button
-                      variant="outline"
-                      size="xs"
-                      onClick={() => setShowCreate(true)}
-                      className="gap-1"
-                    >
-                      <Plus size={12} />
-                      Create one
-                    </Button>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* Divider */}
-        <div className="shrink-0 w-px bg-border/50" />
-
-        {/* Right: editor */}
-        <div className="flex-1 min-w-0 overflow-hidden">
-          {selected ? (
-            <SkillEditor
-              key={`${selected.source}:${selected.name}`}
-              skill={selected}
-              onSave={handleSave}
-              onDelete={handleDelete}
-            />
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
-              <Lightning size={48} className="opacity-30" />
-              <div className="text-center">
-                <p className="text-sm font-medium">{t('skills.noSelected')}</p>
-                <p className="text-xs">
-                  {t('skills.selectOrCreate')}
-                </p>
-              </div>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setShowCreate(true)}
-                className="gap-1"
-              >
-                <Plus size={14} />
-                {t('skills.newSkill')}
-              </Button>
-            </div>
-          )}
-        </div>
-      </div>
-      )}
-
-      <CreateSkillDialog
-        open={showCreate}
-        onOpenChange={setShowCreate}
-        onCreate={handleCreate}
+  if (filtered.length === 0) {
+    return (
+      <SkillsEmptyState
+        onCreate={onCreateSkill}
+        hasSearch={!!search}
       />
+    );
+  }
+
+  return (
+    <>
+      <div className="space-y-8">
+        {groups.map((group) =>
+          group.items.length === 0 ? null : (
+            <section key={group.source}>
+              <header className="mb-3">
+                <h4 className="text-sm font-medium">
+                  {t(group.labelKey)}
+                  <span className="text-xs text-muted-foreground ml-2">
+                    ({group.items.length})
+                  </span>
+                </h4>
+              </header>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {group.items.map((skill) => (
+                  <SkillCard
+                    key={skill.filePath || `${skill.source}:${skill.installedSource ?? "default"}:${skill.name}`}
+                    skill={skill}
+                    onOpen={() => setOpenSkill(skill)}
+                  />
+                ))}
+              </div>
+            </section>
+          ),
+        )}
+      </div>
+
+      <SkillDetailDialog
+        skill={openSkill}
+        onClose={() => setOpenSkill(null)}
+        onDelete={handleDelete}
+      />
+    </>
+  );
+});
+
+function SkillCard({
+  skill,
+  onOpen,
+}: {
+  skill: SkillItem;
+  onOpen: () => void;
+}) {
+  const { t } = useTranslation();
+  const editable = skill.editable !== false;
+  const readOnlyReasonKey: TranslationKey | null =
+    skill.readOnlyReason === "sdk"
+      ? "skills.readOnlyReason.sdk"
+      : skill.readOnlyReason === "file_not_writable"
+        ? "skills.readOnlyReason.fileNotWritable"
+        : skill.readOnlyReason === "out_of_cwd"
+          ? "skills.readOnlyReason.outOfCwd"
+          : null;
+
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpen();
+        }
+      }}
+      aria-label={`/${skill.name} — ${skill.description}`}
+      className="rounded-lg bg-card border border-border/50 p-5 cursor-pointer transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-sm font-medium font-mono truncate min-w-0 max-w-full">
+          /{skill.name}
+        </span>
+        {!editable && readOnlyReasonKey && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground"
+            title={t(readOnlyReasonKey)}
+          >
+            <Lock size={10} />
+            {t(readOnlyReasonKey)}
+          </span>
+        )}
+      </div>
+      {skill.description && (
+        <p className="text-xs text-muted-foreground mt-2 leading-relaxed line-clamp-3">
+          {skill.description}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function SkillsEmptyState({
+  onCreate,
+  hasSearch,
+}: {
+  onCreate?: () => void;
+  hasSearch: boolean;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="rounded-lg border border-border/50 bg-card p-10 flex flex-col items-center text-center gap-3">
+      <CodePilotIcon name="skill" size="xl" className="opacity-40 text-muted-foreground" />
+      <div className="text-sm font-medium">{t("skills.noSkillsFound")}</div>
+      {!hasSearch && onCreate && (
+        <Button variant="default" size="sm" className="gap-1.5 mt-1" onClick={onCreate}>
+          <Plus size={14} weight="bold" />
+          {t("skills.newSkill")}
+        </Button>
+      )}
     </div>
   );
 }

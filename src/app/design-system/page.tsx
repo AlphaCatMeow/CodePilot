@@ -29,6 +29,30 @@ import {
   MagnifyingGlass,
   Copy,
 } from "@/components/ui/icon";
+import { CodePilotIcon, type CodePilotIconName } from "@/components/ui/semantic-icon";
+
+const ICON_SEMANTICS: { name: CodePilotIconName; use: string }[] = [
+  { name: "model", use: "模型（Cube，非 Brain）" },
+  { name: "runtime", use: "执行引擎（Chip，非 Lightning）" },
+  { name: "provider", use: "服务商" },
+  { name: "memory", use: "记忆（Brain）" },
+  { name: "skill", use: "可调用能力（魔法棒）" },
+  { name: "plugin", use: "安装包 / 容器（拼图）" },
+  { name: "mcp", use: "MCP server / 协议" },
+  { name: "cli", use: "命令工具目录（≠ terminal）" },
+  { name: "terminal", use: "shell 会话（≠ cli）" },
+  { name: "assistant", use: "助理 / 工作区" },
+  { name: "task", use: "定时任务" },
+  { name: "widget", use: "Widget 组件" },
+  { name: "artifact", use: "Artifact 表现层" },
+  { name: "preview", use: "预览动作" },
+  { name: "code", use: "代码 / snippet" },
+  { name: "file", use: "文件资源" },
+  { name: "success", use: "成功状态" },
+  { name: "warning", use: "警告状态" },
+  { name: "error", use: "错误状态" },
+  { name: "loading", use: "加载中" },
+];
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -65,6 +89,24 @@ export default function DesignSystemPage() {
           <IconAction icon={<Copy size={16} />} tooltip="Copy" />
           <IconAction icon={<Plus size={16} />} tooltip="Add" size="sm" />
           <IconAction icon={<MagnifyingGlass size={16} />} tooltip="Search" size="sm" />
+        </div>
+      </Section>
+
+      {/* ── Icon Semantics (CodePilot layer) ── */}
+      <Section title="Icon Semantics">
+        <p className="text-sm text-muted-foreground">
+          业务代码用 <code className="text-xs bg-muted px-1 py-0.5 rounded">{`<CodePilotIcon name="..." />`}</code> 表达产品概念，不直引 vendor icon 名。一个概念一个 glyph，冲突在 <code className="text-xs bg-muted px-1 py-0.5 rounded">SEMANTIC_MAP</code> 单点裁决。完整字典见 <code className="text-xs bg-muted px-1 py-0.5 rounded">docs/handover/icon-system.md</code>。
+        </p>
+        <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+          {ICON_SEMANTICS.map(({ name, use }) => (
+            <div key={name} className="flex items-center gap-3 rounded-lg border border-border p-3">
+              <CodePilotIcon name={name} size="lg" aria-hidden />
+              <div className="min-w-0">
+                <div className="text-sm font-medium">{name}</div>
+                <div className="text-xs text-muted-foreground truncate">{use}</div>
+              </div>
+            </div>
+          ))}
         </div>
       </Section>
 

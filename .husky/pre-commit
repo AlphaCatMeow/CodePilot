@@ -1,3 +1,22 @@
+# set -e 收紧整条 hook（tech-debt #30）：2026-05-29 之前四条命令未串联，husky 只认
+# 最后一条（unit test）的退出码，导致失败的 lint-staged / tsc / docs-drift 被静默放行。
+# 加 set -e 后任一非零即中止提交。注意：lint-staged 只 lint 暂存文件，故未触碰文件里的
+# 存量 error（13 个 React Compiler error / 9 组件，on-touch 债 → tech-debt #35）不会挡住提交。
+# 详见 docs/exec-plans/completed/post-refactor-cleanup.md Phase D（已归档）。
+set -e
+
+node scripts/lint-hooks.mjs
 npx lint-staged
 npx tsc --noEmit
-npx tsx --test src/__tests__/unit/*.test.ts
+# CODEX_DISABLED=1 mirrors `npm run test:unit` (see package.json scripts).
+# Without it the pre-commit hook spawns the real Codex app-server during
+# unit tests, which (a) holds the user's real CodePilot SQLite DB and
+# fights for locks with the dev server, (b) takes ~35× longer than the
+# standalone npm run test (~25s) — observed in Phase 5b round-6 smoke,
+# where every commit wedged for 30+ minutes. Keep the hook env aligned
+# with the canonical test script.
+# --import db-isolation.setup.ts gives each parallel test-worker its own temp DB
+# (tech-debt #11/#25/#30 flake fix): node:test runs files in parallel, so without
+# this every DB test raced on the one real ~/.codepilot/codepilot.db → intermittent
+# failures that blocked commits. Now: no shared-file races, no real-DB pollution.
+CODEX_DISABLED=1 npx tsx --test --import ./src/__tests__/db-isolation.setup.ts src/__tests__/unit/*.test.ts

@@ -7,6 +7,7 @@ import type { Message, MessagesResponse, ChatSession } from '@/types';
 import { ChatView } from '@/components/chat/ChatView';
 import { SpinnerGap } from "@/components/ui/icon";
 import { usePanel } from '@/hooks/usePanel';
+import { useWorkspaceSidebarOptional } from '@/hooks/useWorkspaceSidebar';
 import { useTranslation } from '@/hooks/useTranslation';
 
 interface ChatSessionPageProps {
@@ -22,11 +23,17 @@ export default function ChatSessionPage({ params }: ChatSessionPageProps) {
   const [error, setError] = useState<string | null>(null);
   const [sessionModel, setSessionModel] = useState<string>('');
   const [sessionProviderId, setSessionProviderId] = useState<string>('');
+  // Phase 2 Step 3b: session's runtime pin (chat-runtime label form).
+  // '' = follow global; 'claude_code' / 'codepilot_runtime' = pinned.
+  // Threaded into ChatView so the picker filters per-session, not per
+  // global agent_runtime.
+  const [sessionRuntimePin, setSessionRuntimePin] = useState<string>('');
   const [sessionInfoLoaded, setSessionInfoLoaded] = useState(false);
   const [sessionPermissionProfile, setSessionPermissionProfile] = useState<'default' | 'full_access'>('default');
   const [sessionMode, setSessionMode] = useState<'code' | 'plan'>('code');
   const [sessionHasSummary, setSessionHasSummary] = useState(false);
-  const { setWorkingDirectory, setSessionId, setSessionTitle: setPanelSessionTitle, setFileTreeOpen, setGitPanelOpen, setDashboardPanelOpen } = usePanel();
+  const { setWorkingDirectory, setSessionId, setSessionTitle: setPanelSessionTitle, setFileTreeOpen } = usePanel();
+  const ws = useWorkspaceSidebarOptional();
   const targetFilePath = searchParams.get('file') || undefined;
   const { t } = useTranslation();
   const defaultPanelAppliedRef = useRef(false);
@@ -38,6 +45,7 @@ export default function ChatSessionPage({ params }: ChatSessionPageProps) {
     setWorkingDirectory('');
     setSessionModel('');
     setSessionProviderId('');
+    setSessionRuntimePin('');
     setSessionInfoLoaded(false);
 
     async function loadSession() {
@@ -63,6 +71,7 @@ export default function ChatSessionPage({ params }: ChatSessionPageProps) {
           if (cancelled) return;
           setSessionModel(resolved.model);
           setSessionProviderId(resolved.providerId);
+          setSessionRuntimePin(data.session.runtime_pin || '');
           setSessionPermissionProfile(data.session.permission_profile || 'default');
           setSessionMode((data.session.mode as 'code' | 'plan') || 'code');
           setSessionHasSummary(!!data.session.context_summary);
@@ -140,7 +149,9 @@ export default function ChatSessionPage({ params }: ChatSessionPageProps) {
     (async () => {
       try {
         if (targetFilePath) {
-          // Preserve explicit deep-link intent from global search.
+          // Preserve explicit deep-link intent from global search —
+          // file tree opens lightweight; sidebar stays as the user
+          // last left it (they're independent inputs per Phase 2).
           setFileTreeOpen(true);
           return;
         }
@@ -148,20 +159,39 @@ export default function ChatSessionPage({ params }: ChatSessionPageProps) {
         if (!res.ok) return;
         const data = await res.json();
         const panel = data.settings?.default_panel || 'file_tree';
+        // Phase 2 (2026-04-30) migration: 'git' and 'dashboard'
+        // defaults used to flip dedicated PanelZone panels — those
+        // panels were folded into the Workspace Sidebar as fixed Tabs.
+        // Translate the legacy setting into "open the sidebar with
+        // that Tab active". 'file_tree' still opens the lightweight
+        // panel; 'none' opens nothing. Mutual exclusion (sidebar vs
+        // file tree) is enforced as side-effect: opening one path
+        // means we don't open the other.
         if (panel === 'none') {
           setFileTreeOpen(false);
-          setGitPanelOpen(false);
-          setDashboardPanelOpen(false);
+          if (ws) ws.setOpen(false);
+        } else if (panel === 'file_tree') {
+          setFileTreeOpen(true);
+          if (ws) ws.setOpen(false);
+        } else if (panel === 'git' && ws) {
+          setFileTreeOpen(false);
+          ws.setActiveTab('git');  // setActiveTab also flips open=true
+        } else if (panel === 'dashboard' && ws) {
+          setFileTreeOpen(false);
+          ws.setActiveTab('widget');
         } else {
-          setFileTreeOpen(panel === 'file_tree');
-          setGitPanelOpen(panel === 'git');
-          setDashboardPanelOpen(panel === 'dashboard');
+          // Unknown setting or sidebar provider missing → safe default.
+          setFileTreeOpen(true);
         }
       } catch {
         setFileTreeOpen(true);
       }
     })();
-  }, [id, targetFilePath, setFileTreeOpen, setGitPanelOpen, setDashboardPanelOpen]);
+    // ws.setActiveTab / ws.setOpen are stable callbacks from the
+    // provider; intentionally tracked via the `ws` reference identity
+    // rather than the inner functions to avoid noisy re-runs on every
+    // sidebar state change. (deps are complete — no suppression needed.)
+  }, [id, targetFilePath, setFileTreeOpen, ws]);
 
   if (loading || !sessionInfoLoaded) {
     return (
@@ -186,7 +216,7 @@ export default function ChatSessionPage({ params }: ChatSessionPageProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <ChatView key={id} sessionId={id} initialMessages={messages} initialHasMore={hasMore} modelName={sessionModel} providerId={sessionProviderId} initialPermissionProfile={sessionPermissionProfile} initialMode={sessionMode} initialHasSummary={sessionHasSummary} />
+      <ChatView key={id} sessionId={id} initialMessages={messages} initialHasMore={hasMore} modelName={sessionModel} providerId={sessionProviderId} runtimePin={sessionRuntimePin} initialPermissionProfile={sessionPermissionProfile} initialMode={sessionMode} initialHasSummary={sessionHasSummary} />
     </div>
   );
 }

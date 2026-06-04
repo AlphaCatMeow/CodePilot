@@ -1,9 +1,14 @@
 'use client';
 
-import { PaintBrush, Heart, Play } from '@/components/ui/icon';
+import { CodePilotIcon } from '@/components/ui/semantic-icon';
+import { useTranslation } from '@/hooks/useTranslation';
+import type { TranslationKey } from '@/i18n';
 
 export interface GalleryItem {
   id: string;
+  /** Generation provider (e.g. 'gemini', 'codex', 'cli-import'). Used by
+   *  the UI to label the engine that produced the image. */
+  provider?: string;
   prompt: string;
   images: Array<{ data?: string; mimeType: string; localPath?: string }>;
   type?: 'image' | 'video' | 'audio';
@@ -41,6 +46,7 @@ function isVideoItem(item: GalleryItem): boolean {
 }
 
 export function GalleryGrid({ items, onSelect }: GalleryGridProps) {
+  const { t } = useTranslation();
   return (
     <div
       className="gap-3"
@@ -52,18 +58,37 @@ export function GalleryGrid({ items, onSelect }: GalleryGridProps) {
       {items.map((item) => {
         const url = thumbnailUrl(item);
         const isVideo = isVideoItem(item);
+        const promptPreview = item.prompt.length > 80
+          ? `${item.prompt.slice(0, 80)}…`
+          : item.prompt;
+        const ariaKey: TranslationKey = isVideo
+          ? 'gallery.playVideoAria'
+          : 'gallery.openItemAria';
 
         return (
+          // role="button" + tabIndex + Enter/Space handler — image
+          // tiles are the primary activator on this page; without
+          // these the a11y tree only exposes them as "image" and
+          // keyboard / screen-reader users have no way in.
           <div
             key={item.id}
-            className="mb-3 cursor-pointer rounded-lg overflow-hidden ring-0 hover:ring-2 hover:ring-border transition-all"
+            role="button"
+            tabIndex={0}
+            aria-label={t(ariaKey, { prompt: promptPreview })}
+            className="mb-3 cursor-pointer rounded-lg overflow-hidden ring-0 hover:ring-2 hover:ring-border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring transition-all"
             style={{ breakInside: 'avoid' }}
             onClick={() => onSelect(item)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onSelect(item);
+              }
+            }}
           >
             <div className="relative bg-muted/30">
               {url ? (
                 isVideo ? (
-                  // eslint-disable-next-line jsx-a11y/media-has-caption
+                   
                   <video
                     src={url}
                     muted
@@ -81,13 +106,13 @@ export function GalleryGrid({ items, onSelect }: GalleryGridProps) {
                 )
               ) : (
                 <div className="flex aspect-square items-center justify-center">
-                  <PaintBrush size={32} className="text-muted-foreground/30" />
+                  <CodePilotIcon name="appearance" size="xl" className="text-muted-foreground/30" aria-hidden />
                 </div>
               )}
               {isVideo && url && (
                 <span className="absolute inset-0 flex items-center justify-center">
                   <span className="flex h-10 w-10 items-center justify-center rounded-full bg-black/50 backdrop-blur-sm">
-                    <Play size={20} weight="fill" className="text-white ml-0.5" />
+                    <CodePilotIcon name="play" size="lg" strokeWidth={2} className="text-white ml-0.5" aria-hidden />
                   </span>
                 </span>
               )}
@@ -98,7 +123,7 @@ export function GalleryGrid({ items, onSelect }: GalleryGridProps) {
               )}
               {item.favorited && (
                 <span className="absolute top-1.5 left-1.5">
-                  <Heart size={16} className="text-status-error-foreground drop-shadow" weight="fill" />
+                  <CodePilotIcon name="favorite" size="md" strokeWidth={2} className="text-status-error-foreground drop-shadow" aria-hidden />
                 </span>
               )}
             </div>

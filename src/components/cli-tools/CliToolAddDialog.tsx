@@ -11,7 +11,8 @@ import {
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { SpinnerGap, CheckCircle, XCircle, Terminal } from "@/components/ui/icon";
+import { SpinnerGap, CheckCircle, XCircle } from "@/components/ui/icon";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { useTranslation } from "@/hooks/useTranslation";
 import type { TranslationKey } from "@/i18n";
 
@@ -93,7 +94,7 @@ export function CliToolAddDialog({
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Terminal size={18} />
+            <CodePilotIcon name="cli" size={18} />
             {t("cliTools.addToolTitle" as TranslationKey)}
           </DialogTitle>
           <DialogDescription>

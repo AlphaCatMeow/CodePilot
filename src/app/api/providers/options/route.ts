@@ -30,7 +30,15 @@ export async function PUT(request: NextRequest) {
     const merged: ProviderOptions = { ...existing, ...options };
     setProviderOptions(providerId, merged);
 
-    return NextResponse.json({ options: merged });
+    // Re-read after write. For `__global__` with `default_mode: 'auto'`,
+    // `setProviderOptions` atomically clears the pinned keys at db.ts:1680
+    // even though `merged` still carries them (the route's generic merge
+    // can't know about Auto's clear semantics). Returning `merged`
+    // directly would lie to the client — the response would still show
+    // a pinned provider/model that no longer exists in the DB. Refetch
+    // so the response always matches what the resolver sees next.
+    const persisted = getProviderOptions(providerId);
+    return NextResponse.json({ options: persisted });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Failed to update options' },

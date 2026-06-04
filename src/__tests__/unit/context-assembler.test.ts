@@ -31,6 +31,7 @@ function makeSession(overrides: Partial<ChatSession> = {}): ChatSession {
     project_name: '',
     status: 'active',
     provider_name: '',
+    runtime_pin: '',
     runtime_status: 'idle',
     runtime_updated_at: '',
     runtime_error: '',

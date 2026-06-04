@@ -98,6 +98,43 @@ describe('Provider Catalog', () => {
       assert.equal(preset.protocol, 'anthropic');
       assert.ok(preset.fields.includes('env_overrides'), 'should expose env_overrides field');
     });
+
+    it('openrouter preset ships upstreamModelId for sonnet/opus/haiku (round 8)', () => {
+      // Phase 5b round-8 (2026-05-18) — OpenRouter rejects the bare
+      // aliases (`sonnet` / `opus` / `haiku`) with "is not a valid
+      // model ID". The preset's defaultModels now ship a verified
+      // OpenRouter slug via `upstreamModelId` on each entry so the
+      // resolver's `catalogEntry.upstreamModelId` path
+      // (provider-resolver.ts:424) sends the right id upstream.
+      const preset = VENDOR_PRESETS.find(p => p.key === 'openrouter');
+      assert.ok(preset, 'openrouter preset not found');
+      const byAlias = new Map(preset!.defaultModels.map(m => [m.modelId, m]));
+      const haiku = byAlias.get('haiku');
+      const sonnet = byAlias.get('sonnet');
+      const opus = byAlias.get('opus');
+      assert.ok(haiku, 'haiku alias missing from OpenRouter preset');
+      assert.ok(sonnet, 'sonnet alias missing from OpenRouter preset');
+      assert.ok(opus, 'opus alias missing from OpenRouter preset');
+      // Haiku is the verified smoke pin — exact slug confirmed via
+      // real-credential test. Sonnet/opus follow the same OpenRouter
+      // naming convention; we pin the prefix shape so a refactor
+      // can't drop the version tag.
+      assert.equal(
+        haiku!.upstreamModelId,
+        'anthropic/claude-haiku-4.5',
+        'OpenRouter haiku must map to the verified slug anthropic/claude-haiku-4.5',
+      );
+      assert.match(
+        sonnet!.upstreamModelId ?? '',
+        /^anthropic\/claude-sonnet-\d+\.\d+$/,
+        'OpenRouter sonnet must follow anthropic/claude-sonnet-X.Y pattern',
+      );
+      assert.match(
+        opus!.upstreamModelId ?? '',
+        /^anthropic\/claude-opus-\d+\.\d+$/,
+        'OpenRouter opus must follow anthropic/claude-opus-X.Y pattern',
+      );
+    });
   });
 
   describe('inferProtocolFromLegacy', () => {
@@ -372,6 +409,7 @@ describe('Provider Resolver', () => {
         envOverrides: {
           API_TIMEOUT_MS: '3000000',
           ANTHROPIC_API_KEY: '', // legacy placeholder — should be skipped (auth keys handled by auth injection)
+          ANTHROPIC_MODEL: 'sonnet', // stale legacy model override — should be skipped (role models own it)
           SOME_CUSTOM_VAR: '',   // non-auth key — should be deleted
         },
         roleModels: {},
@@ -384,6 +422,8 @@ describe('Provider Resolver', () => {
       assert.equal(env.API_TIMEOUT_MS, '3000000');
       // Auth keys are NOT deleted by envOverrides — they're managed by the auth injection logic above
       assert.equal(env.ANTHROPIC_API_KEY, 'key'); // preserved from auth injection
+      assert.notEqual(env.ANTHROPIC_MODEL, 'sonnet',
+        'envOverrides must not reintroduce stale bare model aliases after resolver injection');
       assert.equal(env.SOME_CUSTOM_VAR, undefined); // non-auth key deleted by empty string
     });
 
@@ -427,6 +467,57 @@ describe('Provider Resolver', () => {
       assert.equal(env.ANTHROPIC_MODEL, 'my-model-v1');
       assert.equal(env.ANTHROPIC_REASONING_MODEL, 'my-reasoning-model');
       assert.equal(env.ANTHROPIC_SMALL_FAST_MODEL, 'my-small-model');
+    });
+
+    it('canonicalizes short role-model aliases to upstream IDs before injecting Claude Code env', () => {
+      const resolved: ResolvedProvider = {
+        provider: {
+          id: 'test',
+          name: 'Legacy Gateway',
+          provider_type: 'anthropic',
+          protocol: 'anthropic',
+          base_url: 'https://gateway.example.com/anthropic',
+          api_key: 'key',
+          is_active: 1,
+          sort_order: 0,
+          extra_env: '{}',
+          headers_json: '{}',
+          env_overrides_json: '',
+          role_models_json: '{"default":"sonnet","sonnet":"sonnet","haiku":"haiku","opus":"opus"}',
+          notes: '',
+          created_at: '',
+          updated_at: '',
+          options_json: '{}',
+        },
+        protocol: 'anthropic',
+        authStyle: 'api_key',
+        model: 'sonnet',
+        upstreamModel: 'claude-sonnet-4-6',
+        modelDisplayName: 'Sonnet 4.6',
+        headers: {},
+        envOverrides: {},
+        roleModels: {
+          default: 'sonnet',
+          sonnet: 'sonnet',
+          haiku: 'haiku',
+          opus: 'opus',
+        },
+        hasCredentials: true,
+        availableModels: [
+          { modelId: 'sonnet', upstreamModelId: 'claude-sonnet-4-6', displayName: 'Sonnet 4.6' },
+          { modelId: 'haiku', upstreamModelId: 'claude-haiku-4-5-20251001', displayName: 'Haiku 4.5' },
+          { modelId: 'opus', upstreamModelId: 'claude-opus-4-7', displayName: 'Opus 4.7' },
+        ],
+        settingSources: ['user'],
+      };
+
+      const env = toClaudeCodeEnv({}, resolved);
+      assert.equal(env.ANTHROPIC_MODEL, 'claude-sonnet-4-6');
+      assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, 'claude-sonnet-4-6');
+      assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, 'claude-haiku-4-5-20251001');
+      assert.equal(env.ANTHROPIC_DEFAULT_OPUS_MODEL, 'claude-opus-4-7');
+      assert.notEqual(env.ANTHROPIC_MODEL, 'sonnet',
+        'Claude Code compat gateways must not receive the bare UI alias `sonnet`');
     });
 
     it('preserves env vars when no provider (env-based)', () => {
@@ -484,7 +575,66 @@ describe('Provider Resolver', () => {
       assert.deepEqual(config.processEnvInjections, {});
     });
 
-    it('openrouter protocol → openai SDK with correct base URL', () => {
+    it('openrouter protocol — model=haiku alias maps to upstream anthropic/claude-haiku-4.5 (round-8 fix)', () => {
+      // Phase 5b round-8 (2026-05-18) — Codex real-credential smoke
+      // confirmed OpenRouter rejects bare aliases ("haiku is not a
+      // valid model ID"). The fix added explicit upstreamModelId on
+      // OPENROUTER_ANTHROPIC_MODELS in provider-catalog.ts, and
+      // toAiSdkConfig's existing catalogEntry.upstreamModelId path
+      // (provider-resolver.ts:424) reads it. Pin the resolved
+      // modelId on the AI-SDK config produced for an OpenRouter +
+      // haiku call so a future refactor can't silently drop the
+      // upstream slug.
+      const resolved: ResolvedProvider = {
+        provider: {
+          id: 'test', name: 'OR', provider_type: 'openrouter', protocol: 'openrouter',
+          base_url: 'https://openrouter.ai/api', api_key: 'or-key', is_active: 1, sort_order: 0,
+          extra_env: '{}', headers_json: '{}', env_overrides_json: '', role_models_json: '{}',
+          notes: '', created_at: '', updated_at: '', options_json: '{}',
+        },
+        protocol: 'openrouter',
+        authStyle: 'api_key',
+        model: 'haiku',
+        modelDisplayName: 'Haiku 4.5',
+        upstreamModel: 'anthropic/claude-haiku-4.5',
+        headers: {},
+        envOverrides: {},
+        roleModels: {},
+        hasCredentials: true,
+        availableModels: [
+          {
+            modelId: 'haiku',
+            upstreamModelId: 'anthropic/claude-haiku-4.5',
+            displayName: 'Haiku 4.5',
+            role: 'haiku',
+          },
+        ],
+        settingSources: ['project', 'local'],
+      };
+
+      // Pass the alias explicitly (mirrors how the chat send path
+      // invokes toAiSdkConfig with a per-turn modelOverride).
+      const config = toAiSdkConfig(resolved, 'haiku');
+      assert.equal(config.sdkType, 'claude-code-compat',
+        'OpenRouter /api still routes through claude-code-compat (round 7)');
+      assert.equal(
+        config.modelId,
+        'anthropic/claude-haiku-4.5',
+        'haiku alias must resolve to the OpenRouter upstream slug, NOT be sent as bare "haiku"',
+      );
+    });
+
+    it('openrouter protocol — Anthropic skin (/api) → claude-code-compat SDK (round-7 fix)', () => {
+      // Phase 5b round-7 (2026-05-18) — OpenRouter exposes two skin
+      // endpoints: `/api` (Anthropic Messages format) and `/api/v1`
+      // (OpenAI Chat Completions format). Pre-fix the resolver
+      // hardcoded `sdkType: 'openai'` for both, so an Anthropic-skin
+      // base URL was sent OpenAI Chat Completions chunks against the
+      // Messages endpoint — real-credential smoke saw 200 OK with
+      // empty text, non-stream returned "Invalid JSON response". Fix
+      // routes the Anthropic skin through `claude-code-compat` (the
+      // existing third-party Anthropic-compatible adapter we use for
+      // sdkProxyOnly providers like Zhipu / Kimi).
       const resolved: ResolvedProvider = {
         provider: {
           id: 'test', name: 'OR', provider_type: 'openrouter', protocol: 'openrouter',
@@ -506,9 +656,71 @@ describe('Provider Resolver', () => {
       };
 
       const config = toAiSdkConfig(resolved);
+      assert.equal(config.sdkType, 'claude-code-compat',
+        'Anthropic skin /api must route through claude-code-compat, NOT the OpenAI SDK');
+      assert.equal(config.apiKey, 'or-key');
+      assert.equal(config.baseUrl, 'https://openrouter.ai/api',
+        'Base URL must stay /api (NOT auto-upgraded to /api/v1)');
+    });
+
+    it('openrouter protocol — OpenAI skin (/api/v1) → openai SDK', () => {
+      // Belt: round-7 fix only branches the Anthropic skin away. The
+      // OpenAI skin (the canonical OpenRouter URL most users have)
+      // keeps the existing `sdkType: 'openai'` path. Pin so a future
+      // refactor doesn't accidentally widen the branch.
+      const resolved: ResolvedProvider = {
+        provider: {
+          id: 'test', name: 'OR', provider_type: 'openrouter', protocol: 'openrouter',
+          base_url: 'https://openrouter.ai/api/v1', api_key: 'or-key', is_active: 1, sort_order: 0,
+          extra_env: '{}', headers_json: '{}', env_overrides_json: '', role_models_json: '{}',
+          notes: '', created_at: '', updated_at: '', options_json: '{}',
+        },
+        protocol: 'openrouter',
+        authStyle: 'api_key',
+        model: 'gpt-4o',
+        modelDisplayName: undefined,
+        upstreamModel: undefined,
+        headers: {},
+        envOverrides: {},
+        roleModels: {},
+        hasCredentials: true,
+        availableModels: [],
+        settingSources: ['project', 'local'],
+      };
+
+      const config = toAiSdkConfig(resolved);
       assert.equal(config.sdkType, 'openai');
       assert.equal(config.apiKey, 'or-key');
-      assert.equal(config.baseUrl, 'https://openrouter.ai/api');
+      assert.equal(config.baseUrl, 'https://openrouter.ai/api/v1');
+    });
+
+    it('openrouter protocol — empty base_url → defaults to OpenAI skin', () => {
+      // Defensive: if a provider record has no base_url set (legacy
+      // row), we default to /api/v1 (OpenAI skin) which keeps the
+      // pre-round-7 behaviour for un-configured records.
+      const resolved: ResolvedProvider = {
+        provider: {
+          id: 'test', name: 'OR', provider_type: 'openrouter', protocol: 'openrouter',
+          base_url: '', api_key: 'or-key', is_active: 1, sort_order: 0,
+          extra_env: '{}', headers_json: '{}', env_overrides_json: '', role_models_json: '{}',
+          notes: '', created_at: '', updated_at: '', options_json: '{}',
+        },
+        protocol: 'openrouter',
+        authStyle: 'api_key',
+        model: 'gpt-4o',
+        modelDisplayName: undefined,
+        upstreamModel: undefined,
+        headers: {},
+        envOverrides: {},
+        roleModels: {},
+        hasCredentials: true,
+        availableModels: [],
+        settingSources: ['project', 'local'],
+      };
+
+      const config = toAiSdkConfig(resolved);
+      assert.equal(config.sdkType, 'openai');
+      assert.equal(config.baseUrl, 'https://openrouter.ai/api/v1');
     });
 
     it('bedrock protocol → injects env overrides', () => {
@@ -1098,6 +1310,684 @@ const { createProvider, deleteProvider } = require('../../lib/db');
       const resolved = resolveProvider({ providerId: provider.id, sessionModel: 'session-pick' });
       assert.equal(resolved.model, 'session-pick',
         'session model should take priority over global default');
+    } finally {
+      deleteProvider(provider.id);
+      teardown();
+    }
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Hidden role models must NOT leak into Claude Code subprocess env
+// ────────────────────────────────────────────────────────────────
+//
+// Regression coverage for the P2 finding (2026-04-26): the resolver's
+// `requestedModel` chain skips hidden role defaults via `dbHiddenIds`,
+// but `roleModels` itself was untouched. `toClaudeCodeEnv()` then read
+// the original (still-hidden) value out of `roleModels.default` and
+// wrote it to `ANTHROPIC_MODEL` for the SDK subprocess — defeating
+// the user's intent to hide the model.
+//
+// `buildResolution()` now strips every role slot whose value is in
+// `dbHiddenIds` and fills `roleModels.default` from the picked fallback
+// upstream so `ANTHROPIC_MODEL` stays meaningful.
+
+describe('OpenRouter Anthropic-skin — alias-row canonicalization (round 9)', () => {
+  it('legacy DB row haiku→haiku is canonicalized to anthropic/claude-haiku-4.5 via the preset', () => {
+    // Phase 5b round-9 (2026-05-18) — round 8 added upstream slugs
+    // to the OpenRouter preset, but existing provider records had
+    // `provider_models` rows with `upstream_model_id='haiku'` (alias
+    // self-reference) from when the preset was alias-only. The
+    // DB-wins merge in resolveProvider shadowed the new preset, so
+    // smoke was still sending bare `haiku` upstream. This test
+    // exercises the normalize step: legacy alias-self DB row +
+    // OpenRouter Anthropic-skin base URL → resolved upstream is the
+    // preset slug.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createProvider, deleteProvider, upsertProviderModel } = require('../../lib/db');
+    const provider = createProvider({
+      name: '__test_openrouter_round9__',
+      provider_type: 'openrouter',
+      base_url: 'https://openrouter.ai/api', // Anthropic skin — NOT /api/v1
+      api_key: 'or-test-key',
+    });
+    try {
+      // Materialize the legacy-shape DB row that round 9 must heal.
+      upsertProviderModel({
+        provider_id: provider.id,
+        model_id: 'haiku',
+        upstream_model_id: 'haiku', // <-- legacy alias self-reference
+        display_name: 'Haiku 4.5',
+        enabled: 1,
+        source: 'manual',
+        user_edited: 0,
+        sort_order: 0,
+      });
+
+      const resolved = resolveProvider({
+        providerId: provider.id,
+        model: 'haiku',
+      });
+
+      const haikuEntry = resolved.availableModels.find(m => m.modelId === 'haiku');
+      assert.ok(haikuEntry, 'haiku must remain in availableModels after normalize');
+      assert.equal(
+        haikuEntry!.upstreamModelId,
+        'anthropic/claude-haiku-4.5',
+        'legacy alias self-reference must be canonicalized to the preset slug',
+      );
+
+      const config = toAiSdkConfig(resolved, 'haiku');
+      assert.equal(
+        config.modelId,
+        'anthropic/claude-haiku-4.5',
+        'toAiSdkConfig must produce the canonicalized upstream so the proxy sends OpenRouter a valid model id',
+      );
+      assert.equal(
+        config.sdkType,
+        'claude-code-compat',
+        '/api Anthropic skin still routes through claude-code-compat (round 7)',
+      );
+    } finally {
+      deleteProvider(provider.id);
+    }
+  });
+
+  it('user-configured full upstream slug is preserved (no override)', () => {
+    // Belt: if a user manually set `anthropic/claude-haiku-4.6` (a
+    // different version than our preset 4.5), the normalize MUST
+    // NOT clobber it. Customization wins. The gate is strict:
+    // override only when upstream is undefined OR === alias.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createProvider, deleteProvider, upsertProviderModel } = require('../../lib/db');
+    const provider = createProvider({
+      name: '__test_openrouter_round9_preserve__',
+      provider_type: 'openrouter',
+      base_url: 'https://openrouter.ai/api',
+      api_key: 'or-test-key',
+    });
+    try {
+      upsertProviderModel({
+        provider_id: provider.id,
+        model_id: 'haiku',
+        upstream_model_id: 'anthropic/claude-haiku-4.6', // user-set, different version
+        display_name: 'Haiku 4.6 (user-pinned)',
+        enabled: 1,
+        source: 'manual',
+        user_edited: 1,
+        sort_order: 0,
+      });
+
+      const resolved = resolveProvider({
+        providerId: provider.id,
+        model: 'haiku',
+      });
+      const haikuEntry = resolved.availableModels.find(m => m.modelId === 'haiku');
+      assert.equal(
+        haikuEntry!.upstreamModelId,
+        'anthropic/claude-haiku-4.6',
+        'user-configured upstream must NOT be overwritten by the preset',
+      );
+    } finally {
+      deleteProvider(provider.id);
+    }
+  });
+
+  it('OpenAI skin (/api/v1) provider is NOT touched by the OpenRouter normalize', () => {
+    // The normalize is gated by isOpenRouterAnthropicSkinUrl which
+    // returns false for /api/v1. So an OpenAI-skin OpenRouter
+    // provider's DB rows pass through unchanged. (Bare aliases on
+    // OpenAI skin are still wrong upstream but that's a different
+    // surface — not in scope here.)
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createProvider, deleteProvider, upsertProviderModel } = require('../../lib/db');
+    const provider = createProvider({
+      name: '__test_openrouter_round9_openai_skin__',
+      provider_type: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1', // OpenAI skin
+      api_key: 'or-test-key',
+    });
+    try {
+      upsertProviderModel({
+        provider_id: provider.id,
+        model_id: 'haiku',
+        upstream_model_id: 'haiku', // legacy alias self-reference
+        display_name: 'Haiku',
+        enabled: 1,
+        source: 'manual',
+        user_edited: 0,
+        sort_order: 0,
+      });
+
+      const resolved = resolveProvider({
+        providerId: provider.id,
+        model: 'haiku',
+      });
+      const haikuEntry = resolved.availableModels.find(m => m.modelId === 'haiku');
+      assert.equal(
+        haikuEntry!.upstreamModelId,
+        'haiku',
+        'OpenAI skin /api/v1 must NOT be touched by the OpenRouter Anthropic-skin normalize',
+      );
+    } finally {
+      deleteProvider(provider.id);
+    }
+  });
+});
+
+describe('Hidden role models do not leak into Claude Code env', () => {
+  it('hidden role default is stripped + ANTHROPIC_MODEL takes picked fallback', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createProvider, deleteProvider, upsertProviderModel } = require('../../lib/db');
+    const provider = createProvider({
+      name: '__test_hidden_role_default__',
+      provider_type: 'anthropic',
+      base_url: 'https://api.anthropic.com',
+      api_key: 'test-key',
+      // Default role points at the model we are about to hide.
+      role_models_json: JSON.stringify({ default: 'hidden-default-model' }),
+    });
+    try {
+      // Materialize provider_models rows: hide the role default, leave a
+      // visible model around so the resolver's fallback can pick it.
+      upsertProviderModel({
+        provider_id: provider.id,
+        model_id: 'hidden-default-model',
+        upstream_model_id: 'hidden-default-model',
+        display_name: 'Hidden Default',
+        enabled: 0,
+        source: 'manual',
+        user_edited: 1,
+        sort_order: 0,
+      });
+      upsertProviderModel({
+        provider_id: provider.id,
+        model_id: 'visible-fallback',
+        upstream_model_id: 'visible-fallback',
+        display_name: 'Visible Fallback',
+        enabled: 1,
+        source: 'manual',
+        user_edited: 1,
+        sort_order: 1,
+      });
+
+      const resolved = resolveProvider({ providerId: provider.id });
+
+      assert.equal(resolved.model, 'visible-fallback',
+        'resolver picks the visible model as fallback');
+      assert.notEqual(resolved.roleModels.default, 'hidden-default-model',
+        'hidden default must be stripped from roleModels');
+      assert.equal(resolved.roleModels.default, 'visible-fallback',
+        'roleModels.default is filled from the picked upstream');
+
+      const env = toClaudeCodeEnv({}, resolved);
+      assert.notEqual(env.ANTHROPIC_MODEL, 'hidden-default-model',
+        'ANTHROPIC_MODEL must NOT carry the hidden role default');
+      assert.equal(env.ANTHROPIC_MODEL, 'visible-fallback',
+        'ANTHROPIC_MODEL takes the picked fallback so the SDK subprocess agrees with the chat picker');
+    } finally {
+      deleteProvider(provider.id);
+    }
+  });
+
+  it('hidden sonnet/haiku/opus role slots are stripped from ANTHROPIC_DEFAULT_*_MODEL', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createProvider, deleteProvider, upsertProviderModel } = require('../../lib/db');
+    const provider = createProvider({
+      name: '__test_hidden_role_aliases__',
+      provider_type: 'anthropic',
+      base_url: 'https://api.anthropic.com',
+      api_key: 'test-key',
+      role_models_json: JSON.stringify({
+        default: 'visible-default',
+        sonnet: 'hidden-sonnet',
+        haiku: 'hidden-haiku',
+        opus: 'visible-opus',
+      }),
+    });
+    try {
+      upsertProviderModel({
+        provider_id: provider.id, model_id: 'visible-default',
+        upstream_model_id: 'visible-default', display_name: 'Visible',
+        enabled: 1, source: 'manual', user_edited: 1, sort_order: 0,
+      });
+      upsertProviderModel({
+        provider_id: provider.id, model_id: 'hidden-sonnet',
+        upstream_model_id: 'hidden-sonnet', display_name: 'Hidden Sonnet',
+        enabled: 0, source: 'manual', user_edited: 1, sort_order: 1,
+      });
+      upsertProviderModel({
+        provider_id: provider.id, model_id: 'hidden-haiku',
+        upstream_model_id: 'hidden-haiku', display_name: 'Hidden Haiku',
+        enabled: 0, source: 'manual', user_edited: 1, sort_order: 2,
+      });
+      upsertProviderModel({
+        provider_id: provider.id, model_id: 'visible-opus',
+        upstream_model_id: 'visible-opus', display_name: 'Visible Opus',
+        enabled: 1, source: 'manual', user_edited: 1, sort_order: 3,
+      });
+
+      const resolved = resolveProvider({ providerId: provider.id });
+
+      assert.equal(resolved.roleModels.sonnet, undefined,
+        'hidden sonnet slot stripped');
+      assert.equal(resolved.roleModels.haiku, undefined,
+        'hidden haiku slot stripped');
+      assert.equal(resolved.roleModels.opus, 'visible-opus',
+        'visible opus slot preserved');
+      assert.equal(resolved.roleModels.default, 'visible-default',
+        'visible default slot preserved (no fill needed)');
+
+      const env = toClaudeCodeEnv({}, resolved);
+      assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined,
+        'no ANTHROPIC_DEFAULT_SONNET_MODEL when sonnet slot is hidden');
+      assert.equal(env.ANTHROPIC_DEFAULT_HAIKU_MODEL, undefined,
+        'no ANTHROPIC_DEFAULT_HAIKU_MODEL when haiku slot is hidden');
+      assert.equal(env.ANTHROPIC_DEFAULT_OPUS_MODEL, 'visible-opus',
+        'visible opus reaches Claude Code subprocess');
+      assert.equal(env.ANTHROPIC_MODEL, 'visible-default',
+        'visible default reaches Claude Code subprocess');
+    } finally {
+      deleteProvider(provider.id);
+    }
+  });
+
+  it('non-hidden role models are preserved (regression guard)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createProvider, deleteProvider, upsertProviderModel } = require('../../lib/db');
+    const provider = createProvider({
+      name: '__test_non_hidden_role_pass_through__',
+      provider_type: 'anthropic',
+      base_url: 'https://api.anthropic.com',
+      api_key: 'test-key',
+      role_models_json: JSON.stringify({
+        default: 'glm-5-turbo',
+        sonnet: 'glm-5-turbo',
+        small: 'glm-air',
+      }),
+    });
+    try {
+      upsertProviderModel({
+        provider_id: provider.id, model_id: 'glm-5-turbo',
+        upstream_model_id: 'glm-5-turbo', display_name: 'GLM-5-Turbo',
+        enabled: 1, source: 'manual', user_edited: 1, sort_order: 0,
+      });
+      upsertProviderModel({
+        provider_id: provider.id, model_id: 'glm-air',
+        upstream_model_id: 'glm-air', display_name: 'GLM Air',
+        enabled: 1, source: 'manual', user_edited: 1, sort_order: 1,
+      });
+
+      const resolved = resolveProvider({ providerId: provider.id });
+      const env = toClaudeCodeEnv({}, resolved);
+
+      assert.equal(env.ANTHROPIC_MODEL, 'glm-5-turbo',
+        'unhidden default still propagates to ANTHROPIC_MODEL');
+      assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, 'glm-5-turbo',
+        'unhidden sonnet still propagates');
+      assert.equal(env.ANTHROPIC_SMALL_FAST_MODEL, 'glm-air',
+        'unhidden small still propagates');
+    } finally {
+      deleteProvider(provider.id);
+    }
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Runtime Compatibility Matrix — Provider compat tier mapping
+// ────────────────────────────────────────────────────────────────
+
+describe('getProviderCompat tier mapping', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getProviderCompat } = require('../../lib/runtime-compat');
+
+  it('Anthropic official → claude_code_ready', () => {
+    assert.equal(
+      getProviderCompat({ provider_type: 'anthropic', base_url: 'https://api.anthropic.com' }),
+      'claude_code_ready',
+    );
+  });
+
+  it('verified Coding Plan preset (GLM CN) → claude_code_verified', () => {
+    assert.equal(
+      getProviderCompat({ provider_type: 'anthropic', base_url: 'https://open.bigmodel.cn/api/anthropic' }),
+      'claude_code_verified',
+    );
+  });
+
+  it('verified Coding Plan preset (Volcengine) → claude_code_verified', () => {
+    assert.equal(
+      getProviderCompat({ provider_type: 'anthropic', base_url: 'https://ark.cn-beijing.volces.com/api/coding' }),
+      'claude_code_verified',
+    );
+  });
+
+  it('verified Coding Plan preset (Kimi) → claude_code_verified', () => {
+    assert.equal(
+      getProviderCompat({ provider_type: 'anthropic', base_url: 'https://api.kimi.com/coding/' }),
+      'claude_code_verified',
+    );
+  });
+
+  it('OpenRouter Anthropic skin (`/api`) → openrouter_anthropic_skin', () => {
+    // OpenRouter's `/api` endpoint speaks Anthropic wire protocol per
+    // their Claude Code integration docs; it must NOT classify as
+    // codepilot_only or the Claude Code Runtime picker hides every
+    // OpenRouter row.
+    assert.equal(
+      getProviderCompat({ provider_type: 'openrouter', base_url: 'https://openrouter.ai/api' }),
+      'openrouter_anthropic_skin',
+    );
+  });
+
+  it('OpenRouter OpenAI-compat skin (`/api/v1`) → codepilot_only', () => {
+    // The `/v1` skin is OpenAI-compatible (`/chat/completions`) and only
+    // reachable from CodePilot Runtime. Users editing the URL or pasting
+    // from OpenAI tutorials can land here.
+    assert.equal(
+      getProviderCompat({ provider_type: 'openrouter', base_url: 'https://openrouter.ai/api/v1' }),
+      'codepilot_only',
+    );
+  });
+
+  it('OpenRouter Anthropic skin trailing slash → openrouter_anthropic_skin', () => {
+    // Defensive: matcher must normalize trailing slash so
+    // `https://openrouter.ai/api/` still classifies as the Anthropic
+    // skin, not as `codepilot_only`.
+    assert.equal(
+      getProviderCompat({ provider_type: 'openrouter', base_url: 'https://openrouter.ai/api/' }),
+      'openrouter_anthropic_skin',
+    );
+  });
+
+  it('image preset → media_only', () => {
+    assert.equal(
+      getProviderCompat({ provider_type: 'gemini-image', base_url: 'https://generativelanguage.googleapis.com' }),
+      'media_only',
+    );
+  });
+
+  it('anthropic-thirdparty fallback (any anthropic URL with no brand match) → claude_code_experimental', () => {
+    // The `anthropic-thirdparty` preset is a wildcard (empty baseUrl) that
+    // catches any anthropic-protocol record not matched by a brand preset.
+    // Without `claudeCodeVerified`, it lands on the experimental tier.
+    assert.equal(
+      getProviderCompat({ provider_type: 'anthropic', base_url: 'https://nobody-knows-this.example.com' }),
+      'claude_code_experimental',
+    );
+  });
+
+  it('truly unrecognized provider_type with custom URL → unknown', () => {
+    assert.equal(
+      getProviderCompat({ provider_type: 'definitely-not-a-protocol', base_url: 'https://x.example.com' }),
+      'unknown',
+    );
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// getModelCompat — model-layer flags
+// ────────────────────────────────────────────────────────────────
+//
+// Covers the alias-lift removal: codepilot_only providers no longer
+// re-flag their `claude-*` rows as claude_code_compatible. The provider
+// is "OpenAI 兼容" / "不进入 Claude Code 流程" at the UI layer; smuggling
+// claude aliases back into the Claude Code runtime would contradict that.
+
+describe('getModelCompat alias-lift removal (P2a regression)', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { getModelCompat } = require('../../lib/runtime-compat');
+
+  it('codepilot_only + claude alias model id → NOT claude_code_compatible', () => {
+    const cap = getModelCompat({
+      modelId: 'anthropic/claude-3-opus',
+      providerCompat: 'codepilot_only',
+    });
+    assert.equal(cap.claude_code_compatible, undefined,
+      'no alias lift — codepilot_only provider keeps claude alias OFF the Claude Code runtime');
+    assert.equal(cap.codepilot_runtime_compatible, true,
+      'still reachable from the CodePilot runtime');
+  });
+
+  it('codepilot_only + bare sonnet alias → NOT claude_code_compatible', () => {
+    const cap = getModelCompat({
+      modelId: 'sonnet',
+      providerCompat: 'codepilot_only',
+    });
+    assert.equal(cap.claude_code_compatible, undefined);
+  });
+
+  it('claude_code_ready + any model → claude_code_compatible AND codepilot_runtime_compatible', () => {
+    const cap = getModelCompat({
+      modelId: 'claude-sonnet-4-6',
+      providerCompat: 'claude_code_ready',
+    });
+    assert.equal(cap.claude_code_compatible, true);
+    assert.equal(cap.codepilot_runtime_compatible, true);
+  });
+
+  it('claude_code_verified + any model → claude_code_compatible AND codepilot_runtime_compatible', () => {
+    // Phase 2 Step 4c follow-up (2026-05-07): with
+    // `ClaudeCodeCompatAdapter` (src/lib/claude-code-compat/), CodePilot
+    // Runtime now speaks the same Anthropic wire format the SDK
+    // subprocess does, so verified anthropic-compat presets (GLM / Kimi /
+    // MiniMax / Volcengine / Xiaomi MiMo / Bailian / DeepSeek Coding
+    // Plan) are reachable from BOTH runtimes. The previous "SDK-bound"
+    // assumption hid these from the AISDK picker, leaving only OpenAI
+    // OAuth GPT — fixed at the model layer here and at the route's
+    // group-layer filter (no more sdkProxyOnly group drop).
+    const cap = getModelCompat({
+      modelId: 'glm-5-turbo',
+      providerCompat: 'claude_code_verified',
+    });
+    assert.equal(cap.claude_code_compatible, true);
+    assert.equal(cap.codepilot_runtime_compatible, true,
+      'ClaudeCodeCompatAdapter makes verified anthropic-compat presets reachable from CodePilot Runtime');
+  });
+
+  it('claude_code_experimental + any model → claude_code_compatible AND codepilot_runtime_compatible', () => {
+    // Same reasoning as the verified case — verified vs experimental
+    // differ only in UI tone (info vs warning) and copy ("兼容" vs
+    // "实验"), not in routing capability.
+    const cap = getModelCompat({
+      modelId: 'some-anthropic-thirdparty-model',
+      providerCompat: 'claude_code_experimental',
+    });
+    assert.equal(cap.claude_code_compatible, true);
+    assert.equal(cap.codepilot_runtime_compatible, true);
+  });
+
+  it('media_only → media flag, no chat flags', () => {
+    const cap = getModelCompat({
+      modelId: 'gemini-2.0-flash-exp-image-generation',
+      providerCompat: 'media_only',
+    });
+    assert.equal(cap.media, true);
+    assert.equal(cap.claude_code_compatible, undefined);
+    assert.equal(cap.codepilot_runtime_compatible, undefined);
+  });
+
+  it('openrouter_anthropic_skin + any model → claude_code_compatible only', () => {
+    // OpenRouter `/api` skin speaks Anthropic wire protocol per
+    // OpenRouter docs; surface every row in the Claude Code Runtime
+    // picker (otherwise the user sees the whole provider greyed out as
+    // "当前执行引擎不可用"). codepilot_runtime_compatible is left
+    // unset — CodePilot Runtime expects the OpenAI-shape `/v1` URL, so
+    // routing it through the Anthropic-shape URL would silently fail.
+    const cap = getModelCompat({
+      modelId: 'anthropic/claude-sonnet-4-6',
+      providerCompat: 'openrouter_anthropic_skin',
+    });
+    assert.equal(cap.claude_code_compatible, true);
+    assert.equal(cap.codepilot_runtime_compatible, undefined);
+  });
+
+  it('openrouter_anthropic_skin + non-anthropic model → still claude_code_compatible (no per-id alias-lift gate)', () => {
+    // Don't restore old "only `claude-*` ids visible" alias-lift logic.
+    // Provider tier alone decides reachability; the Models page badge
+    // disappears for the whole OpenRouter group, not per-row.
+    const cap = getModelCompat({
+      modelId: 'meta-llama/llama-4-scout',
+      providerCompat: 'openrouter_anthropic_skin',
+    });
+    assert.equal(cap.claude_code_compatible, true);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Runtime Compatibility Matrix — provider-resolver gating
+// ────────────────────────────────────────────────────────────────
+//
+// `opts.runtime` filters the default-model fallback chain to candidates
+// that the active runtime can actually reach. Combines with the existing
+// `dbHiddenIds` gate. Explicit `opts.model` is honored even if
+// runtime-incompatible — caller asked for it by name, mismatches surface
+// downstream with a clearer error than a silent rewrite would produce.
+
+describe('provider-resolver runtime gate', () => {
+  // Each test in this block sets `default_model` setting to '' so the
+  // global legacy fallback (priority 5 in the resolver) doesn't smuggle
+  // a stale per-machine default in and short-circuit the runtime gate
+  // we're trying to exercise. Restored in teardown so other tests are
+  // unaffected.
+  let savedDefaultModel: string | null | undefined;
+  const setup = () => {
+    savedDefaultModel = getSetting('default_model');
+    setSetting('default_model', '');
+  };
+  const teardown = () => {
+    setSetting('default_model', savedDefaultModel || '');
+  };
+
+  it('codepilot_only provider in claude_code mode → final-final fallback (alias lift removed)', () => {
+    setup();
+    // OpenRouter (`codepilot_only`) — after the alias lift was removed in
+    // runtime-compat.ts, NO row on this provider satisfies the
+    // `claude_code` runtime gate. The resolver's runtime-filtered chain
+    // (globalDefault → roleModels.default → setting → runtimeFilteredAvailable[0])
+    // therefore yields nothing, and falls through to the final-final
+    // `availableModels[0]` (without runtime gating) so the resolution is
+    // never empty. The wire-format mismatch surfaces at the chat route /
+    // SDK layer instead of inside the resolver. This keeps the resolver
+    // total — chat routes can still produce a usable ResolvedProvider
+    // even when there's no runtime-compatible candidate.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createProvider, deleteProvider, upsertProviderModel } = require('../../lib/db');
+    const provider = createProvider({
+      name: '__test_runtime_gate_or__',
+      provider_type: 'openrouter',
+      base_url: 'https://openrouter.ai/api',
+      api_key: 'test-key',
+      role_models_json: JSON.stringify({ default: 'meta-llama/llama-3.1-70b' }),
+    });
+    try {
+      upsertProviderModel({
+        provider_id: provider.id, model_id: 'meta-llama/llama-3.1-70b',
+        upstream_model_id: 'meta-llama/llama-3.1-70b', display_name: 'Llama 3.1 70B',
+        enabled: 1, source: 'manual', user_edited: 1, sort_order: 0,
+      });
+
+      // No runtime gate → role default wins (legacy behavior).
+      const noGate = resolveProvider({ providerId: provider.id });
+      assert.equal(noGate.model, 'meta-llama/llama-3.1-70b',
+        'without runtime gate, role default is honored');
+
+      // claude_code runtime → no compat candidate → final-final fallback to
+      // availableModels[0] (still gated by enabled=1, just not by runtime).
+      const ccGate = resolveProvider({ providerId: provider.id, runtime: 'claude_code' });
+      assert.equal(ccGate.model, 'meta-llama/llama-3.1-70b',
+        'final-final fallback when no row is claude_code_compatible');
+
+      // codepilot_runtime → llama is codepilot_runtime_compatible, gate passes.
+      const cpGate = resolveProvider({ providerId: provider.id, runtime: 'codepilot_runtime' });
+      assert.equal(cpGate.model, 'meta-llama/llama-3.1-70b',
+        'codepilot runtime keeps the codepilot_only role default');
+    } finally {
+      deleteProvider(provider.id);
+      teardown();
+    }
+  });
+
+  it('explicit opts.model is honored even when incompatible with the active runtime', () => {
+    setup();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createProvider, deleteProvider, upsertProviderModel } = require('../../lib/db');
+    const provider = createProvider({
+      name: '__test_runtime_explicit_honored__',
+      provider_type: 'openrouter',
+      base_url: 'https://openrouter.ai/api',
+      api_key: 'test-key',
+    });
+    try {
+      upsertProviderModel({
+        provider_id: provider.id, model_id: 'meta-llama/llama-3.1-70b',
+        upstream_model_id: 'meta-llama/llama-3.1-70b', display_name: 'Llama 3.1 70B',
+        enabled: 1, source: 'manual', user_edited: 1, sort_order: 0,
+      });
+
+      // Explicit model that is incompatible with claude_code runtime — still honored.
+      const resolved = resolveProvider({
+        providerId: provider.id,
+        model: 'meta-llama/llama-3.1-70b',
+        runtime: 'claude_code',
+      });
+      assert.equal(resolved.model, 'meta-llama/llama-3.1-70b',
+        'explicit opts.model bypasses the runtime gate (caller asked by name)');
+    } finally {
+      deleteProvider(provider.id);
+      teardown();
+    }
+  });
+
+  it('hidden role slot stripped under claude_code runtime (experimental tier)', () => {
+    setup();
+    // Use a generic anthropic-thirdparty wildcard provider — provider tier
+    // is `claude_code_experimental`, so EVERY model row is
+    // `claude_code_compatible` at the model layer. That isolates the
+    // hidden-slot strip behaviour from the runtime-incompat strip
+    // behaviour (which we cover with the codepilot_only test above):
+    // here the only thing that should remove a role slot is the hidden
+    // gate, and the runtime gate should be transparent.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createProvider, deleteProvider, upsertProviderModel } = require('../../lib/db');
+    const provider = createProvider({
+      name: '__test_runtime_stacked_guards__',
+      provider_type: 'anthropic',
+      base_url: 'https://generic-anthropic-thirdparty.example.com',
+      api_key: 'test-key',
+      role_models_json: JSON.stringify({
+        default: 'visible-default',
+        sonnet: 'hidden-row', // hidden — should be stripped from roleModels
+      }),
+    });
+    try {
+      upsertProviderModel({
+        provider_id: provider.id, model_id: 'visible-default',
+        upstream_model_id: 'visible-default', display_name: 'Visible',
+        enabled: 1, source: 'manual', user_edited: 1, sort_order: 0,
+      });
+      upsertProviderModel({
+        provider_id: provider.id, model_id: 'hidden-row',
+        upstream_model_id: 'hidden-row', display_name: 'Hidden Row',
+        enabled: 0, source: 'manual', user_edited: 1, sort_order: 1,
+      });
+
+      const resolved = resolveProvider({
+        providerId: provider.id,
+        runtime: 'claude_code',
+      });
+      assert.equal(resolved.model, 'visible-default',
+        'visible default is honored under runtime gate (experimental tier passes)');
+      assert.equal(resolved.roleModels.sonnet, undefined,
+        'hidden sonnet slot stripped from roleModels');
+      assert.equal(resolved.roleModels.default, 'visible-default',
+        'visible default slot preserved');
+
+      const env = toClaudeCodeEnv({}, resolved);
+      assert.equal(env.ANTHROPIC_DEFAULT_SONNET_MODEL, undefined,
+        'hidden sonnet does NOT leak into ANTHROPIC_DEFAULT_SONNET_MODEL');
+      assert.equal(env.ANTHROPIC_MODEL, 'visible-default',
+        'ANTHROPIC_MODEL takes the visible default');
     } finally {
       deleteProvider(provider.id);
       teardown();

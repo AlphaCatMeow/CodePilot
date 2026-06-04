@@ -11,6 +11,52 @@ import { z } from 'zod';
 
 /** Tool names that are safe in read-only (plan) mode */
 export const READ_ONLY_TOOLS = ['Read', 'Glob', 'Grep'] as const;
+
+// Phase 5e Phase 5 (2026-05-17) — promote the Phase 0.5 P0 hand-
+// written `PERMISSION_SAFE_TOOLS` allowlist to a derived value
+// driven by per-tool `mutationLevel` classification. Same fail-safe
+// semantics: unknown tools route to `ask`; only `safe_read` skips
+// the wrapper. The classification table lives in
+// `src/lib/harness/mutation-level.ts` so adding a new codepilot_*
+// tool is a one-line declaration at the canonical location instead
+// of a remember-to-update-the-allowlist hazard.
+import {
+  CODEPILOT_TOOL_MUTATION_LEVELS,
+  CORE_SAFE_READ_TOOLS,
+} from './harness/mutation-level';
+
+/**
+ * Explicit allowlist of tools the permission wrapper waves through.
+ *
+ * **Now derived** from `mutationLevel === 'safe_read'` declarations
+ * in `harness/mutation-level.ts`. The `PERMISSION_SAFE_TOOLS` symbol
+ * is preserved as the public contract so existing imports + the
+ * `agent-tools-permission-allowlist.test.ts` regression suite keep
+ * working unchanged. Membership rule:
+ *
+ *   - Core read-only tools (Read / Glob / Grep / Skill — declared in
+ *     `CORE_SAFE_READ_TOOLS`)
+ *   - CodePilot built-in tools declared as `safe_read` in
+ *     `CODEPILOT_TOOL_MUTATION_LEVELS`
+ *
+ * Source-pinned in
+ * `src/__tests__/unit/agent-tools-permission-allowlist.test.ts`:
+ *   - exact contents (each entry rationale documented)
+ *   - regression forbid: `name.startsWith('codepilot_')` cannot
+ *     re-appear in this file
+ *   - forbid: any known-mutating tool (notify / schedule_task /
+ *     cli_tools_install / dashboard_pin / generate_image / etc.)
+ *     accidentally classified as `safe_read`
+ *   - set-equality with `EXPECTED_ALLOWLIST` so silent expansion is
+ *     impossible
+ */
+export const PERMISSION_SAFE_TOOLS: ReadonlySet<string> = (() => {
+  const set = new Set<string>(CORE_SAFE_READ_TOOLS);
+  for (const [name, level] of Object.entries(CODEPILOT_TOOL_MUTATION_LEVELS)) {
+    if (level === 'safe_read') set.add(name);
+  }
+  return set;
+})();
 import { createBuiltinTools } from './tools';
 import { buildMcpToolSet } from './mcp-tool-adapter';
 import { getBuiltinTools } from './builtin-tools';
@@ -66,18 +112,37 @@ export function assembleTools(options: AssembleToolsOptions = {}): AssembleTools
     abortSignal: options.permissionContext?.abortSignal,
   });
 
-  // In 'plan' mode, restrict to read-only tools
+  // In 'plan' mode, restrict to read-only tools — but #26: keep the
+  // safe_read Harness capabilities (codepilot_load_widget_guidelines,
+  // memory reads, …) and their compiler prompts (widget wire-format spec),
+  // not just Read/Glob/Grep. Mutating tools (Write/Edit/Bash + image gen /
+  // dashboard / schedule / notify / media import) stay out. Restores Native
+  // Plan mode's ability to produce Widgets without granting side effects.
+  // Every resulting tool skips the permission check by construction, so no
+  // permission wrapping is needed.
   if (options.mode === 'plan') {
-    return {
-      tools: { Read: builtinTools.Read, Glob: builtinTools.Glob, Grep: builtinTools.Grep },
-      systemPrompts: [],
-    };
+    const { tools: safeMcpTools, systemPrompts } = getBuiltinTools({
+      workspacePath: cwd,
+      prompt: options.prompt,
+      sessionId: options.permissionContext?.sessionId,
+      safeReadOnly: true,
+    });
+    const safeBuiltin = Object.fromEntries(
+      Object.entries(builtinTools).filter(([name]) => PERMISSION_SAFE_TOOLS.has(name)),
+    );
+    return { tools: { ...safeBuiltin, ...safeMcpTools }, systemPrompts };
   }
 
   // Built-in MCP-equivalent tools (notification, memory, dashboard, etc.)
+  // Pass through sessionId so codepilot_schedule_task can inject
+  // origin_session_id + working_directory into /api/tasks/schedule
+  // POST body. Without this, AI tasks created by the model would be
+  // unanchored and the runner couldn't tell which project session the
+  // result belongs to.
   const { tools: builtinMcpTools, systemPrompts } = getBuiltinTools({
     workspacePath: cwd,
     prompt: options.prompt,
+    sessionId: options.permissionContext?.sessionId,
   });
 
   // External MCP tools from connected servers
@@ -110,10 +175,34 @@ function wrapWithPermissions(
   const wrapped: ToolSet = {};
 
   for (const [name, t] of Object.entries(tools)) {
-    // Skip permission checks for safe tools:
-    // - Read-only core tools (Read, Glob, Grep, Skill)
-    // - All CodePilot built-in tools (codepilot_*) — trusted internal tools
-    if (['Read', 'Glob', 'Grep', 'Skill'].includes(name) || name.startsWith('codepilot_')) {
+    // Skip permission checks for tools known to be safe / read-only.
+    //
+    // Phase 5e Phase 0.5 review fix (P0 止血, 2026-05-17) — pre-fix the
+    // allowlist used `name.startsWith('codepilot_')` to wave through
+    // every CodePilot built-in tool as "trusted internal". That was
+    // wrong: `codepilot_cli_tools_install / update / remove` shell out
+    // to npm / brew / pip; `codepilot_notify` fires system-level toasts
+    // / Electron notifications / Telegram bridges; `codepilot_dashboard_pin /
+    // update / remove` mutate the user's pinned widgets; `codepilot_schedule_task`
+    // writes durable DB rows that fire later cross-session. The model
+    // could call any of these silently under Native Runtime with no
+    // permission gate, which conflicted with the user's mental model
+    // (ClaudeCode-style "shell touches require approval").
+    //
+    // The new allowlist is EXPLICIT and READ-ONLY. Every entry below
+    // must be a tool that:
+    //   - reads filesystem / DB / network state (no writes)
+    //   - returns the data inline (no side effects on user surfaces)
+    //   - does NOT execute shell commands or install/uninstall software
+    //
+    // Anything not on this list — including future codepilot_* tools —
+    // falls through to the permission wrapper below. fail-safe default.
+    //
+    // The matching regression test in
+    // `src/__tests__/unit/agent-tools-permission-allowlist.test.ts`
+    // pins this exact list + forbids `name.startsWith('codepilot_')`
+    // from re-appearing.
+    if (PERMISSION_SAFE_TOOLS.has(name)) {
       wrapped[name] = t;
       continue;
     }

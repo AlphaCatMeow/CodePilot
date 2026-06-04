@@ -5,7 +5,8 @@ import type { ComponentProps, HTMLAttributes } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import Ansi from "ansi-to-react";
-import { Check, Copy, Terminal as TerminalIcon, Trash } from "@phosphor-icons/react";
+import { Check } from "@phosphor-icons/react";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import {
   createContext,
   useCallback,
@@ -110,7 +111,7 @@ export const TerminalTitle = ({
     className={cn("flex items-center gap-2 text-sm text-[var(--terminal-muted)]", className)}
     {...props}
   >
-    <TerminalIcon className="size-4" />
+    <CodePilotIcon name="terminal" size="md" aria-hidden />
     {children ?? "Terminal"}
   </div>
 );
@@ -191,8 +192,6 @@ export const TerminalCopyButton = ({
     []
   );
 
-  const Icon = isCopied ? Check : Copy;
-
   return (
     <Button
       className={cn(
@@ -204,7 +203,7 @@ export const TerminalCopyButton = ({
       variant="ghost"
       {...props}
     >
-      {children ?? <Icon size={14} />}
+      {children ?? (isCopied ? <Check size={14} /> : <CodePilotIcon name="copy" size="sm" aria-hidden />)}
     </Button>
   );
 };
@@ -233,7 +232,7 @@ export const TerminalClearButton = ({
       variant="ghost"
       {...props}
     >
-      {children ?? <Trash size={14} />}
+      {children ?? <CodePilotIcon name="delete" size="sm" aria-hidden />}
     </Button>
   );
 };

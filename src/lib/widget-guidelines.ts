@@ -14,17 +14,91 @@ import { z } from 'zod';
 
 // ── System prompt (always injected — minimal version) ───────────────────────
 
-export const WIDGET_SYSTEM_PROMPT = `<widget-capability>
-You can create interactive visualizations using the \`show-widget\` code fence.
+/**
+ * Canonical show-widget JSON example, separated from the surrounding
+ * prose so contract tests can `JSON.parse` it directly and feed it
+ * into `parseAllShowWidgets` to verify the renderer accepts it.
+ *
+ * Phase 5c slice 7 (2026-05-16) — replaced slice 6's `\\\\"`
+ * double-escaped attribute form. JSON.parse on a string containing
+ * `\\\\\"` terminates the JSON string early and rejects the rest;
+ * the model copying the example verbatim produced unparseable JSON.
+ * Switching HTML attribute quoting to single quotes eliminates the
+ * embedded double-quote entirely, so the example is true valid JSON
+ * the model can copy without escape-counting.
+ *
+ * If a future widget genuinely needs double-quote HTML attrs, the
+ * model must emit one backslash (`\\"`), never two (`\\\"`). The
+ * contract test for malformed handling pins both forms.
+ */
+export const CANONICAL_SHOW_WIDGET_JSON =
+  '{"title":"Hello","widget_code":"<div style=\'padding:8px;font:14px var(--font-sans)\'>Hello world</div>"}';
 
-## Format
+/**
+ * Wire format spec referenced by the system prompt, the on-demand
+ * guidelines tool, the bridge prompt, and the contract test in
+ * `codex-widget-format-contract.test.ts` + `harness-capability-contract.test.ts`.
+ * Single source of truth — any drift between them is the kind of
+ * "model returns raw HTML fence instead of JSON wrapper" failure
+ * mode the post-smoke S4 scenario surfaced.
+ *
+ * The MINIMAL EXAMPLE intentionally uses an absurdly small HTML
+ * snippet so the model can't confuse it with the design-system
+ * examples loaded later by `codepilot_load_widget_guidelines`.
+ */
+export const WIDGET_WIRE_FORMAT_SPEC = `## FINAL OUTPUT FORMAT — non-negotiable
+
+The ONLY way to render a widget is a code fence labelled \`show-widget\` whose body is a JSON object with a \`widget_code\` string:
+
 \`\`\`show-widget
-{"title":"snake_case_id","widget_code":"<raw HTML/SVG string>"}
+{"title":"<human-readable title>","widget_code":"<escaped HTML/SVG string>"}
 \`\`\`
+
+- \`widget_code\` is a **JSON-encoded string**, not raw HTML. Prefer **single-quote** HTML attributes (\`<div style='...'>\`) so the JSON body never needs to escape double quotes — copy/paste-safe.
+- If you absolutely need double-quote HTML attributes inside \`widget_code\`, use **one** backslash (\`\\\\\"\`) — never two. Two-backslash escapes (\`\\\\\\\\\"\`) terminate the JSON string and break the widget.
+- Escape newlines as \`\\\\n\` and backslashes as \`\\\\\\\\\` inside the JSON string.
+- A raw HTML fence (\`\`\`html …\`\`\`) is NEVER rendered as a widget.
+- A \`show-widget\` fence whose body is HTML (not JSON) is NEVER rendered as a widget — the UI surfaces a "malformed widget" error block.
+- Any HTML example shown later in the design guidelines goes **inside** \`widget_code\`. It is not the wire format.
+
+Minimal correct example — copy/paste-safe JSON (verified by contract test):
+
+\`\`\`show-widget
+${CANONICAL_SHOW_WIDGET_JSON}
+\`\`\``;
+
+/**
+ * Phase 5d Phase 2 slice 2c (2026-05-17) — WIDGET_SYSTEM_PROMPT no
+ * longer embeds WIDGET_WIRE_FORMAT_SPEC.
+ *
+ * Pre-fix the system prompt interpolated the entire wire-format spec
+ * (`${WIDGET_WIRE_FORMAT_SPEC}` template literal). After the
+ * Context Compiler adoption the artifactContract for `widget`
+ * (`src/lib/harness/capability-contract.ts widget.artifactContract`)
+ * is the sole holder of the wire-format spec + CANONICAL_SHOW_WIDGET_JSON
+ * example. The compiler orders artifactContracts BEFORE
+ * capabilityFragments in the compiled system prompt, so the model
+ * still sees the spec first; it just appears once.
+ *
+ * The compiler's `detectWireFormatDuplication` sanity check FAILs at
+ * compile time if WIDGET_SYSTEM_PROMPT (or any capability fragment)
+ * re-embeds an artifactContract's canonicalJson — that's the forcing
+ * function that keeps this refactor honest.
+ *
+ * The 14 capability rules below still reference `widget_code` and JSON
+ * encoding by name — that's fine, it's vocabulary, not the literal
+ * canonical example string.
+ */
+export const WIDGET_SYSTEM_PROMPT = `<widget-capability>
+You can create interactive visualizations using the \`show-widget\` code fence. The wire format is documented in the FINAL OUTPUT FORMAT block above this section; do not re-paraphrase it.
 
 ## Design specs
 Call \`codepilot_load_widget_guidelines\` before your first widget to load detailed design specs.
 Available modules: interactive, chart, mockup, art, diagram.
+
+## When NOT to call other tools
+
+While building a widget, **do NOT** call \`codepilot_generate_image\` or any image-generation tool. Widgets render HTML/SVG inside \`widget_code\`; they do not embed generated images. Only call image-generation tools if the user explicitly asked for an image (separate from the widget).
 
 ## Required rules (always apply)
 1. widget_code is a JSON string — escape quotes, newlines. No DOCTYPE/html/head/body
@@ -220,12 +294,35 @@ const MODULE_SECTIONS: Record<string, string[]> = {
 export const AVAILABLE_MODULES = Object.keys(MODULE_SECTIONS);
 
 /**
+ * Reminder prepended to every `getGuidelines()` response so the model
+ * doesn't lose the wire format between reading the design specs and
+ * emitting the final fence. Reuses `WIDGET_WIRE_FORMAT_SPEC` so there
+ * is exactly one source of truth.
+ *
+ * Post-smoke S4 evidence (2026-05-16): GLM-5 Turbo called the load
+ * tool, read the Chart.js example, then emitted a raw \`\`\`html-style
+ * fence as the final output. The fix is to remind the model — right
+ * before it sees the HTML examples — that those examples live INSIDE
+ * widget_code, not as the wire format.
+ */
+const GUIDELINES_WRAPPER_REMINDER = `${WIDGET_WIRE_FORMAT_SPEC}
+
+> **Reading this document:** every HTML / SVG / Chart.js snippet below is an INTERNAL EXAMPLE — it shows what to put INSIDE the \`widget_code\` JSON string. None of the snippets below are themselves the wire format. The only wire format is the \`show-widget\` JSON fence above.
+`;
+
+/**
  * Assemble full guidelines from requested module names.
  * Deduplicates shared sections (e.g. Core appears once even if multiple modules requested).
+ *
+ * Output always opens with `GUIDELINES_WRAPPER_REMINDER` so the model
+ * re-reads the wire-format contract at the same moment it loads the
+ * design examples. Without this, the system-prompt-only reminder
+ * decays by the time the model is several thousand tokens into the
+ * design spec and copies an HTML example verbatim.
  */
 export function getGuidelines(moduleNames: string[]): string {
   const seen = new Set<string>();
-  const parts: string[] = [];
+  const parts: string[] = [GUIDELINES_WRAPPER_REMINDER];
   for (const mod of moduleNames) {
     const key = mod.toLowerCase().trim();
     const sections = MODULE_SECTIONS[key];
@@ -238,6 +335,22 @@ export function getGuidelines(moduleNames: string[]): string {
     }
   }
   return parts.join('\n\n\n');
+}
+
+// ── Keyword gate (shared contract — Phase 8 #31) ────────────────────────────
+
+/**
+ * Widget is keyword-gated: only loaded when the prompt hints at generative
+ * UI, or the conversation already contains a widget (resume context). Used by
+ * BOTH the ClaudeCode path (`claude-client.ts`) and the Codex Runtime
+ * injection (`codex/runtime.ts`) so the gate can't drift between runtimes.
+ */
+export const WIDGET_KEYWORDS =
+  /可视化|图表|流程图|时间线|架构图|对比|visualiz|diagram|chart|flowchart|timeline|infographic|interactive|widget|show-widget|hierarchy|dashboard/i;
+
+export function promptNeedsWidget(prompt: string, conversationHasWidget = false): boolean {
+  if (prompt && WIDGET_KEYWORDS.test(prompt)) return true;
+  return conversationHasWidget;
 }
 
 // ── In-process MCP server for on-demand guideline loading ───────────────────

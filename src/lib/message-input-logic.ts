@@ -6,7 +6,21 @@
  */
 
 import { BUILT_IN_COMMANDS, COMMAND_PROMPTS } from '@/lib/constants/commands';
-import type { PopoverItem, PopoverMode, CommandBadge, CliBadge, MentionNodeType, MentionRef } from '@/types';
+import type {
+  PopoverItem,
+  PopoverMode,
+  CommandBadge,
+  CliBadge,
+  MentionNodeType,
+  MentionRef,
+  FileAttachment,
+} from '@/types';
+
+/** MIME type used for synthetic directory attachments. Backend in
+ * `/api/chat/route.ts` skips disk write for this type and just
+ * preserves `filePath`. Kept in sync via this constant so tests and
+ * the route handler reference the same string. */
+export const DIRECTORY_ATTACHMENT_MIME = 'inode/directory';
 
 // ─── Result types ────────────────────────────────────────────────
 
@@ -357,4 +371,223 @@ export function dedupeMentionsByPath(mentions: MentionRef[]): MentionRef[] {
     out.push(mention);
   }
   return out;
+}
+
+// =====================================================================
+// Send payload composition (Context chips Phase 1)
+// =====================================================================
+
+/**
+ * Convert directory paths attached via the file-tree "+" button into
+ * synthetic FileAttachment entries. They ride the same
+ * `<!--files:...-->` marker pipeline as real files so they render as
+ * chips in the bubble; the backend recognises `inode/directory` and
+ * skips disk persistence (see `/api/chat/route.ts`).
+ */
+export function buildDirectoryAttachments(directoryRefs: ReadonlyArray<string>): FileAttachment[] {
+  return directoryRefs.map((path) => ({
+    id: `dir-${path}`,
+    name: path.split(/[\\/]/).filter(Boolean).pop() || path,
+    type: DIRECTORY_ATTACHMENT_MIME,
+    size: 0,
+    data: '',
+    filePath: path,
+  }));
+}
+
+/**
+ * Build the LLM-context append block from the resolved mention payload.
+ * Returns `''` (no leading newlines) when nothing to append. Caller
+ * concatenates with the user-typed content to form `finalContent`.
+ *
+ * The two sections are:
+ * - `[Referenced Directories]` — directory tree summaries
+ * - `[Mention Limits]` — explanations for mentions/dirs that were dropped
+ */
+export function buildMentionAppend(
+  directoryNotes: ReadonlyArray<string>,
+  limitNotes: ReadonlyArray<string>,
+): string {
+  const sections: string[] = [];
+  if (directoryNotes.length > 0) {
+    sections.push(`[Referenced Directories]\n${directoryNotes.join('\n\n')}`);
+  }
+  if (limitNotes.length > 0) {
+    sections.push(`[Mention Limits]\n${limitNotes.map((x) => `- ${x}`).join('\n')}`);
+  }
+  return sections.length > 0 ? `\n\n${sections.join('\n\n')}` : '';
+}
+
+/**
+ * Compose the final content sent to the model: user-typed content +
+ * the mention append block, then trimmed.
+ */
+export function composeFinalContent(content: string, mentionAppend: string): string {
+  return `${content}${mentionAppend}`.trim();
+}
+
+/**
+ * Decide what to display in the user message bubble. When the user
+ * attached @ mentions or + directory chips, the LLM gets the inflated
+ * `[Referenced Directories]` block but the bubble shows only the raw
+ * user content (the chips above the bubble already convey the rest).
+ *
+ * Returns `undefined` when there's nothing to override — the caller
+ * then falls back to `finalContent`.
+ */
+export function computeDisplayOverride(
+  rawContent: string,
+  hasMentions: boolean,
+  hasDirRefs: boolean,
+): string | undefined {
+  return (hasMentions || hasDirRefs) ? rawContent : undefined;
+}
+
+/**
+ * Sum the rough token cost of all currently-pending context sources:
+ * PromptInput attachments (already pre-summed by the headless tracker),
+ * @ mention chips, and + directory chips. Used by both the per-row
+ * "+pending" annotation and the Run status panel preview.
+ *
+ * When all sources are empty, returns 0 — that's the post-send invariant.
+ */
+export function computePendingContextTokens(opts: {
+  attachmentPendingTokens: number;
+  uniqueMentions: ReadonlyArray<MentionRef>;
+  /** `null` means estimate still loading — counted as 0 so the user
+   * doesn't see a flicker between "?" and the real number. */
+  mentionEstimates: Readonly<Record<string, number | null | undefined>>;
+  directoryRefs: ReadonlyArray<string>;
+  directoryRefEstimates: Readonly<Record<string, number | null | undefined>>;
+}): number {
+  let sum = opts.attachmentPendingTokens;
+  for (const m of opts.uniqueMentions) {
+    const v = opts.mentionEstimates[m.path];
+    if (typeof v === 'number' && v > 0) sum += v;
+  }
+  for (const path of opts.directoryRefs) {
+    const v = opts.directoryRefEstimates[path];
+    if (typeof v === 'number' && v > 0) sum += v;
+  }
+  return sum;
+}
+
+/**
+ * Phase 6 Phase 3 — per-source split of {@link computePendingContextTokens}.
+ *
+ * Returns the three composer-side pending sub-totals separately so the
+ * Context popover can render `files_attachments` and `pending_next_turn`
+ * as distinct rows with real numbers. Sums to the same value as
+ * computePendingContextTokens when all sources are non-null.
+ *
+ * Logic mirror of computePendingContextTokens — same null filtering,
+ * same iteration order — kept in lockstep so the displayed total never
+ * disagrees with the per-source rows.
+ */
+export interface PendingContextSubTotals {
+  /** Attachments queued via PromptInput (file picker / paste / drop). */
+  attachment: number;
+  /** Explicit `@path` mentions in the input text. */
+  mention: number;
+  /** Directory references attached via file-tree "+" buttons. */
+  directory: number;
+}
+
+export function computePendingContextSubTotals(opts: {
+  attachmentPendingTokens: number;
+  uniqueMentions: ReadonlyArray<MentionRef>;
+  mentionEstimates: Readonly<Record<string, number | null | undefined>>;
+  directoryRefs: ReadonlyArray<string>;
+  directoryRefEstimates: Readonly<Record<string, number | null | undefined>>;
+}): PendingContextSubTotals {
+  let mention = 0;
+  for (const m of opts.uniqueMentions) {
+    const v = opts.mentionEstimates[m.path];
+    if (typeof v === 'number' && v > 0) mention += v;
+  }
+  let directory = 0;
+  for (const path of opts.directoryRefs) {
+    const v = opts.directoryRefEstimates[path];
+    if (typeof v === 'number' && v > 0) directory += v;
+  }
+  return {
+    attachment: Math.max(0, opts.attachmentPendingTokens),
+    mention,
+    directory,
+  };
+}
+
+// =====================================================================
+// Submit payload composition — full handleSubmit assembly as one fn
+// =====================================================================
+
+/**
+ * Resolved mention payload — output of `resolveMentionPayload()` in
+ * MessageInput. Mirrors the shape returned by that helper so a test
+ * can construct it without bringing the full hook chain in.
+ */
+export interface ResolvedMentionPayload {
+  mentions: ReadonlyArray<MentionRef>;
+  files: ReadonlyArray<FileAttachment>;
+  directoryNotes: ReadonlyArray<string>;
+  limitNotes: ReadonlyArray<string>;
+}
+
+export interface SubmitPayloadInput {
+  /** Raw text typed in the textarea (no mention/limit append yet). */
+  content: string;
+  /** Attachments uploaded via the `+` button (already converted from
+   *  base64 form by `convertFiles()`). */
+  uploadedFiles: ReadonlyArray<FileAttachment>;
+  /** What `resolveMentionPayload()` returned — files inlined from
+   *  @mentions, plus directory summaries / over-limit notes. */
+  mentionPayload: ResolvedMentionPayload;
+  /** Directory paths attached via the file-tree `+` button. */
+  directoryRefs: ReadonlyArray<string>;
+}
+
+export interface SubmitPayload {
+  /** Final ordered file list: uploads → @-mention files → + directories. */
+  files: ReadonlyArray<FileAttachment>;
+  /** What goes to the model: `content` + mention/limit append, trimmed. */
+  finalContent: string;
+  /** What goes in the user's message bubble — raw `content` when chips
+   *  exist, undefined otherwise (caller falls back to `finalContent`).
+   *  Crucial: this NEVER contains `[Referenced Directories]`. */
+  displayOverride: string | undefined;
+  /** Mentions to send to the backend, or undefined when none. */
+  mentions: ReadonlyArray<MentionRef> | undefined;
+}
+
+/**
+ * Single source of truth for "given pre-submit state, what does the
+ * send payload look like and what does the bubble show". Consolidates
+ * `buildDirectoryAttachments` + `buildMentionAppend` + `composeFinalContent`
+ * + `computeDisplayOverride` into one call so tests can assert the
+ * end-to-end submit contract instead of each helper in isolation.
+ *
+ * MessageInput's normal-path handleSubmit calls this directly; the
+ * badge / image-agent branches still go piecewise because they need
+ * to mutate `prompt` (badge dispatch result) before composing.
+ */
+export function composeSubmitPayload(input: SubmitPayloadInput): SubmitPayload {
+  const directoryAttachments = buildDirectoryAttachments(input.directoryRefs);
+  const files = [
+    ...input.uploadedFiles,
+    ...input.mentionPayload.files,
+    ...directoryAttachments,
+  ];
+  const mentionAppend = buildMentionAppend(
+    input.mentionPayload.directoryNotes,
+    input.mentionPayload.limitNotes,
+  );
+  const finalContent = composeFinalContent(input.content, mentionAppend);
+  const hasMentions = input.mentionPayload.mentions.length > 0;
+  const hasDirRefs = input.directoryRefs.length > 0;
+  return {
+    files,
+    finalContent,
+    displayOverride: computeDisplayOverride(input.content, hasMentions, hasDirRefs),
+    mentions: hasMentions ? input.mentionPayload.mentions : undefined,
+  };
 }

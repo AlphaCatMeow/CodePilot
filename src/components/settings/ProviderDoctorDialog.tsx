@@ -10,7 +10,6 @@ import {
   DialogDescription,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   SpinnerGap,
   CheckCircle,
@@ -116,18 +115,38 @@ function transformApiResponse(raw: Record<string, unknown>, isZh: boolean): Diag
 // Helpers
 // ---------------------------------------------------------------------------
 
+// Status pill / icon use the canonical design.md tokens —
+// `bg-status-{success|warning|error}-muted` + matching `-foreground`,
+// not raw Tailwind palette. Pill shape is `rounded-full px-2 py-0.5
+// text-[10px]` with optional dot, matching the rest of the app.
 const STATUS_CONFIG = {
-  pass: { icon: CheckCircle, color: "text-green-500", badgeCls: "bg-green-500/10 text-green-600 border-green-500/30" },
-  warn: { icon: Warning, color: "text-yellow-500", badgeCls: "bg-yellow-500/10 text-yellow-600 border-yellow-500/30" },
-  error: { icon: XCircle, color: "text-red-500", badgeCls: "bg-red-500/10 text-red-600 border-red-500/30" },
+  pass: {
+    icon: CheckCircle,
+    color: "text-status-success-foreground",
+    pillCls: "bg-status-success-muted text-status-success-foreground",
+    dotCls: "bg-status-success-foreground",
+  },
+  warn: {
+    icon: Warning,
+    color: "text-status-warning-foreground",
+    pillCls: "bg-status-warning-muted text-status-warning-foreground",
+    dotCls: "bg-status-warning-foreground",
+  },
+  error: {
+    icon: XCircle,
+    color: "text-destructive",
+    pillCls: "bg-destructive/10 text-destructive",
+    dotCls: "bg-destructive",
+  },
 } as const;
 
 function StatusBadge({ status }: { status: "pass" | "warn" | "error" }) {
   const cfg = STATUS_CONFIG[status];
   return (
-    <Badge variant="outline" className={`text-[10px] px-1.5 py-0 uppercase ${cfg.badgeCls}`}>
+    <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase ${cfg.pillCls}`}>
+      <span className={`size-1.5 rounded-full ${cfg.dotCls}`} />
       {status}
-    </Badge>
+    </span>
   );
 }
 

@@ -77,7 +77,7 @@ export interface RuntimeStreamOptions {
    * Passthrough for runtime-specific options.
    *
    * SDK Runtime reads: sdkSessionId, files, conversationHistory, agents, agent,
-   *   enableFileCheckpointing, outputFormat, imageAgentMode, generativeUI, etc.
+   *   enableFileCheckpointing, outputFormat, generativeUI, etc.
    * Native Runtime reads: maxSteps, etc.
    * Future runtimes define their own keys.
    *

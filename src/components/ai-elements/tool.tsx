@@ -15,9 +15,9 @@ import {
   CaretDown,
   Circle,
   Clock,
-  Wrench,
   XCircle,
 } from "@phosphor-icons/react";
+import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { createContext, isValidElement, useContext, useState } from "react";
 
 import { CodeBlock } from "./code-block";
@@ -109,7 +109,7 @@ export const ToolHeader = ({
       {...props}
     >
       <div className="flex items-center gap-2">
-        <Wrench className="size-4 text-muted-foreground" />
+        <CodePilotIcon name="wrench" size="md" className="text-muted-foreground" aria-hidden />
         <span className="font-medium text-sm">{title ?? derivedName}</span>
         {getStatusBadge(state)}
       </div>
