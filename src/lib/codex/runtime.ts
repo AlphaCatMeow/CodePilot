@@ -220,6 +220,38 @@ function canonicalToSseLine(event: RuntimeRunEvent): string {
 const activeCodexTurns = new Map<string, { threadId: string; turnId: string }>();
 
 /**
+ * Issue a best-effort `turn/interrupt` for whatever turn is currently active
+ * on `sessionId`. Single implementation shared by BOTH interrupt paths so they
+ * can't drift (codex-stop-recovery Phase 1/2):
+ *   - the public `interrupt(sessionId)` entry — HTTP `/api/chat/interrupt`
+ *     fan-out (Stop button, fires immediately);
+ *   - the in-stream abort-signal handler — honors the `abortController` the
+ *     chat route already passes (force-abort / disconnect path).
+ * Returns false (and no-ops) when there's no active turn yet — the caller uses
+ * that to defer until `turn/start` resolves (the abort-before-turnId race).
+ * `source` is a diagnostic tag only; never logs prompt / files / credentials.
+ */
+function issueCodexTurnInterrupt(sessionId: string, source: string): boolean {
+  const active = activeCodexTurns.get(sessionId);
+  if (!active) {
+    console.debug(`[codex.runtime] interrupt (${source}) — no active turn for`, sessionId);
+    return false;
+  }
+  void (async () => {
+    try {
+      const { client } = await getCodexAppServer();
+      await client.request('turn/interrupt', {
+        threadId: active.threadId,
+        turnId: active.turnId,
+      });
+    } catch (err) {
+      console.debug(`[codex.runtime] turn/interrupt (${source}) failed (best-effort):`, err);
+    }
+  })();
+  return true;
+}
+
+/**
  * Active fs/watch entries — Phase 5 review round 3 (2026-05-13).
  *
  * Codex's fs/changed notifications only fire after a corresponding
@@ -851,6 +883,37 @@ export const codexRuntime: AgentRuntime = {
           unsubscribers.push(unsubAny);
 
           // ── kick off the turn ───────────────────────────────────────
+          // codex-stop-recovery Phase 2 — honor the abort signal the chat
+          // route already hands us (chat/route.ts → streamClaude →
+          // options.abortController). Without this, Stop / the 2s force-abort
+          // never reaches the Codex app-server turn: the turn keeps running,
+          // the stream never closes, and chat/route.ts renews the session lock
+          // forever → "Stop 后无法发送新指令".
+          const abortSignal = options.abortController?.signal;
+          if (abortSignal?.aborted) {
+            // Stop landed during turn setup, before turn/start — don't kick
+            // off a turn just to interrupt it.
+            closeStream();
+            return;
+          }
+          // `pendingAbort` covers the abort-before-turnId race: if Stop fires
+          // after turn/start is sent but before we record the turnId, remember
+          // it and interrupt the moment the id lands.
+          let pendingAbort = false;
+          if (abortSignal) {
+            const onAbort = () => {
+              if (!issueCodexTurnInterrupt(sessionId, 'abort-signal')) {
+                pendingAbort = true;
+              }
+            };
+            abortSignal.addEventListener('abort', onAbort, { once: true });
+            unsubscribers.push(() => abortSignal.removeEventListener('abort', onAbort));
+            // Close the tiny race where abort landed between the pre-start
+            // check above and addEventListener — an already-aborted signal
+            // never re-fires the listener, so defer the interrupt explicitly.
+            if (abortSignal.aborted) pendingAbort = true;
+          }
+
           // Phase 5 Phase 4 Slice 3 — capture the returned turn id so
           // `interrupt(sessionId)` can issue `turn/interrupt` with the
           // correct (threadId, turnId) pair per
@@ -868,6 +931,11 @@ export const codexRuntime: AgentRuntime = {
             ...(codexEffort ? { effort: codexEffort } : {}),
           });
           activeCodexTurns.set(sessionId, { threadId, turnId: turnResult.turn.id });
+          if (pendingAbort) {
+            // Stop arrived before we had a turnId — interrupt the just-started
+            // turn now that the id is recorded.
+            issueCodexTurnInterrupt(sessionId, 'abort-race');
+          }
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);
           closeStream({ error: reason });
@@ -877,33 +945,15 @@ export const codexRuntime: AgentRuntime = {
   },
 
   interrupt(sessionId: string): void {
-    // Phase 5 Phase 4 Slice 3 (2026-05-13) — issue a proper
-    // `turn/interrupt` with (threadId, turnId). Both ids come from
-    // the in-process `activeCodexTurns` map populated when
-    // `turn/start` resolves. The map entry clears on turn/completed
-    // or turn/failed so a stale entry can't fire after the turn
-    // is already done.
-    //
-    // Best-effort still: if Codex isn't reachable or the entry is
-    // missing (race against turn completion), the call no-ops. Per
-    // upstream README, `turn/interrupt` resolves to `{}` on success
-    // and the turn ultimately finishes with status: 'interrupted'.
-    const active = activeCodexTurns.get(sessionId);
-    if (!active) {
-      console.debug('[codex.runtime] interrupt requested but no active turn for', sessionId);
-      return;
-    }
-    void (async () => {
-      try {
-        const { client } = await getCodexAppServer();
-        await client.request('turn/interrupt', {
-          threadId: active.threadId,
-          turnId: active.turnId,
-        });
-      } catch (err) {
-        console.debug('[codex.runtime] turn/interrupt failed (best-effort):', err);
-      }
-    })();
+    // Phase 5 Phase 4 Slice 3 (2026-05-13) — best-effort `turn/interrupt`
+    // with (threadId, turnId) from the in-process `activeCodexTurns` map
+    // (populated when `turn/start` resolves, cleared on turn/completed |
+    // turn/failed). Per upstream README it resolves to `{}` on success and the
+    // turn finishes with status: 'interrupted'. Delegates to the shared helper
+    // so this HTTP-route entry and the in-stream abort-signal handler remain
+    // one implementation (codex-stop-recovery). No-ops when the entry is
+    // missing (race against turn completion / Codex unreachable).
+    issueCodexTurnInterrupt(sessionId, 'route');
   },
 
   dispose(): void {

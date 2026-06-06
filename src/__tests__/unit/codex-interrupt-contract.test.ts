@@ -1,22 +1,23 @@
 /**
- * Phase 5 Phase 4 Slice 3 — Codex turn/interrupt contract.
+ * Codex turn/interrupt contract — source-level pins.
  *
  * `turn/interrupt` in Codex requires `{ threadId, turnId }` per
- * `资料/codex/.../v2/TurnInterruptParams.ts`. Earlier revision logged
- * + no-op'd because turnId wasn't tracked. Slice 3 captures the
- * turnId returned by `turn/start` into an in-process map; interrupt
- * reads from it.
+ * `资料/codex/.../v2/TurnInterruptParams.ts`. Slice 3 (Phase 5 Phase 4)
+ * captures the turnId returned by `turn/start` into an in-process map so
+ * interrupt can find it.
  *
- * Source-level pin (rather than runtime-executed) because the full
- * code path requires a live Codex app-server. Asserts the structural
- * contract is in place:
+ * codex-stop-recovery (Phase 1/2) refactored the interrupt implementation
+ * into a shared module-level helper `issueCodexTurnInterrupt(sessionId)` so
+ * BOTH interrupt paths converge on one implementation:
+ *   - the public `interrupt(sessionId)` method — HTTP `/api/chat/interrupt`
+ *     fan-out (Stop button);
+ *   - the in-stream abort-signal handler — honors the `abortController` the
+ *     chat route already passes (force-abort / disconnect path).
  *
- *   1. activeCodexTurns map exists at module scope
- *   2. turn/start response → activeCodexTurns.set with both ids
- *   3. canonical run_completed | run_failed → activeCodexTurns.delete
- *      (so a stale entry can't drive interrupt after the turn finishes)
- *   4. interrupt() reads the entry and issues turn/interrupt with
- *      both ids
+ * Source-level pins (not runtime-executed) because the full path needs a live
+ * Codex app-server. They assert the structural contract is in place and, just
+ * as importantly, that a future edit can't silently regress the Stop→interrupt
+ * wiring (which previously left a Stopped Codex turn running forever).
  */
 
 import { describe, it } from 'node:test';
@@ -29,7 +30,7 @@ const runtimeSrc = fs.readFileSync(
   'utf8',
 );
 
-describe('Codex turn/interrupt — Slice 3 contract', () => {
+describe('Codex turn registry — Slice 3 contract', () => {
   it('activeCodexTurns map declared at module scope', () => {
     assert.match(
       runtimeSrc,
@@ -38,12 +39,11 @@ describe('Codex turn/interrupt — Slice 3 contract', () => {
   });
 
   it('turn/start response → activeCodexTurns.set with (threadId, turnId)', () => {
-    // After turn/start resolves we capture the returned turn id so a
-    // later interrupt() can find it. The set call must include both
-    // threadId AND turnId from the response.
+    // Anchored on the real JSON-RPC call (not the word "turn/start", which now
+    // also appears in Phase 2 comments) so the pin stays precise.
     assert.match(
       runtimeSrc,
-      /turn\/start[\s\S]{0,1500}activeCodexTurns\.set\(sessionId,\s*\{\s*threadId,\s*turnId:\s*turnResult\.turn\.id\s*\}\)/,
+      /client\.request<[^>]*>\('turn\/start'[\s\S]{0,800}activeCodexTurns\.set\(sessionId,\s*\{\s*threadId,\s*turnId:\s*turnResult\.turn\.id\s*\}\)/,
     );
   });
 
@@ -55,28 +55,60 @@ describe('Codex turn/interrupt — Slice 3 contract', () => {
       /event\?\.type\s*===\s*'run_completed'\s*\|\|\s*event\?\.type\s*===\s*'run_failed'[\s\S]{0,500}activeCodexTurns\.delete\(sessionId\)/,
     );
   });
+});
 
-  it('interrupt(sessionId) reads activeCodexTurns and calls turn/interrupt with both ids', () => {
-    // The interrupt method must look up the (threadId, turnId) pair
-    // and issue the JSON-RPC request. Schema requires both ids per
-    // TurnInterruptParams.
+describe('Codex interrupt — shared helper (single implementation)', () => {
+  it('issueCodexTurnInterrupt reads activeCodexTurns and issues turn/interrupt with both ids', () => {
     assert.match(
       runtimeSrc,
-      /interrupt\(sessionId:[\s\S]{0,2000}activeCodexTurns\.get\(sessionId\)/,
+      /function issueCodexTurnInterrupt\(sessionId: string, source: string\): boolean[\s\S]{0,400}activeCodexTurns\.get\(sessionId\)/,
     );
     assert.match(
       runtimeSrc,
-      /turn\/interrupt[\s\S]{0,500}threadId:\s*active\.threadId[\s\S]{0,500}turnId:\s*active\.turnId/,
+      /function issueCodexTurnInterrupt[\s\S]{0,900}turn\/interrupt[\s\S]{0,300}threadId:\s*active\.threadId[\s\S]{0,300}turnId:\s*active\.turnId/,
     );
   });
 
-  it('interrupt() short-circuits when no active turn (no JSON-RPC call)', () => {
-    // Race-against-completion case: if the entry is missing (turn
-    // already finished), interrupt no-ops with a debug log — never
-    // sends turn/interrupt with stale state.
+  it('issueCodexTurnInterrupt short-circuits (returns false) when no active turn', () => {
+    // Race-against-completion / abort-before-turnId: missing entry → no
+    // JSON-RPC call, and a false return so the caller can defer.
     assert.match(
       runtimeSrc,
-      /interrupt\(sessionId:[\s\S]{0,2000}if\s*\(!active\)\s*\{[\s\S]{0,500}return/,
+      /function issueCodexTurnInterrupt[\s\S]{0,300}if\s*\(!active\)\s*\{[\s\S]{0,200}return false/,
+    );
+  });
+
+  it('public interrupt(sessionId) delegates to the shared helper (no duplicated impl)', () => {
+    assert.match(
+      runtimeSrc,
+      /interrupt\(sessionId: string\): void \{[\s\S]{0,800}issueCodexTurnInterrupt\(sessionId, 'route'\)/,
+    );
+  });
+});
+
+describe('Codex stream() honors the abort signal (codex-stop-recovery Phase 2)', () => {
+  it('reads options.abortController.signal and bails before turn/start if already aborted', () => {
+    assert.match(
+      runtimeSrc,
+      /const abortSignal = options\.abortController\?\.signal;[\s\S]{0,300}if\s*\(abortSignal\?\.aborted\)\s*\{[\s\S]{0,200}closeStream\(\);[\s\S]{0,60}return/,
+    );
+  });
+
+  it('an abort during the turn interrupts via the shared helper', () => {
+    assert.match(
+      runtimeSrc,
+      /onAbort = \(\) => \{[\s\S]{0,200}issueCodexTurnInterrupt\(sessionId, 'abort-signal'\)/,
+    );
+    assert.match(
+      runtimeSrc,
+      /abortSignal\.addEventListener\('abort',\s*onAbort/,
+    );
+  });
+
+  it('abort-before-turnId race re-interrupts the moment the turnId is recorded', () => {
+    assert.match(
+      runtimeSrc,
+      /activeCodexTurns\.set\(sessionId[\s\S]{0,300}if\s*\(pendingAbort\)\s*\{[\s\S]{0,200}issueCodexTurnInterrupt\(sessionId, 'abort-race'\)/,
     );
   });
 });

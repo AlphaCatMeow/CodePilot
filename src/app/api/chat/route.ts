@@ -14,6 +14,14 @@ import { wrapController } from '@/lib/safe-stream';
 import { ensureSchedulerRunning } from '@/lib/task-scheduler';
 import { predictNativeRuntime } from '@/lib/runtime';
 import { hasCodePilotProvider } from '@/lib/provider-presence';
+import { createSessionLockSettler } from '@/lib/session-lock-settle';
+
+// codex-stop-recovery Phase 3 — after the request aborts (Stop force-abort /
+// client disconnect), how long to wait for the natural interrupt→terminal→
+// collect path to release the lock before the watchdog forces it. Long enough
+// that the common case settles itself as 'idle'; short enough that a turn with
+// no terminal event still frees the session promptly instead of forever.
+const LOCK_RECOVERY_GRACE_MS = 8000;
 
 // Start the task scheduler on first API call
 ensureSchedulerRunning();
@@ -695,13 +703,36 @@ export async function POST(request: NextRequest) {
       try { renewSessionLock(session_id, lockId, 600); } catch { /* best effort */ }
     }, 60_000);
 
+    // codex-stop-recovery Phase 3 — one settler shared by the normal completion
+    // path and the Stop/abort watchdog below. Idempotent; only writes status
+    // when releaseSessionLock confirms we still own the lock (lockId-scoped
+    // release vs session-scoped status — see session-lock-settle.ts).
+    const settleLock = createSessionLockSettler({
+      clearRenewal: () => clearInterval(lockRenewalInterval),
+      releaseLock: () => releaseSessionLock(session_id, lockId),
+      setStatus: (status) => { try { setSessionRuntimeStatus(session_id, status); } catch { /* best effort */ } },
+    });
+
     // Save assistant message in background, with cleanup callback to release lock
     const isHeartbeatTurn = !!autoTrigger && content.includes('心跳检查');
     collectStreamResponse(streamForCollect, session_id, telegramNotifyOpts, () => {
-      clearInterval(lockRenewalInterval);
-      releaseSessionLock(session_id, lockId);
-      setSessionRuntimeStatus(session_id, 'idle');
+      settleLock('idle');
     }, { isHeartbeatTurn, suppressNotifications: !!autoTrigger });
+
+    // codex-stop-recovery Phase 3 — Stop/abort watchdog. The normal path settles
+    // when the runtime stream closes on a terminal event. But a turn that's
+    // interrupted yet never emits a terminal event (a Codex stuck turn) would
+    // leave collect reading forever and the lock renewing forever → the next
+    // same-session send is blocked by SESSION_BUSY indefinitely. When the request
+    // aborts (Stop force-abort / client disconnect) we give the natural
+    // interrupt→terminal→collect path a grace window, then force the lock to
+    // settle. Gated on !autoTrigger: background/heartbeat turns must keep running
+    // (and keep their lock) even after their initiating request disconnects.
+    if (!autoTrigger) {
+      abortController.signal.addEventListener('abort', () => {
+        setTimeout(() => settleLock('interrupted'), LOCK_RECOVERY_GRACE_MS);
+      }, { once: true });
+    }
 
     // If auto-compression happened, prepend a notification event to the stream.
     // The message is human-readable so the browser status bar shows something
