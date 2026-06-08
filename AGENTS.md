@@ -128,3 +128,23 @@ CodePilot — Codex 的桌面 GUI 客户端，基于 Electron + Next.js。
 - `docs/research/` — 调研文档（技术方案、可行性分析）
 
 **检索前先读对应目录的 README.md；增删文件后更新索引。**
+
+## 项目碎片知识
+
+<!-- cs-note managed: 用 cs-note 维护，新条目按下面分节追加 -->
+
+### 编译与构建
+
+### 运行与本地起服务
+- 启动 Electron 调试版前先清理占用 `3000` 端口的进程，再启动调试服务；避免 Electron/Next dev 连接到旧进程。
+
+### 测试
+
+### 命令与脚本陷阱
+
+### 路径与目录约定
+
+### 环境变量与凭证
+
+### 其他
+- 开发新技能或新增功能前，必须先 Review `docs/handover/project-architecture-reuse-map.html`，在既有 Provider、模型、Runtime、请求构建、连接测试、MCP/工具、上下文和 Electron 架构基础上扩展。

@@ -6,6 +6,7 @@ import {
   isOpenRouterProviderRecord,
   getCatalogDefaultModelsForRecord,
 } from '@/lib/provider-catalog';
+import { normalizeOpenAICompatibleBaseUrl } from '@/lib/provider-openai-compatible';
 import type { ProviderResponse, ErrorResponse, CreateProviderRequest, ApiProvider } from '@/types';
 
 function maskApiKey(provider: ApiProvider): ApiProvider {
@@ -110,6 +111,20 @@ export async function POST(request: NextRequest) {
         },
         { status: 400 }
       );
+    }
+
+    if (effectiveProtocol === 'openai-compatible') {
+      const normalized = normalizeOpenAICompatibleBaseUrl(body.base_url);
+      if (!normalized.ok) {
+        return NextResponse.json<ErrorResponse>(
+          {
+            error: normalized.message,
+            code: normalized.code,
+          },
+          { status: 400 }
+        );
+      }
+      body.base_url = normalized.value;
     }
 
     // Third-party media providers (openai-image, gemini-image) have the same

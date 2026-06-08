@@ -1,0 +1,1359 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CodePilot 项目架构与复用方法地图</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f7f4;
+      --panel: #ffffff;
+      --ink: #1f2328;
+      --muted: #59636e;
+      --line: #d8dadd;
+      --soft: #eef2f5;
+      --accent: #2563eb;
+      --accent-2: #0f766e;
+      --warn: #9a5b00;
+      --code: #0f172a;
+      --code-bg: #f0f3f7;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      line-height: 1.7;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .page {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px 24px 56px;
+    }
+
+    header {
+      padding: 28px 0 18px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 28px;
+    }
+
+    .eyebrow {
+      color: var(--accent-2);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      margin: 0 0 8px;
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 34px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      margin: 38px 0 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+      font-size: 24px;
+      line-height: 1.35;
+      letter-spacing: 0;
+    }
+
+    h3 {
+      margin: 28px 0 10px;
+      font-size: 18px;
+      line-height: 1.4;
+      letter-spacing: 0;
+    }
+
+    p {
+      margin: 8px 0 12px;
+    }
+
+    .summary {
+      max-width: 900px;
+      color: var(--muted);
+      font-size: 16px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: var(--panel);
+      color: var(--muted);
+      padding: 3px 10px;
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .toc {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 8px 18px;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      margin: 22px 0 30px;
+    }
+
+    .toc a {
+      display: block;
+      padding: 4px 0;
+      color: var(--ink);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 14px;
+      margin: 14px 0 22px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 14px 16px;
+    }
+
+    .card h3 {
+      margin-top: 0;
+    }
+
+    .callout {
+      border-left: 4px solid var(--accent);
+      background: var(--panel);
+      padding: 12px 14px;
+      margin: 16px 0;
+    }
+
+    .warning {
+      border-left-color: var(--warn);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 14px 0 24px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      display: table;
+    }
+
+    th,
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: var(--soft);
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      background: var(--code-bg);
+      color: var(--code);
+      border-radius: 5px;
+      padding: 1px 5px;
+      font-size: 0.92em;
+    }
+
+    pre {
+      background: #111827;
+      color: #e5e7eb;
+      border-radius: 8px;
+      padding: 14px 16px;
+      overflow-x: auto;
+      line-height: 1.55;
+      margin: 14px 0 22px;
+    }
+
+    pre code {
+      background: transparent;
+      color: inherit;
+      padding: 0;
+      border-radius: 0;
+    }
+
+    ul,
+    ol {
+      padding-left: 22px;
+      margin: 8px 0 18px;
+    }
+
+    li {
+      margin: 4px 0;
+    }
+
+    .small {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .source {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 4px;
+    }
+
+    @media (max-width: 720px) {
+      .page {
+        padding: 20px 14px 40px;
+      }
+
+      h1 {
+        font-size: 28px;
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <p class="eyebrow">CodePilot Handover</p>
+      <h1>CodePilot 项目架构与复用方法地图</h1>
+      <p class="summary">
+        本文档面向后续接手开发者和 AI 协作者，目标是把 CodePilot 的整体分层、主业务数据流、服务商与模型体系、运行时分发、连接测试、请求构建、MCP/工具/上下文拼装、Electron 本地能力和验证入口梳理成一张可复用地图。
+      </p>
+      <div class="meta">
+        <span class="tag">生成日期：2026-06-08</span>
+        <span class="tag">仓库：D:\Documents\Projects\Web\CodePilot</span>
+        <span class="tag">版本：package.json 0.55.2</span>
+        <span class="tag">范围：文档梳理，不改产品代码</span>
+      </div>
+    </header>
+
+    <nav class="toc" aria-label="目录">
+      <a href="#positioning">1. 项目定位</a>
+      <a href="#layers">2. 分层架构</a>
+      <a href="#chat-flow">3. 聊天主链路</a>
+      <a href="#provider-map">4. Provider 复用地图</a>
+      <a href="#model-map">5. 模型获取与发现</a>
+      <a href="#runtime-map">6. Runtime 分发</a>
+      <a href="#request-builders">7. 请求构建复用点</a>
+      <a href="#connection-tests">8. 连接测试与诊断</a>
+      <a href="#context-tools">9. 上下文、MCP 与工具</a>
+      <a href="#persistence">10. 本地数据与状态</a>
+      <a href="#electron">11. Electron 本地能力</a>
+      <a href="#feature-touchpoints">12. 新功能触点</a>
+      <a href="#testing">13. 测试与验证入口</a>
+      <a href="#rules">14. 复用原则</a>
+    </nav>
+
+    <section id="positioning">
+      <h2>1. 项目定位</h2>
+      <p>
+        CodePilot 是一个多模型 AI Agent 桌面客户端。桌面外壳由 Electron 提供，前端、API 路由和 SSR 能力由 Next.js App Router 提供，本地持久化由 SQLite（better-sqlite3）提供，Agent 执行由多 Runtime 统一分发。
+      </p>
+      <div class="grid">
+        <article class="card">
+          <h3>用户可见能力</h3>
+          <p>聊天、模型切换、Provider 配置、MCP/Skills、远程 Bridge、媒体生成、项目文件树、Git 面板、终端、任务调度、上下文压缩、生成式 UI 和本地通知。</p>
+        </article>
+        <article class="card">
+          <h3>工程核心</h3>
+          <p>所有 Agent 执行收敛到 <code>streamClaude()</code>，所有 Provider/Model 决策收敛到 <code>provider-resolver.ts</code> 与 <code>providers/models</code> API，所有 Runtime 输出统一为 SSE。</p>
+        </article>
+        <article class="card">
+          <h3>协作边界</h3>
+          <p>当前项目规则明确：Codex 主要做审查、测试、复现分析、执行计划和文档；产品代码改动应交由 Claude Code 实施。本次产物仅新增文档。</p>
+        </article>
+      </div>
+      <p class="source">主要来源：<code>ARCHITECTURE.md</code>、<code>README.md</code>、<code>CLAUDE.md</code>、<code>src/lib/claude-client.ts</code>、<code>src/lib/runtime/*</code></p>
+    </section>
+
+    <section id="layers">
+      <h2>2. 分层架构</h2>
+      <p>
+        CodePilot 的代码可以按 7 层理解。做功能时先判断能力属于哪一层，再复用该层的既有入口，避免从组件里直接拼请求、直接读 DB 或绕过 Runtime 契约。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>层级</th>
+            <th>职责</th>
+            <th>关键目录/文件</th>
+            <th>复用入口</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>桌面宿主层</td>
+            <td>窗口、内嵌 Next server、IPC、终端、更新、系统通知、代理解析、本地文件对话框</td>
+            <td><code>electron/main.ts</code><br><code>electron/preload.ts</code><br><code>src/types/electron.d.ts</code></td>
+            <td><code>window.electronAPI</code>、IPC channel、<code>TerminalManager</code></td>
+          </tr>
+          <tr>
+            <td>Next API 层</td>
+            <td>REST/SSE 入口、DB 调用、会话锁、Provider/Model 管理、文件/Git/Media/Bridge API</td>
+            <td><code>src/app/api/**/route.ts</code></td>
+            <td><code>/api/chat</code>、<code>/api/providers/*</code>、<code>/api/codex/*</code>、<code>/api/files/*</code></td>
+          </tr>
+          <tr>
+            <td>前端 UI 层</td>
+            <td>页面、组件、聊天输入、消息渲染、设置页、插件页、项目面板</td>
+            <td><code>src/app</code><br><code>src/components</code><br><code>src/hooks</code></td>
+            <td><code>useProviderModels</code>、<code>useSSEStream</code>、<code>startStream</code>、设计系统组件</td>
+          </tr>
+          <tr>
+            <td>Agent Runtime 层</td>
+            <td>把同一份 stream options 分发给 Native、Claude Code SDK、Codex Runtime</td>
+            <td><code>src/lib/runtime</code><br><code>src/lib/claude-client.ts</code><br><code>src/lib/codex/runtime.ts</code></td>
+            <td><code>streamClaude()</code>、<code>resolveRuntime()</code>、<code>AgentRuntime.stream()</code></td>
+          </tr>
+          <tr>
+            <td>Provider/Model Gateway 层</td>
+            <td>服务商预设、协议推断、凭证注入、模型解析、连接测试、模型发现、请求适配</td>
+            <td><code>src/lib/provider-*.ts</code><br><code>src/lib/model-discovery.ts</code><br><code>src/lib/ai-provider.ts</code></td>
+            <td><code>resolveProvider()</code>、<code>toClaudeCodeEnv()</code>、<code>toAiSdkConfig()</code>、<code>createModel()</code>、<code>discoverModels()</code></td>
+          </tr>
+          <tr>
+            <td>Context/Tool/MCP 层</td>
+            <td>系统提示词拼装、MCP 配置加载、工具注册、权限请求、内置工具、上下文压缩</td>
+            <td><code>src/lib/context-assembler.ts</code><br><code>src/lib/agent-tools.ts</code><br><code>src/lib/mcp-loader.ts</code></td>
+            <td><code>assembleContext()</code>、<code>assembleTools()</code>、<code>loadCodePilotMcpServers()</code>、<code>loadAllMcpServers()</code></td>
+          </tr>
+          <tr>
+            <td>本地持久化层</td>
+            <td>SQLite schema、CRUD、会话锁、Provider/Model 表、媒体、Bridge、任务调度、通知</td>
+            <td><code>src/lib/db.ts</code></td>
+            <td><code>getSession()</code>、<code>addMessage()</code>、<code>getProvider()</code>、<code>getAllModelsForProvider()</code>、<code>applyDiscoveryDiff()</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <pre><code>Electron main
+  └─ utilityProcess: embedded Next server
+       └─ Next API routes
+            ├─ /api/chat → streamClaude() → Runtime registry
+            ├─ /api/providers/* → Provider resolver / discovery / DB
+            ├─ /api/codex/* → Codex app-server / Responses proxy
+            └─ /api/files|git|media|bridge → local capabilities
+
+React UI
+  ├─ startStream() / useSSEStream()
+  ├─ useProviderModels()
+  ├─ settings and plugin managers
+  └─ window.electronAPI for desktop-only operations</code></pre>
+    </section>
+
+    <section id="chat-flow">
+      <h2>3. 聊天主链路</h2>
+      <p>
+        桌面聊天的主链路由前端 <code>startStream()</code> 发起，后端 <code>/api/chat</code> 接收并完成会话锁、Provider/Runtime 解析、上下文拼装、MCP 选择、上下文压缩、Runtime 分发、SSE 转发和后台落库。
+      </p>
+      <pre><code>MessageInput / ChatView
+  → startStream(params) in src/lib/stream-session-manager.ts
+  → fetch POST /api/chat
+  → acquireSessionLock(session_id)
+  → resolveRuntimeForSession(session)
+  → resolveProviderForSession(intent, { runtime })
+  → addMessage(user) unless autoTrigger
+  → assembleContext({ entryPoint: "desktop" })
+  → predictNativeRuntime(providerId)
+       ├─ true  → loadAllMcpServers()
+       └─ false → loadCodePilotMcpServers()
+  → context estimate / auto compact
+  → streamClaude(options)
+  → runtime.stream(options)
+  → SSE to browser
+  → collectStreamResponse() tees stream and persists assistant result</code></pre>
+
+      <h3>关键不变量</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>不变量</th>
+            <th>实现位置</th>
+            <th>原因</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>发消息前必须先做 session-aware Provider/Runtime 解析</td>
+            <td><code>src/app/api/chat/route.ts</code></td>
+            <td>如果会话指向已删除 provider，要在写 user message 前返回 <code>INVALID_SESSION_PROVIDER</code>，不能静默切到默认 provider</td>
+          </tr>
+          <tr>
+            <td>每个 session 同时只能有一个运行中请求</td>
+            <td><code>acquireSessionLock()</code>、<code>renewSessionLock()</code>、<code>releaseSessionLock()</code></td>
+            <td>避免同一个会话并发写消息、并发复用 SDK session 或 Codex thread</td>
+          </tr>
+          <tr>
+            <td>用户第一轮发送会 lazy-seed runtime/model/provider</td>
+            <td><code>/api/chat</code> route</td>
+            <td>会话创建时可能没有固定模型或 provider；第一次真实用户发送后，当前解析结果成为会话事实</td>
+          </tr>
+          <tr>
+            <td><code>autoTrigger</code> 不写 user message，不锁定 runtime</td>
+            <td><code>/api/chat</code> route</td>
+            <td>心跳、onboarding、技能展开等后台触发不应改变用户会话承诺</td>
+          </tr>
+          <tr>
+            <td><code>/compact</code> 的反馈不入 DB</td>
+            <td><code>/api/chat</code> route</td>
+            <td>压缩提示是 UI artifact，不应成为下一轮模型上下文</td>
+          </tr>
+          <tr>
+            <td>客户端流状态不绑 React 生命周期</td>
+            <td><code>src/lib/stream-session-manager.ts</code></td>
+            <td>切换会话或组件重挂载后，正在运行的 SSE 仍可继续订阅</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>SSE 消费与持久化</h3>
+      <p>
+        前端的 <code>consumeSSEStream()</code> 负责把 SSE 事件转换成文本、thinking、tool use、tool result、权限请求、状态和结果。后端的 <code>collectStreamResponse()</code> 同时 tee 一份流用于落库：纯文本保存为字符串，包含 thinking/tool/media 的响应保存为结构化 JSON blocks。
+      </p>
+      <p>
+        工具结果中的 media block 会经 <code>saveMediaToLibrary()</code> 保存到本地媒体库，再把 base64 替换成本地路径和 mediaId。这个行为对图片生成、Codex 工具媒体回显、后续刷新恢复都很关键。
+      </p>
+    </section>
+
+    <section id="provider-map">
+      <h2>4. Provider 复用地图</h2>
+      <p>
+        Provider 相关逻辑已经有明确的单一入口。新功能只要涉及服务商、凭证、base URL、authStyle、模型 ID、Runtime 兼容性，优先走下表入口，不要在 UI 组件或 API route 里重新拼 header、重新判断协议或直接读环境变量。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>能力</th>
+            <th>复用入口</th>
+            <th>输入</th>
+            <th>输出/行为</th>
+            <th>典型调用者</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Provider 预设与元信息</td>
+            <td><code>src/lib/provider-catalog.ts</code></td>
+            <td>preset key、provider_type、base_url、protocol</td>
+            <td>预设、authStyle、billingModel、默认模型、meta 链接、协议推断</td>
+            <td>设置页、Provider 创建、Doctor、模型页</td>
+          </tr>
+          <tr>
+            <td>统一解析 Provider + Model</td>
+            <td><code>resolveProvider()</code></td>
+            <td><code>providerId</code>、<code>sessionProviderId</code>、<code>model</code>、<code>sessionModel</code>、<code>runtime</code></td>
+            <td><code>ResolvedProvider</code>，含 DB row、protocol、authStyle、model、upstreamModel、roleModels、headers、envOverrides</td>
+            <td>Native Runtime、SDK Runtime、辅助模型、模型能力过滤</td>
+          </tr>
+          <tr>
+            <td>Session fail-closed 解析</td>
+            <td><code>resolveProviderForSession()</code></td>
+            <td>session 保存的 <code>provider_id</code>/<code>model</code> 和请求覆盖值</td>
+            <td>健康时同 <code>resolveProvider()</code>；ghost provider 时带 <code>invalidReason</code></td>
+            <td><code>/api/chat</code> 主发送入口</td>
+          </tr>
+          <tr>
+            <td>Claude Code SDK 子进程环境变量</td>
+            <td><code>toClaudeCodeEnv()</code></td>
+            <td><code>ResolvedProvider</code> + base env</td>
+            <td>清理旧 <code>ANTHROPIC_*</code>、注入 API key/Auth token、base URL、角色模型、headers、envOverrides</td>
+            <td><code>prepareSdkSubprocessEnv()</code>、<code>streamClaudeSdk()</code>、<code>generateTextViaSdk()</code></td>
+          </tr>
+          <tr>
+            <td>Vercel AI SDK 配置</td>
+            <td><code>toAiSdkConfig()</code></td>
+            <td><code>ResolvedProvider</code> + model override</td>
+            <td><code>AiSdkConfig</code>，决定 <code>sdkType</code>、认证字段、base URL、upstream model、Responses API 开关</td>
+            <td><code>createModel()</code>、Native Runtime、Codex proxy</td>
+          </tr>
+          <tr>
+            <td>创建 AI SDK LanguageModel</td>
+            <td><code>createModel()</code></td>
+            <td>provider/session/model 参数</td>
+            <td>返回 <code>languageModel</code>、实际 modelId、config、resolved、third-party proxy 标记</td>
+            <td><code>agent-loop.ts</code>、文本生成、Codex proxy adapter</td>
+          </tr>
+          <tr>
+            <td>Provider transport 识别</td>
+            <td><code>detectTransport()</code></td>
+            <td>providerId/sessionProviderId</td>
+            <td><code>standard-messages</code>、<code>claude-code-compat</code> 或 <code>cloud-managed</code></td>
+            <td><code>streamClaude()</code> 的 SDK forcing 判断</td>
+          </tr>
+          <tr>
+            <td>辅助模型路由</td>
+            <td><code>resolveAuxiliaryModel()</code></td>
+            <td>任务类型：compact、vision、summarize、web_extract 等</td>
+            <td>按 env override → main.small → main.haiku → 其它 provider → main floor 选择</td>
+            <td>上下文压缩、后台摘要、未来低成本任务</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Provider 解析优先级</h3>
+      <pre><code>resolveProvider()
+  1. request providerId
+  2. session.provider_id
+  3. default_provider_id setting
+  4. active provider fallback
+  5. env mode / legacy ANTHROPIC_* / app settings
+
+resolveProviderForSession()
+  └─ 在上述规则外增加 ghost provider 检查：
+     session 已承诺的 provider 不存在时，返回 invalidReason，不静默切换</code></pre>
+
+      <div class="callout warning">
+        <strong>注意：</strong> <code>is_active</code> 在当前代码里更像 UI 单选状态，不是“启用/禁用 provider”的完整语义。显式 providerId 和 default_provider_id 不能仅因 <code>is_active=0</code> 被跳过。相关保护在 <code>provider-resolver.ts</code> 和 <code>stale-default-provider.test.ts</code> 里已有回归测试。
+      </div>
+    </section>
+
+    <section id="model-map">
+      <h2>5. 模型获取与发现</h2>
+      <p>
+        模型来源不是单一 catalog。聊天 picker、Settings 模型页、Provider 卡片、Runtime 兼容提示都围绕 <code>/api/providers/models</code> 和 <code>provider_models</code> 表协同工作。
+      </p>
+
+      <h3>聊天模型组构建</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>来源</th>
+            <th>实现</th>
+            <th>说明</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>内置 env / Claude Code 组</td>
+            <td><code>src/app/api/providers/models/route.ts</code> 的 <code>DEFAULT_MODELS</code></td>
+            <td>包含 <code>sonnet</code>、<code>opus</code>、<code>haiku</code>，带 upstreamModelId、effort/thinking 能力和 context window</td>
+          </tr>
+          <tr>
+            <td>SDK capability cache</td>
+            <td><code>getCachedModels('env')</code></td>
+            <td>如果 Claude Code SDK 发现了 env 模型，会覆盖默认 env 组展示</td>
+          </tr>
+          <tr>
+            <td>DB provider_models</td>
+            <td><code>getAllModelsForProvider()</code></td>
+            <td>已物化模型为主；enabled row 进入 picker，hidden row 作为 suppression list 防止 catalog 回流</td>
+          </tr>
+          <tr>
+            <td>Catalog defaults</td>
+            <td><code>getDefaultModelsForProvider()</code>、<code>getCatalogDefaultModelsForRecord()</code></td>
+            <td>provider_models 为空时作为初始列表；已有 DB row 时只补充 DB 里不存在且未隐藏的新 catalog 项</td>
+          </tr>
+          <tr>
+            <td>role_models_json</td>
+            <td><code>provider.role_models_json</code></td>
+            <td>把 default/reasoning/small/haiku/sonnet/opus 中没有出现在 rawModels 的模型补入列表</td>
+          </tr>
+          <tr>
+            <td>旧 env_overrides_json</td>
+            <td><code>ANTHROPIC_MODEL</code></td>
+            <td>兼容历史配置；同样受隐藏模型 suppression 保护</td>
+          </tr>
+          <tr>
+            <td>OpenAI OAuth 虚拟 provider</td>
+            <td><code>getOAuthStatus()</code> + <code>OPENAI_OAUTH_MODELS</code></td>
+            <td>登录 ChatGPT Plus/Pro 后展示 <code>openai-oauth</code> 模型组</td>
+          </tr>
+          <tr>
+            <td>Codex Account 虚拟 provider</td>
+            <td><code>buildCodexProviderModelGroup()</code></td>
+            <td>仅在 runtime 明确为 <code>codex_runtime</code> 时允许短超时探测；全 catalog 路径只读 warm cache，不隐式 spawn</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>模型发现 pipeline</h3>
+      <pre><code>Settings / Provider card refresh
+  → POST /api/providers/[id]/discover-models
+  → discoverModels(input)       // read-only upstream probe
+  → build diff against provider_models
+  → POST /api/providers/[id]/discover-models/apply
+  → applyDiscoveryDiff()        // DB write, respects manual_* guards</code></pre>
+      <table>
+        <thead>
+          <tr>
+            <th>入口</th>
+            <th>用途</th>
+            <th>安全边界</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>discoverModels()</code></td>
+            <td>读上游模型目录：OpenAI-compatible、Anthropic、OpenRouter、Gemini、Ollama 等</td>
+            <td>只读，不写 DB；8 秒默认超时；不回显 API key；<code>fullModelIds</code> 为权威列表，<code>sampleModels</code> 只给 UI 显示</td>
+          </tr>
+          <tr>
+            <td><code>classifyProvider()</code></td>
+            <td>判断是否能/该 probe</td>
+            <td>Coding/Token Plan、OpenRouter 全量目录、图片 provider、OAuth/env-only 等会返回 unsupported，避免把非套餐 SKU 写进 DB</td>
+          </tr>
+          <tr>
+            <td><code>applyDiscoveryDiff()</code></td>
+            <td>把 discovery diff 写入 <code>provider_models</code></td>
+            <td>不覆盖 <code>manual_enabled</code>/<code>manual_hidden</code> 用户意图；只自动调整 pristine/recommended/discovered/catalog row</td>
+          </tr>
+          <tr>
+            <td><code>seedCatalogModelsIfEmpty()</code></td>
+            <td>对不可发现 provider 物化 catalog 默认模型</td>
+            <td>幂等；已有 row 后不重复 seed</td>
+          </tr>
+          <tr>
+            <td><code>POST /api/providers/[id]/search-models</code></td>
+            <td>OpenRouter 或可靠上游的搜索添加</td>
+            <td>搜索不写 DB；真正添加仍走 <code>POST /api/providers/[id]/models</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>模型字段语义</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>字段</th>
+            <th>语义</th>
+            <th>使用注意</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>model_id</code></td>
+            <td>CodePilot 内部/UI 选择值，可以是短别名</td>
+            <td>不要直接发给上游，除非确认无需映射</td>
+          </tr>
+          <tr>
+            <td><code>upstream_model_id</code></td>
+            <td>真正发给 API 的模型 ID</td>
+            <td><code>toAiSdkConfig()</code> 和 <code>toClaudeCodeEnv()</code> 都会优先映射这个值</td>
+          </tr>
+          <tr>
+            <td><code>display_name</code></td>
+            <td>UI 展示名称</td>
+            <td>不代表上游可调用 ID</td>
+          </tr>
+          <tr>
+            <td><code>capabilities_json</code></td>
+            <td>模型能力，如 effort/thinking/context/media</td>
+            <td><code>/api/providers/models</code> 会把 effort/thinking 常用字段提升到顶层</td>
+          </tr>
+          <tr>
+            <td><code>enabled</code> + <code>enable_source</code></td>
+            <td>模型是否展示，以及该状态来自 recommended/discovered/manual</td>
+            <td>刷新和对齐逻辑必须尊重 manual 状态，不得无提示覆盖用户隐藏/启用</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="runtime-map">
+      <h2>6. Runtime 分发</h2>
+      <p>
+        Runtime 是“谁来跑 Agent loop”，Provider transport 是“怎么和模型服务说话”。这两个概念不要混在一起。前端和 API 层不直接知道具体 Runtime 的内部协议，只消费统一的 SSE 输出。
+      </p>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Runtime</th>
+            <th>注册 ID</th>
+            <th>核心文件</th>
+            <th>适用场景</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Claude Code SDK Runtime</td>
+            <td><code>claude-code-sdk</code></td>
+            <td><code>src/lib/runtime/sdk-runtime.ts</code><br><code>src/lib/claude-client.ts</code></td>
+            <td>通过 <code>@anthropic-ai/claude-agent-sdk</code> 子进程运行，复用 Claude Code 能力、settings、MCP、CLI 工具链</td>
+          </tr>
+          <tr>
+            <td>CodePilot Native Runtime</td>
+            <td><code>native</code></td>
+            <td><code>src/lib/runtime/native-runtime.ts</code><br><code>src/lib/agent-loop.ts</code><br><code>src/lib/ai-provider.ts</code></td>
+            <td>基于 Vercel AI SDK 直接跑 agent loop，不要求安装 Claude Code CLI</td>
+          </tr>
+          <tr>
+            <td>Codex Runtime</td>
+            <td><code>codex_runtime</code></td>
+            <td><code>src/lib/codex/runtime.ts</code><br><code>src/lib/codex/app-server-*.ts</code><br><code>src/lib/codex/proxy/*</code></td>
+            <td>通过 Codex app-server 运行，Codex Account 原生或 CodePilot provider proxy 路径</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>统一 Runtime 合约</h3>
+      <p>
+        所有 Runtime 实现 <code>AgentRuntime</code>：<code>stream(options)</code> 返回 SSE <code>ReadableStream</code>，<code>interrupt(sessionId)</code> 处理中断，<code>isAvailable()</code> 做可用性检测，<code>dispose()</code> 释放资源。
+      </p>
+
+      <h3>选择规则</h3>
+      <pre><code>streamClaude(options)
+  1. codex_account provider → 必须走 Codex Runtime，缺失则报错
+  2. session.runtime_pin 或 global agent_runtime 指向 codex_runtime → 优先 Codex
+  3. openai-oauth provider → 默认 Native；若 Codex intent 明确则走 Codex proxy
+  4. 非 Native-compatible transport → 尝试 SDK Runtime
+  5. 否则 resolveRuntime(pin/global/auto)
+
+resolveRuntime()
+  0. Codex Runtime explicit/global
+  1. 显式 override（session pin）优先，SDK 缺失时 fail closed
+  2. cli_enabled=false → Native
+  3. global agent_runtime 可用则使用，不可用则 fall through
+  4. auto：Claude Code CLI 可用 → SDK，否则 Native</code></pre>
+
+      <div class="callout">
+        <strong>实践结论：</strong> 新增 Runtime 时只应实现 <code>AgentRuntime</code> 并在 <code>src/lib/runtime/index.ts</code> 注册。不要让 React 组件或普通 API route 直接依赖新 Runtime 的内部 SDK。
+      </div>
+    </section>
+
+    <section id="request-builders">
+      <h2>7. 请求构建复用点</h2>
+      <p>
+        项目里已经有多套请求构建器，分别对应 Claude Code SDK env、AI SDK model、Claude Code-compatible wire format、Codex Responses proxy、媒体 provider。不要在新功能里临时拼 body/header。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>请求类型</th>
+            <th>复用入口</th>
+            <th>负责内容</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Claude Code SDK 子进程请求</td>
+            <td><code>prepareSdkSubprocessEnv()</code> → <code>toClaudeCodeEnv()</code> → SDK <code>query()</code></td>
+            <td>隔离 <code>~/.claude</code>、清理/注入 env、设置 model、cwd、permission、MCP settingSources、abortController</td>
+          </tr>
+          <tr>
+            <td>Native Runtime 模型实例</td>
+            <td><code>createModel()</code></td>
+            <td>按 <code>AiSdkConfig.sdkType</code> 创建 Anthropic/OpenAI/Google/Bedrock/Vertex/ClaudeCodeCompat model，套 middleware</td>
+          </tr>
+          <tr>
+            <td>Anthropic 第三方代理兼容请求</td>
+            <td><code>src/lib/claude-code-compat/request-builder.ts</code></td>
+            <td>把 AI SDK 请求转成 Claude Code/Anthropic-compatible wire format，适配 Kimi、GLM、OpenRouter Anthropic skin 等</td>
+          </tr>
+          <tr>
+            <td>Codex Responses proxy 请求</td>
+            <td><code>parse-request.ts</code>、<code>translate-input.ts</code>、<code>translate-tools.ts</code>、<code>unified-adapter.ts</code></td>
+            <td>解析 Codex app-server 入站 body，转 AI SDK messages/tools/providerOptions，再转回 Codex SSE 或非流式 JSON</td>
+          </tr>
+          <tr>
+            <td>OpenAI OAuth / Codex API</td>
+            <td><code>ai-provider.ts</code> 中 <code>createOpenAI({ fetch })</code> 自定义 fetch</td>
+            <td>每次请求前 <code>ensureTokenFresh()</code>，重写到 <code>chatgpt.com/backend-api/codex/responses</code>，注入 Bearer 和 account id</td>
+          </tr>
+          <tr>
+            <td>Provider 连接测试</td>
+            <td><code>testProviderConnection()</code></td>
+            <td>构造最小 <code>/v1/messages</code> ping 请求，按 authStyle 设置 <code>x-api-key</code> 或 <code>Authorization: Bearer</code></td>
+          </tr>
+          <tr>
+            <td>模型发现请求</td>
+            <td><code>discoverModels()</code> 内各 probe</td>
+            <td>构造 <code>/v1/models</code>、Gemini models、Ollama tags 等请求，统一超时和脱敏</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Claude Code-compatible 路径的判断</h3>
+      <p>
+        <code>toAiSdkConfig()</code> 会把非官方 Anthropic base URL 的 provider 路由到 <code>claude-code-compat</code>，因为很多第三方代理兼容 Claude Code wire format，但不完全兼容 <code>@ai-sdk/anthropic</code> 的 URL、beta headers 或 body 细节。OpenRouter Anthropic skin 也走同一路径。
+      </p>
+    </section>
+
+    <section id="connection-tests">
+      <h2>8. 连接测试与诊断</h2>
+      <p>
+        连接测试和诊断已有独立路径，不能用“能否发起一次聊天”替代，因为聊天会引入 Runtime、MCP、session、上下文等变量。
+      </p>
+
+      <h3>Provider 连接测试</h3>
+      <pre><code>POST /api/providers/test
+  → 从 body 取 providerId/presetKey/apiKey/baseUrl/protocol/authStyle/modelName
+  → 如果 apiKey 是 "***xxxx" 或空，且 providerId 存在，则回填 DB 真 key
+  → testProviderConnection()
+       ├─ bedrock/vertex/env_only → SKIPPED
+       ├─ openai-image/gemini-image → testMediaProviderConnection()
+       └─ anthropic-compatible → POST {baseUrl}/v1/messages with max_tokens: 1
+  → classifyError() 转用户可读错误和 recoveryActions</code></pre>
+      <table>
+        <thead>
+          <tr>
+            <th>分支</th>
+            <th>行为</th>
+            <th>原因</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>authStyle=auth_token</code></td>
+            <td>发送 <code>Authorization: Bearer &lt;key&gt;</code></td>
+            <td>OpenRouter、GLM、MiniMax、Volcengine、Bailian 等 coding/token plan 常见</td>
+          </tr>
+          <tr>
+            <td><code>authStyle=api_key</code></td>
+            <td>发送 <code>x-api-key: &lt;key&gt;</code></td>
+            <td>Anthropic 官方、Kimi 等 API-key-only provider</td>
+          </tr>
+          <tr>
+            <td><code>bedrock</code> / <code>vertex</code> / <code>env_only</code></td>
+            <td>返回 SKIPPED 中性结果</td>
+            <td>这些 provider 依赖 IAM/OAuth/系统环境，不能用简单 HTTP ping 准确验证</td>
+          </tr>
+          <tr>
+            <td>媒体 provider</td>
+            <td>走媒体 provider 专用最小 probe</td>
+            <td>通用 Anthropic <code>/v1/messages</code> 对图片服务无意义，会产生假失败</td>
+          </tr>
+          <tr>
+            <td>第三方 Anthropic 缺 baseUrl</td>
+            <td>直接返回 <code>MISSING_BASE_URL</code></td>
+            <td>避免测试误打官方 <code>api.anthropic.com</code>，产生假阳性</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Provider Doctor</h3>
+      <p>
+        诊断中心由 <code>src/lib/provider-doctor.ts</code>、<code>/api/doctor</code>、<code>/api/doctor/repair</code>、<code>/api/doctor/export</code> 组成。已有文档 <code>docs/handover/provider-error-doctor.md</code> 记录了错误分类、Provider 生效、Auth 自动、5 探针诊断、runtime-log 脱敏和修复动作。新增 Provider 诊断时优先扩展这里，不要在设置页组件里直接写探针。
+      </p>
+    </section>
+
+    <section id="context-tools">
+      <h2>9. 上下文、MCP 与工具</h2>
+
+      <h3>上下文拼装</h3>
+      <p>
+        <code>assembleContext()</code> 是桌面聊天和 Bridge 的统一系统提示词拼装入口。它把稳定内容放在前缀，把每轮变化的内容放在后缀，以减少 prompt cache 失效。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>层</th>
+            <th>内容</th>
+            <th>稳定性</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>Widget system prompt（仅 desktop）</td>
+            <td>静态前缀</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>session.system_prompt</td>
+            <td>静态前缀</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>Assistant workspace identity：soul/user/claude.md</td>
+            <td>静态前缀</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>memory hint</td>
+            <td>易变后缀</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>onboarding、heartbeat、progressive update、buddy instructions</td>
+            <td>易变后缀</td>
+          </tr>
+          <tr>
+            <td>6</td>
+            <td>Dashboard summary（desktop）</td>
+            <td>易变后缀</td>
+          </tr>
+          <tr>
+            <td>7</td>
+            <td>systemPromptAppend：技能、图片 agent mode 等每轮附加内容</td>
+            <td>易变后缀</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>MCP 加载</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>入口</th>
+            <th>用途</th>
+            <th>注意</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>loadCodePilotMcpServers()</code></td>
+            <td>只返回需要 CodePilot 特殊处理的 MCP server，例如含 <code>${...}</code> DB 占位符的 env</td>
+            <td>SDK Runtime 常用；其它 MCP 交给 Claude Code 自己从 settingSources 加载</td>
+          </tr>
+          <tr>
+            <td><code>loadAllMcpServers()</code></td>
+            <td>加载 user settings、CodePilot settings、项目 <code>.mcp.json</code> 合并后的所有 server</td>
+            <td>Native Runtime 常用；它自己管理 MCP 连接</td>
+          </tr>
+          <tr>
+            <td><code>loadProjectMcpServers(projectCwd)</code></td>
+            <td>按用户实际项目目录加载 <code>.mcp.json</code></td>
+            <td>不要用 <code>process.cwd()</code> 代表用户项目目录；桌面 app 里那通常是 Next server 目录</td>
+          </tr>
+          <tr>
+            <td><code>invalidateMcpCache()</code></td>
+            <td>添加、删除、切换 MCP server 后清缓存</td>
+            <td>确保设置页状态和下一轮运行读取一致</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Native 工具组装</h3>
+      <p>
+        <code>assembleTools()</code> 是 Native Agent Loop 的工具入口。它合并核心 coding tools、CodePilot builtin tools、外部 MCP tools，并根据 mode 和 permissionContext 包装权限检查。
+      </p>
+      <pre><code>assembleTools(options)
+  ├─ createBuiltinTools()        // Read / Write / Edit / Bash / Glob / Grep / Agent / Skill
+  ├─ getBuiltinTools()           // notification / memory / dashboard / media / cli-tools / widget 等
+  ├─ buildMcpToolSet()           // 外部 MCP tools
+  └─ wrapWithPermissions()
+       ├─ safe_read tools 直接放行
+       ├─ deny 直接返回 Permission denied
+       └─ ask → createPermissionRequest() + registerPendingPermission()</code></pre>
+      <div class="callout warning">
+        <strong>权限原则：</strong> <code>codepilot_*</code> 工具不是天然安全。现在安全工具来自 mutation-level 分类和 <code>PERMISSION_SAFE_TOOLS</code>，未知或 mutating 工具默认进入权限包装。
+      </div>
+    </section>
+
+    <section id="persistence">
+      <h2>10. 本地数据与状态</h2>
+      <p>
+        SQLite schema 集中在 <code>src/lib/db.ts</code>，初始化时创建表并用 <code>PRAGMA table_info</code> + <code>ALTER TABLE</code> 做增量迁移。修改 schema 时必须在该文件补迁移，并按项目规则更新类型和文档。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>数据域</th>
+            <th>表</th>
+            <th>用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>聊天</td>
+            <td><code>chat_sessions</code>、<code>messages</code>、<code>tasks</code></td>
+            <td>会话元数据、消息内容、SDK TodoWrite/任务项</td>
+          </tr>
+          <tr>
+            <td>Provider/Model</td>
+            <td><code>api_providers</code>、<code>provider_models</code>、<code>settings</code></td>
+            <td>服务商配置、模型物化、默认 provider/runtime/settings</td>
+          </tr>
+          <tr>
+            <td>运行时控制</td>
+            <td><code>session_runtime_locks</code>、<code>permission_requests</code></td>
+            <td>会话并发锁、工具权限请求生命周期</td>
+          </tr>
+          <tr>
+            <td>媒体</td>
+            <td><code>media_generations</code>、<code>media_tags</code>、<code>media_jobs</code>、<code>media_job_items</code>、<code>media_context_events</code></td>
+            <td>图片/视频生成、标签、批量任务、上下文同步</td>
+          </tr>
+          <tr>
+            <td>Bridge</td>
+            <td><code>channel_bindings</code>、<code>channel_offsets</code>、<code>channel_dedupe</code>、<code>channel_outbound_refs</code>、<code>channel_audit_logs</code>、<code>channel_permission_links</code>、<code>channel_configs</code></td>
+            <td>IM 频道绑定、轮询水位线、去重、出站映射、审计、权限链接、频道配置</td>
+          </tr>
+          <tr>
+            <td>微信</td>
+            <td><code>weixin_accounts</code>、<code>weixin_context_tokens</code></td>
+            <td>微信账号与上下文 token</td>
+          </tr>
+          <tr>
+            <td>CLI 工具</td>
+            <td><code>cli_tools_custom</code>、<code>cli_tool_descriptions</code></td>
+            <td>自定义 CLI 工具、AI 生成描述</td>
+          </tr>
+          <tr>
+            <td>调度与通知</td>
+            <td><code>scheduled_tasks</code>、<code>task_run_logs</code>、<code>notification_events</code>、<code>notification_deliveries</code></td>
+            <td>周期任务、运行记录、通知事件、通知投递状态</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>会话关键字段</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>字段</th>
+            <th>语义</th>
+            <th>改动风险</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>provider_id</code> / <code>model</code></td>
+            <td>会话承诺使用的 provider 和模型</td>
+            <td>不能被 global default 静默覆盖；变更会影响恢复、模型 picker、Runtime 兼容</td>
+          </tr>
+          <tr>
+            <td><code>runtime_pin</code></td>
+            <td>会话承诺的 Runtime 标签：<code>claude_code</code>、<code>codepilot_runtime</code>、<code>codex_runtime</code></td>
+            <td>显式 pin 失败时要 fail closed，不能悄悄换 Runtime</td>
+          </tr>
+          <tr>
+            <td><code>sdk_session_id</code></td>
+            <td>Claude Code SDK 会话恢复 ID</td>
+            <td>压缩、切换 provider/model/runtime 时可能要清空，避免旧 transcript 继续被 SDK resume</td>
+          </tr>
+          <tr>
+            <td><code>codex_thread_id</code> + provider/mcp fingerprint</td>
+            <td>Codex Runtime thread 恢复信息</td>
+            <td>provider、MCP 配置变化可能使旧 thread 无效</td>
+          </tr>
+          <tr>
+            <td><code>context_summary*</code></td>
+            <td>上下文压缩摘要和覆盖边界</td>
+            <td>边界用 rowid，不用 timestamp；slash command 反馈不能入 DB</td>
+          </tr>
+          <tr>
+            <td><code>runtime_status</code> / <code>runtime_error</code></td>
+            <td>当前会话运行状态和错误</td>
+            <td>Stop/abort、后台 autoTrigger、lock settle 都会影响这里</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="electron">
+      <h2>11. Electron 本地能力</h2>
+      <p>
+        CodePilot 不是单纯浏览器应用。Electron 主进程启动或连接 Next server，管理窗口和托盘，暴露安全 preload API 给渲染进程，并处理终端、本地路径、通知、更新、导出等桌面能力。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>能力</th>
+            <th>主进程实现</th>
+            <th>Preload API</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>内嵌 Next server</td>
+            <td><code>utilityProcess.fork()</code> 启动 standalone server；稳定端口 <code>47823-47830</code>，失败后动态端口</td>
+            <td>渲染进程通过正常 HTTP origin 访问</td>
+          </tr>
+          <tr>
+            <td>窗口与外链安全</td>
+            <td><code>BrowserWindow</code>、外链拦截、window open handler</td>
+            <td>无直接 API；由 shell/openExternal 控制</td>
+          </tr>
+          <tr>
+            <td>安装 Claude Code / Git</td>
+            <td><code>install:check-prerequisites</code>、<code>install:start</code>、<code>install:git</code></td>
+            <td><code>window.electronAPI.install.*</code></td>
+          </tr>
+          <tr>
+            <td>本地路径和文件夹选择</td>
+            <td><code>shell:open-path</code>、<code>dialog:open-folder</code></td>
+            <td><code>electronAPI.shell.openPath()</code>、<code>electronAPI.dialog.openFolder()</code>、<code>electronAPI.fs.getPathForFile()</code></td>
+          </tr>
+          <tr>
+            <td>Widget / Artifact 导出</td>
+            <td>隔离 <code>BrowserWindow</code> 截图，long-shot 使用 CDP <code>Page.captureScreenshot</code></td>
+            <td><code>electronAPI.exportWidgetAsPng()</code>、<code>electronAPI.artifact.exportLongShot()</code></td>
+          </tr>
+          <tr>
+            <td>集成终端</td>
+            <td><code>TerminalManager</code> + <code>terminal:create/write/resize/kill</code></td>
+            <td><code>electronAPI.terminal.*</code></td>
+          </tr>
+          <tr>
+            <td>系统通知</td>
+            <td><code>notification:show</code>、点击事件路由、后台 poller ack</td>
+            <td><code>electronAPI.notification.show()</code>、<code>onClick()</code></td>
+          </tr>
+          <tr>
+            <td>系统代理解析</td>
+            <td><code>proxy:resolve</code> 调 Chromium proxy config</td>
+            <td><code>electronAPI.proxy.resolve(url)</code></td>
+          </tr>
+          <tr>
+            <td>日志与崩溃</td>
+            <td>Sentry Electron main、sanitized rotating log、main log path</td>
+            <td><code>electronAPI.app.getLogPath()</code></td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="callout">
+        <strong>端口设计：</strong> packaged app 优先使用稳定端口 <code>47823-47830</code>，是为了保持 localStorage origin 稳定。不要轻易改回随机端口，否则主题、最近模型等前端本地状态会随重启丢失。
+      </div>
+    </section>
+
+    <section id="feature-touchpoints">
+      <h2>12. 新功能触点</h2>
+      <p>
+        新功能改动前先按影响域选入口。跨 3 个以上模块、涉及 schema 或分阶段交付时，应按项目规则先写执行计划。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>需求类型</th>
+            <th>优先查看</th>
+            <th>常见改动点</th>
+            <th>容易误用的点</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>新增服务商</td>
+            <td><code>provider-catalog.ts</code>、<code>provider-resolver.ts</code>、<code>runtime-compat.ts</code></td>
+            <td>preset、meta、authStyle、protocol、默认模型、能力、连接测试、模型发现策略、单测</td>
+            <td>不要只在 UI 里加卡片；不要绕过 Zod schema；不要把上游全量目录当套餐白名单</td>
+          </tr>
+          <tr>
+            <td>新增模型能力</td>
+            <td><code>provider_models</code>、<code>model-context.ts</code>、<code>runtime-compat.ts</code>、<code>providers/models</code> API</td>
+            <td>capabilities_json、context window、effort/thinking 支持、runtime disabled reason</td>
+            <td>用户可见能力字段必须有真实来源；不能用假 0 或固定 placeholder</td>
+          </tr>
+          <tr>
+            <td>新增 Runtime</td>
+            <td><code>runtime/types.ts</code>、<code>runtime/registry.ts</code>、<code>runtime/index.ts</code>、<code>claude-client.ts</code></td>
+            <td>实现 <code>AgentRuntime</code>、注册、可用性、interrupt、SSE contract、模型兼容、session ref</td>
+            <td>不要让 UI 直接依赖 Runtime SDK；显式 pin 不能 silently fallback</td>
+          </tr>
+          <tr>
+            <td>新增 Agent 框架走 Provider proxy</td>
+            <td><code>docs/handover/provider-proxy-bridge.md</code>、<code>src/lib/codex/proxy/*</code></td>
+            <td>parse inbound、translate input/tools/options/stream/response/error、resume params、fixtures</td>
+            <td>不要 live-smoke-driven patch；先 snapshot 上游 schema，再写 adapter 和 contract tests</td>
+          </tr>
+          <tr>
+            <td>新增 MCP/工具</td>
+            <td><code>agent-tools.ts</code>、<code>builtin-tools/*</code>、<code>mcp-tool-adapter.ts</code>、<code>mutation-level.ts</code></td>
+            <td>工具 schema、权限等级、系统提示词、SSE 事件、测试 allowlist</td>
+            <td>不要默认把 <code>codepilot_*</code> 当安全工具；mutating 工具必须过权限或明确策略</td>
+          </tr>
+          <tr>
+            <td>新增聊天上下文</td>
+            <td><code>context-assembler.ts</code>、<code>context-compressor.ts</code>、<code>message-normalizer.ts</code></td>
+            <td>static/volatile prompt 层、token 估算、压缩边界、summary 注入</td>
+            <td>不要把 UI 提示写入 DB 后再让模型看到；不要用 timestamp 当压缩边界</td>
+          </tr>
+          <tr>
+            <td>新增数据库字段</td>
+            <td><code>db.ts</code>、<code>src/types/index.ts</code>、相关 API route</td>
+            <td>CREATE/ALTER、CRUD、索引、迁移兼容、单测隔离</td>
+            <td>不要只改类型不补迁移；不要破坏老 DB 启动</td>
+          </tr>
+          <tr>
+            <td>新增 Electron 本地能力</td>
+            <td><code>electron/main.ts</code>、<code>electron/preload.ts</code>、<code>src/types/electron.d.ts</code></td>
+            <td>IPC handler、preload 暴露、类型声明、前端 fallback、packaged/dev 差异</td>
+            <td>不要从 renderer 直接使用 Node API；不要忘记非 Electron/browser mode 降级</td>
+          </tr>
+          <tr>
+            <td>新增 UI 页面/组件</td>
+            <td><code>docs/design.md</code>、<code>components/patterns</code>、<code>components/ui</code></td>
+            <td>i18n、状态、空态、错误、smoke/e2e、视觉验证</td>
+            <td>不要在紧凑工具 UI 里塞营销式 hero；不要显示无来源统计</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="testing">
+      <h2>13. 测试与验证入口</h2>
+      <p>
+        仓库测试以 TypeScript typecheck + node:test 单测 + Playwright smoke/e2e 为主。不同风险层级跑不同命令，但改代码提交前至少要跑 <code>npm run test</code>。
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>命令</th>
+            <th>用途</th>
+            <th>是否需要 dev server</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>npm run typecheck</code></td>
+            <td><code>tsc --noEmit</code></td>
+            <td>否</td>
+          </tr>
+          <tr>
+            <td><code>npm run test:unit</code></td>
+            <td><code>CODEX_DISABLED=1 tsx --test --import ./src/__tests__/db-isolation.setup.ts src/__tests__/unit/*.test.ts</code></td>
+            <td>否</td>
+          </tr>
+          <tr>
+            <td><code>npm run test</code></td>
+            <td>typecheck + unit tests</td>
+            <td>否</td>
+          </tr>
+          <tr>
+            <td><code>npm run test:smoke</code></td>
+            <td>Playwright <code>@smoke</code> 冒烟</td>
+            <td>是</td>
+          </tr>
+          <tr>
+            <td><code>npm run test:e2e</code></td>
+            <td>完整 Playwright E2E</td>
+            <td>是</td>
+          </tr>
+          <tr>
+            <td><code>npm run test:visual</code></td>
+            <td>视觉回归</td>
+            <td>是</td>
+          </tr>
+          <tr>
+            <td><code>npm run lint:docs-drift</code></td>
+            <td>执行计划文档 drift 检查</td>
+            <td>否</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>重点测试文件地图</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>领域</th>
+            <th>测试文件示例</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Provider / 模型</td>
+            <td><code>provider-preset.test.ts</code>、<code>provider-resolver.test.ts</code>、<code>provider-openai-base-url.test.ts</code>、<code>provider-model-roundtrip.test.ts</code>、<code>apply-discovery-diff.test.ts</code>、<code>align-enabled-with-catalog.test.ts</code></td>
+          </tr>
+          <tr>
+            <td>Runtime / Codex</td>
+            <td><code>runtime-selection.test.ts</code>、<code>runtime-effective.test.ts</code>、<code>codex-provider-proxy.test.ts</code>、<code>codex-proxy-*.test.ts</code>、<code>codex-models-decoupling.test.ts</code></td>
+          </tr>
+          <tr>
+            <td>SSE / Stream</td>
+            <td><code>sse-stream.test.ts</code>、<code>stream-result-error-guard.test.ts</code>、<code>stop-stream-force-abort.test.ts</code>、<code>use-context-usage-output-only-skip.test.ts</code></td>
+          </tr>
+          <tr>
+            <td>上下文</td>
+            <td><code>context-assembler.test.ts</code>、<code>context-estimator.test.ts</code>、<code>context-compressor-handoff.test.ts</code>、<code>compact-coverage-boundary</code> 相关测试</td>
+          </tr>
+          <tr>
+            <td>工具/权限</td>
+            <td><code>agent-tools-permission-allowlist.test.ts</code>、<code>permission-adapter.test.ts</code>、<code>permission-event-contract.test.ts</code></td>
+          </tr>
+          <tr>
+            <td>Electron / 平台</td>
+            <td><code>platform-shell.test.ts</code>、<code>packaged-windows-shell.test.ts</code>、<code>main-log-rotation.test.ts</code>、<code>tray-menu-labels.test.ts</code></td>
+          </tr>
+          <tr>
+            <td>UI / E2E</td>
+            <td><code>src/__tests__/e2e/smoke.spec.ts</code>、<code>settings.spec.ts</code>、<code>chat.spec.ts</code>、<code>plugins.spec.ts</code>、<code>visual-regression.spec.ts</code></td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="callout warning">
+        <strong>本次文档变更验证：</strong> HTML 文档不参与 TypeScript 编译，也没有产品运行时行为改动。最低验证应包含文件存在、HTML 关键结构可读、handover 索引更新和 git diff 检查。若后续把该文档接入站点构建，再补 HTML link checker 或 docs build。
+      </div>
+    </section>
+
+    <section id="rules">
+      <h2>14. 复用原则</h2>
+      <ol>
+        <li><strong>Provider 相关先找 resolver。</strong> 不要在组件或 route 中重新推断 authStyle、base URL、upstream model 或协议。</li>
+        <li><strong>模型相关先找 <code>/api/providers/models</code> 和 <code>provider_models</code>。</strong> 不要把 catalog 当唯一来源，也不要绕过 hidden/manual 语义。</li>
+        <li><strong>Runtime 相关先找 <code>streamClaude()</code> 和 <code>AgentRuntime</code>。</strong> UI 层只认 SSE，不认具体 SDK。</li>
+        <li><strong>请求构建先找现有 adapter。</strong> Claude Code SDK、AI SDK、ClaudeCodeCompat、Codex Responses、媒体 provider 都有各自构建路径。</li>
+        <li><strong>连接测试不要走完整聊天。</strong> 连接测试使用 <code>testProviderConnection()</code> 或对应媒体 probe；诊断使用 Doctor。</li>
+        <li><strong>MCP 加载按 Runtime 分支。</strong> SDK Runtime 尽量让 Claude Code 自己读 settingSources；Native Runtime 需要 CodePilot 合并后的完整 MCP。</li>
+        <li><strong>上下文拼装只扩展 <code>assembleContext()</code>。</strong> 避免 Desktop 和 Bridge 两条入口提示词漂移。</li>
+        <li><strong>用户可见状态必须有真实来源。</strong> 统计、能力、兼容性、上下文窗口、进度、badge、warning 都要能追到 source breadcrumb。</li>
+        <li><strong>显式用户意图 fail closed。</strong> session runtime pin、session provider、manual model visibility 都不应被全局默认或刷新流程悄悄覆盖。</li>
+        <li><strong>文档和测试跟着风险走。</strong> Provider/Runtime/DB/权限/Stream/MCP/Electron 属于高风险域，至少补 targeted 单测并跑 <code>npm run test</code>；UI 行为补 smoke/e2e。</li>
+      </ol>
+    </section>
+
+    <section id="sources">
+      <h2>参考源码与文档</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>文件</th>
+            <th>用途</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td><code>ARCHITECTURE.md</code></td><td>项目架构总览、目录、数据流、技术栈</td></tr>
+          <tr><td><code>CLAUDE.md</code> / <code>AGENTS.md</code></td><td>项目协作规则、测试纪律、文档规则、语义验收</td></tr>
+          <tr><td><code>docs/handover/provider-architecture.md</code></td><td>服务商架构与 Claude Code 对比</td></tr>
+          <tr><td><code>docs/handover/provider-governance.md</code></td><td>Provider preset、authStyle、连接验证、模型 CRUD</td></tr>
+          <tr><td><code>docs/handover/decouple-native-runtime.md</code></td><td>Native Runtime 技术交接</td></tr>
+          <tr><td><code>docs/handover/provider-proxy-bridge.md</code></td><td>Codex Provider Proxy Bridge 合约</td></tr>
+          <tr><td><code>src/app/api/chat/route.ts</code></td><td>聊天主入口、会话锁、上下文压缩、Runtime 调用、SSE 落库</td></tr>
+          <tr><td><code>src/lib/claude-client.ts</code></td><td><code>streamClaude()</code>、SDK 流、Provider 连接测试</td></tr>
+          <tr><td><code>src/lib/provider-resolver.ts</code></td><td>Provider/Model 统一解析、Claude Code env、AI SDK config</td></tr>
+          <tr><td><code>src/lib/model-discovery.ts</code></td><td>模型发现 probe 层</td></tr>
+          <tr><td><code>src/app/api/providers/models/route.ts</code></td><td>模型组聚合、Runtime 兼容注解、虚拟 provider</td></tr>
+          <tr><td><code>src/lib/runtime/*</code></td><td>Runtime 合约、注册、选择、session ref</td></tr>
+          <tr><td><code>src/lib/context-assembler.ts</code></td><td>系统提示词统一拼装</td></tr>
+          <tr><td><code>src/lib/agent-tools.ts</code></td><td>Native 工具组装和权限包装</td></tr>
+          <tr><td><code>src/lib/mcp-loader.ts</code></td><td>MCP 配置合并与 Runtime 分支加载</td></tr>
+          <tr><td><code>src/lib/db.ts</code></td><td>SQLite schema、CRUD、迁移、锁、Provider/Model/Bridge/Task 数据</td></tr>
+          <tr><td><code>electron/main.ts</code> / <code>electron/preload.ts</code></td><td>Electron 本地宿主能力和 preload API</td></tr>
+        </tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>

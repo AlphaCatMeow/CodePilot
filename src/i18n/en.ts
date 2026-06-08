@@ -297,6 +297,10 @@ const en = {
   'provider.form.errorTestEndpointHint': 'Check that the app is running',
   'provider.form.editDesc': 'Update the API provider configuration.',
   'provider.form.addDesc': 'Configure a new API provider for Claude Code.',
+  'provider.form.openaiCompatibleBaseUrlHelp': 'Use the provider docs OpenAI-compatible /v1 endpoint. Plain hosts are saved with /v1 appended.',
+  'provider.form.openaiCompatibleBaseUrlRequired': 'Enter the Base URL for the OpenAI-compatible service',
+  'provider.form.openaiCompatibleBaseUrlInvalid': 'Base URL must be a valid http(s) URL',
+  'provider.form.openaiCompatibleV1Required': 'OpenAI-compatible URLs with a custom path must end in /v1',
   // Field-level placeholders used by the manual ProviderForm dialog
   'provider.form.headersJson': 'Custom headers (JSON)',
   'provider.form.envOverridesJson': 'Environment overrides (JSON)',
@@ -352,6 +356,7 @@ const en = {
   // ── Auto-discover toasts (fired after Add Service success) ──
   'provider.autoDiscover.loading': 'Discovering models for {name}...',
   'provider.autoDiscover.success': '{name}: {total} models found, {enabled} enabled, {hidden} hidden',
+  'provider.autoDiscover.needsEnable': '{name}: {total} models found and saved to Models. Enable the chat models you want to use.',
   'provider.autoDiscover.noModels': '{name}: connection succeeded but no models reported',
   'provider.autoDiscover.unsupported': '{name}: this provider does not expose a model list — open Models to add manually',
   'provider.autoDiscover.probeFailed': '{name}: could not reach upstream to discover models',

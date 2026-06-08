@@ -36,6 +36,7 @@ import {
   isOpenRouterAnthropicSkinUrl,
 } from './runtime-compat';
 import type { ChatRuntime } from './chat-runtime';
+import { normalizeOpenAICompatibleBaseUrl } from './provider-openai-compatible';
 
 // ── Resolution result ───────────────────────────────────────────
 
@@ -499,6 +500,12 @@ export interface AiSdkConfig {
   processEnvInjections: Record<string, string>;
   /** Use OpenAI Responses API instead of Chat Completions (for Codex API) */
   useResponsesApi?: boolean;
+  /**
+   * Force OpenAI Chat Completions instead of the SDK's model-name based default.
+   * Generic OpenAI-compatible gateways usually expose /v1/chat/completions even
+   * when their model names look like GPT-5/Responses-capable OpenAI models.
+   */
+  forceChatCompletions?: boolean;
 }
 
 /**
@@ -720,19 +727,26 @@ export function toAiSdkConfig(
         modelId,
         headers,
         processEnvInjections,
+        forceChatCompletions: true,
       };
     }
 
     case 'openai-compatible':
+      {
+        const normalizedBaseUrl = provider?.base_url
+          ? normalizeOpenAICompatibleBaseUrl(provider.base_url)
+          : undefined;
       return {
         sdkType: 'openai',
         apiKey: provider?.api_key || undefined,
         authToken: undefined,
-        baseUrl: provider?.base_url || undefined,
+        baseUrl: normalizedBaseUrl?.ok ? normalizedBaseUrl.value : provider?.base_url || undefined,
         modelId,
         headers,
         processEnvInjections,
+        forceChatCompletions: true,
       };
+      }
 
     case 'bedrock':
       // If base_url is set, route through OpenAI-compatible proxy; otherwise use native SDK
@@ -745,6 +759,7 @@ export function toAiSdkConfig(
           modelId,
           headers,
           processEnvInjections,
+          forceChatCompletions: true,
         };
       }
       return {
@@ -768,6 +783,7 @@ export function toAiSdkConfig(
           modelId,
           headers,
           processEnvInjections,
+          forceChatCompletions: true,
         };
       }
       return {

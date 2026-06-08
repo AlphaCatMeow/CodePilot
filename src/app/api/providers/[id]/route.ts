@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getProvider, updateProvider, deleteProvider, getDefaultProviderId, setDefaultProviderId, getAllProviders, getSetting, setSetting } from '@/lib/db';
 import { getEffectiveProviderProtocol, isValidProtocol } from '@/lib/provider-catalog';
+import { normalizeOpenAICompatibleBaseUrl } from '@/lib/provider-openai-compatible';
 import type { ProviderResponse, ErrorResponse, UpdateProviderRequest, ApiProvider } from '@/types';
 
 interface RouteContext {
@@ -89,6 +90,21 @@ export async function PUT(request: NextRequest, context: RouteContext) {
         },
         { status: 400 }
       );
+    }
+    if (effectiveProtocol === 'openai-compatible') {
+      const normalized = normalizeOpenAICompatibleBaseUrl(mergedBaseUrl);
+      if (!normalized.ok) {
+        return NextResponse.json<ErrorResponse>(
+          {
+            error: normalized.message,
+            code: normalized.code,
+          },
+          { status: 400 }
+        );
+      }
+      if (body.base_url !== undefined) {
+        body.base_url = normalized.value;
+      }
     }
     // Same guard for media providers — a PUT that clears base_url on an
     // openai-image/gemini-image row would silently redirect to the official

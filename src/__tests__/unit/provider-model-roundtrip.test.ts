@@ -136,6 +136,23 @@ describe('ModelSelectorDropdown — display + active-row are canonical-aware (#3
   });
 });
 
+describe('ModelSelectorDropdown — restores composer focus after manual model pick', () => {
+  const dropdownSrc = read('components/chat/ModelSelectorDropdown.tsx');
+  const inputSrc = read('components/chat/MessageInput.tsx');
+  const commandListSrc = read('components/patterns/CommandList.tsx');
+
+  it('model rows prevent mousedown from stealing focus before the menu unmounts', () => {
+    assert.match(commandListSrc, /preventFocusOnMouseDown\?: boolean/);
+    assert.match(dropdownSrc, /preventFocusOnMouseDown/);
+  });
+
+  it('manual model selection calls back into MessageInput to restore textarea focus', () => {
+    assert.match(dropdownSrc, /onAfterModelSelect\?\.\(\)/);
+    assert.match(inputSrc, /const restoreComposerFocus = useCallback/);
+    assert.match(inputSrc, /onAfterModelSelect=\{restoreComposerFocus\}/);
+  });
+});
+
 describe('ChatView — currentModelUpstream lookup is canonical-aware (#37)', () => {
   const src = read('components/chat/ChatView.tsx');
   it('upstream lookup uses findModelOption', () => {

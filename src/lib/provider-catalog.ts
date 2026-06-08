@@ -458,6 +458,22 @@ export const VENDOR_PRESETS: VendorPreset[] = [
     iconKey: 'anthropic',
   },
 
+  // ── OpenAI-compatible Third-party (generic chat) ──
+  {
+    key: 'openai-compatible-thirdparty',
+    name: 'OpenAI-compatible Third-party',
+    description: 'OpenAI-compatible chat API — provide v1 URL and Key',
+    descriptionZh: 'OpenAI 兼容第三方 — 填写 v1 地址和密钥',
+    protocol: 'openai-compatible',
+    authStyle: 'api_key',
+    baseUrl: '',
+    defaultEnvOverrides: {},
+    defaultModels: [],
+    fields: ['name', 'api_key', 'base_url'],
+    category: 'chat',
+    iconKey: 'openai',
+  },
+
   // ── OpenRouter ──
   {
     key: 'openrouter',
@@ -1280,7 +1296,7 @@ export function getProviderAccessType(record: {
     return 'subscription_token';
   }
   // Generic anthropic-compatible relay / custom gateway preset.
-  if (preset.key === 'anthropic-thirdparty') return 'gateway';
+  if (preset.key === 'anthropic-thirdparty' || preset.key === 'openai-compatible-thirdparty') return 'gateway';
   // Fall through: pay-as-you-go API key / free-tier (treated the same
   // here — user puts a key in the form field).
   return 'api_key';
@@ -1563,6 +1579,7 @@ export function findMatchingPresetForRecord(record: {
   provider_type: string;
   base_url: string;
 }): VendorPreset | undefined {
+  if (record.provider_type === 'openai-compatible') return getPreset('openai-compatible-thirdparty');
   if (record.base_url) {
     const exact = VENDOR_PRESETS.find(p => p.baseUrl && p.baseUrl === record.base_url);
     if (exact) return exact;
@@ -1639,6 +1656,7 @@ export function inferProtocolFromLegacy(
 ): Protocol {
   // Direct type mappings
   if (providerType === 'anthropic') return 'anthropic';
+  if (providerType === 'openai-compatible') return 'openai-compatible';
   if (providerType === 'openrouter') return 'openrouter';
   if (providerType === 'bedrock') return 'bedrock';
   if (providerType === 'vertex') return 'vertex';

@@ -107,6 +107,8 @@ interface ModelSelectorDropdownProps {
    *  show a "loading" label on the trigger instead of an empty button so
    *  the composer doesn't look broken during the brief async window. */
   isLoading?: boolean;
+  /** Restore composer focus after a manual model pick closes the transient menu. */
+  onAfterModelSelect?: () => void;
 }
 
 export function ModelSelectorDropdown({
@@ -120,6 +122,7 @@ export function ModelSelectorDropdown({
   globalDefaultProvider,
   runtimeApplied,
   isLoading,
+  onAfterModelSelect,
 }: ModelSelectorDropdownProps) {
   const { t } = useTranslation();
   const isZh = t('nav.chats') === '对话';
@@ -177,7 +180,8 @@ export function ModelSelectorDropdown({
     localStorage.setItem('codepilot:last-provider-id', providerId);
     pushRecentModel(providerId, modelValue);
     setModelMenuOpen(false);
-  }, [onModelChange, onProviderModelChange]);
+    onAfterModelSelect?.();
+  }, [onModelChange, onProviderModelChange, onAfterModelSelect]);
 
   const showLoading = isLoading || !currentModelOption;
 
@@ -252,6 +256,7 @@ export function ModelSelectorDropdown({
                       active={isActive}
                       disabled={!supportsCurrentRuntime}
                       tooltip={incompatTooltip}
+                      preventFocusOnMouseDown
                       onClick={() => handleModelSelect(group.provider_id, option.value)}
                     >
                       <span className="font-mono text-xs truncate">{option.label}</span>
@@ -315,6 +320,7 @@ export function ModelSelectorDropdown({
                       active={isActive}
                       disabled={!supportsCurrentRuntime}
                       tooltip={incompatTooltip}
+                      preventFocusOnMouseDown
                       onClick={() => handleModelSelect(group.provider_id, opt.value)}
                     >
                       <span className="font-mono text-xs truncate">{opt.label}</span>

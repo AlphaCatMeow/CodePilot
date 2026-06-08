@@ -315,6 +315,17 @@ export function MessageInput({
   // on a background refetch when a sendable model is already resolved.
   const isProviderLoading = isComposerProviderLoading(fetchState, !!currentModelOption);
 
+  const restoreComposerFocus = useCallback(() => {
+    const focusTextarea = () => {
+      const el = textareaRef.current;
+      if (!el || el.disabled) return;
+      el.focus({ preventScroll: true });
+    };
+    requestAnimationFrame(focusTextarea);
+    setTimeout(focusTextarea, 0);
+    setTimeout(focusTextarea, 50);
+  }, []);
+
   // Auto-correct model when it doesn't exist in the current provider's model list.
   // This prevents sending an unsupported model name (e.g. 'opus' to MiniMax which only has 'sonnet').
   // IMPORTANT: Only fall back to first model — never use globalDefaultModel here.
@@ -1146,6 +1157,7 @@ export function MessageInput({
                   globalDefaultProvider={globalDefaultProvider}
                   runtimeApplied={runtimeApplied}
                   isLoading={isProviderLoading}
+                  onAfterModelSelect={restoreComposerFocus}
                 />
 
                 {showEffortSelector && (

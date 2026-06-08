@@ -1,4 +1,4 @@
-import { type ReactNode, type RefObject, type KeyboardEvent } from "react";
+import { type ReactNode, type RefObject, type KeyboardEvent, type MouseEvent } from "react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -84,10 +84,13 @@ export function CommandListItems({ children, className }: CommandListItemsProps)
 interface CommandListItemProps {
   active?: boolean;
   onClick?: () => void;
+  onMouseDown?: (e: MouseEvent<HTMLButtonElement>) => void;
   onMouseEnter?: () => void;
   children: ReactNode;
   className?: string;
   itemRef?: (el: HTMLButtonElement | null) => void;
+  /** Prevent mouse selection from moving focus onto a transient popover row. */
+  preventFocusOnMouseDown?: boolean;
   /**
    * Phase 6 UI收口 P2 (2026-05-14) — render the item in a non-clickable
    * disabled state. Picker uses this to surface models that aren't
@@ -105,10 +108,12 @@ interface CommandListItemProps {
 export function CommandListItem({
   active,
   onClick,
+  onMouseDown,
   onMouseEnter,
   children,
   className,
   itemRef,
+  preventFocusOnMouseDown,
   disabled,
   tooltip,
 }: CommandListItemProps) {
@@ -136,6 +141,10 @@ export function CommandListItem({
         className,
       )}
       onClick={disabled ? undefined : onClick}
+      onMouseDown={(e) => {
+        if (preventFocusOnMouseDown) e.preventDefault();
+        onMouseDown?.(e);
+      }}
       onMouseEnter={disabled ? undefined : onMouseEnter}
     >
       {children}

@@ -192,12 +192,17 @@ export async function runAutoDiscoverForProvider(args: ToastArgs): Promise<AutoD
       }
       updateToast(loadingToastId, {
         type: 'success',
-        message: t('provider.autoDiscover.success' as TranslationKey, {
-          name: providerName,
-          total: String(result.total ?? 0),
-          enabled: String(result.recommendedEnabled ?? 0),
-          hidden: String(result.discoveredHidden ?? 0),
-        }),
+        message: (result.total ?? 0) > 0 && (result.recommendedEnabled ?? 0) === 0
+          ? t('provider.autoDiscover.needsEnable' as TranslationKey, {
+            name: providerName,
+            total: String(result.total ?? 0),
+          })
+          : t('provider.autoDiscover.success' as TranslationKey, {
+            name: providerName,
+            total: String(result.total ?? 0),
+            enabled: String(result.recommendedEnabled ?? 0),
+            hidden: String(result.discoveredHidden ?? 0),
+          }),
         duration: 6000,
       });
       break;

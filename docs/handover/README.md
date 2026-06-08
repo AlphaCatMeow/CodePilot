@@ -33,6 +33,7 @@
 | models-provider-experience.md | Models / Providers 体验收敛：服务商连接和模型管理职责拆分、模型拉取规则、添加模型统一入口、状态与术语约束 |
 | agentic-architecture-map.md | CodePilot Agentic 架构映射：Provider/Models、Plugins、Runtime/Agent、Health/Logs、Memory/Tasks 的分层边界与改动判断流程 |
 | provider-governance.md | 服务商治理系统：Zod Schema 防护、authStyle 修正 6 preset、宿主接管、连通性验证、引导 UX、错误恢复、模型 CRUD |
+| openai-compatible-thirdparty-provider.md | OpenAI 兼容第三方服务商：chat preset、`/v1` Base URL 规则、连接测试、模型发现、Models 页与 Runtime 复用链路 |
 | sentry-error-reporting.md | Sentry 匿名错误上报：三层覆盖（browser/server/electron）、opt-out 机制、隐私保护、上报策略 |
 | decouple-native-runtime.md | Native Agent Runtime：双 Runtime 架构、AI SDK agent-loop、OpenAI Codex 集成、文件快照 rewind、MCP 全链路、验证边界与剩余风险 |
 | provider-proxy-bridge.md | Provider Proxy Bridge Contract：Codex provider proxy / 任何新 Agent 框架接入的 8 个 hook（parseInbound / translateInput / translateTools / translateProviderOptions / translateStream / translateResponse / translateError / resumeThreadParams）、AI SDK v6 `tool({inputSchema: jsonSchema(...)})` schema 合约、Codex schema 来源清单、Smoke 矩阵收口标准；接新 Agent 框架前必读 |
@@ -44,3 +45,4 @@
 | codex-tool-bridge.md | Codex Runtime CodePilot Tool Bridge（Phase 5c）：proxy 内 execute() 桥接 + 侧通道事件总线、按 sessionId 路由的 tool_started/tool_completed → SSE、内建工具 function_call 对 Codex 抑制、stopWhen: stepCountIs(8) 多步续聊、anti-pattern source-grep 守卫（auth.json / npm install / OPENAI_API_KEY / image_gen.py） |
 | harness-capability-contract.md | Harness Capability Contract（Phase 5d 全 5 段）：三层模型（tool schema / context instruction / UI artifact contract）、能力矩阵、Context Compiler 纯函数、Runtime Capability Adapter facade（三 Runtime 入口禁直引 compileContext）、Artifact Contract 9 类产物 + 防漂移测试、跨 Runtime drift 检测、Widget JSON round-trip 校验 |
 | new-runtime-playbook.md | New Agent Runtime 接入硬性流程（Phase 5d Phase 5）：7 步顺序（Schema snapshot → Capability inventory → Runtime Adapter facade → Artifact contract → Contract tests gate → 9 项 smoke matrix → UI 可见性）、禁止 live-smoke-driven patching、Provider vs Runtime 边界判断；接 Hermes/Gemini/OpenClaw 之前必读 |
+| project-architecture-reuse-map.html | CodePilot 项目整体架构与复用方法地图：分层架构、聊天主链路、Provider/模型/Runtime/请求构建/连接测试/MCP/工具/上下文/Electron/DB/测试入口 |

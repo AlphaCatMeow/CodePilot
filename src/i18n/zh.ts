@@ -289,6 +289,10 @@ const zh: Record<TranslationKey, string> = {
   'provider.form.errorTestEndpointHint': '请检查应用是否正在运行',
   'provider.form.editDesc': '修改服务商连接信息。',
   'provider.form.addDesc': '为 Claude Code 配置一个新的服务商。',
+  'provider.form.openaiCompatibleBaseUrlHelp': '填写服务商文档中的 OpenAI 兼容 /v1 地址；只填域名时会自动补 /v1。',
+  'provider.form.openaiCompatibleBaseUrlRequired': '请填写 OpenAI 兼容服务的 Base URL',
+  'provider.form.openaiCompatibleBaseUrlInvalid': 'Base URL 必须是合法的 http(s) 地址',
+  'provider.form.openaiCompatibleV1Required': '带自定义路径的 OpenAI 兼容地址必须以 /v1 结尾',
   // 高级字段标签
   'provider.form.headersJson': '自定义请求头（JSON）',
   'provider.form.envOverridesJson': '环境变量覆盖（JSON）',
@@ -339,6 +343,7 @@ const zh: Record<TranslationKey, string> = {
   // ── Auto-discover toasts (fired after Add Service success) ──
   'provider.autoDiscover.loading': '正在发现 {name} 的模型...',
   'provider.autoDiscover.success': '{name}：发现 {total} 个模型，启用 {enabled} 个，隐藏 {hidden} 个',
+  'provider.autoDiscover.needsEnable': '{name}：发现 {total} 个模型，已保存到模型管理；请启用需要用于聊天的模型',
   'provider.autoDiscover.noModels': '{name}：连接成功但上游未返回模型列表',
   'provider.autoDiscover.unsupported': '{name}：该服务商不支持模型发现，请到 Models 页手动添加',
   'provider.autoDiscover.probeFailed': '{name}：无法连接上游获取模型列表',

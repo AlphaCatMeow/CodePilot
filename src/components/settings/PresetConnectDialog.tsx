@@ -28,6 +28,7 @@ import { QUICK_PRESETS } from "./provider-presets";
 import type { ApiProvider } from "@/types";
 import { useTranslation } from "@/hooks/useTranslation";
 import type { TranslationKey } from "@/i18n";
+import { normalizeOpenAICompatibleBaseUrl } from "@/lib/provider-openai-compatible";
 
 /** Infer auth style from base URL by fuzzy-matching preset hostnames */
 function inferAuthStyleFromUrl(url: string): "api_key" | "auth_token" | null {
@@ -152,7 +153,11 @@ export function PresetConnectDialog({
       // apiKey entirely in that case — never send the masked value.
       const body: Record<string, unknown> = {
         presetKey: preset?.key,
-        baseUrl: baseUrl || preset?.base_url || '',
+        baseUrl: (() => {
+          if (preset?.protocol !== 'openai-compatible') return baseUrl || preset?.base_url || '';
+          const normalized = normalizeOpenAICompatibleBaseUrl(baseUrl || preset?.base_url || '');
+          return normalized.ok ? normalized.value : baseUrl || preset?.base_url || '';
+        })(),
         protocol: preset?.protocol || 'anthropic',
         authStyle: preset?.key === 'anthropic-thirdparty' ? authStyle : (preset?.authStyle || authStyle),
         envOverrides,
@@ -336,6 +341,22 @@ export function PresetConnectDialog({
         : 'Please specify a base URL (leaving this blank falls back to the official endpoint)');
       return;
     }
+    let finalBaseUrl = baseUrl.trim();
+    if (preset.protocol === 'openai-compatible') {
+      const normalized = normalizeOpenAICompatibleBaseUrl(finalBaseUrl);
+      if (!normalized.ok) {
+        setError(t(
+          normalized.code === 'OPENAI_COMPATIBLE_BASE_URL_REQUIRED'
+            ? 'provider.form.openaiCompatibleBaseUrlRequired' as TranslationKey
+            : normalized.code === 'OPENAI_COMPATIBLE_V1_REQUIRED'
+              ? 'provider.form.openaiCompatibleV1Required' as TranslationKey
+              : 'provider.form.openaiCompatibleBaseUrlInvalid' as TranslationKey,
+        ));
+        return;
+      }
+      finalBaseUrl = normalized.value;
+      if (normalized.normalized) setBaseUrl(finalBaseUrl);
+    }
 
     // If auth style changed in edit mode, require a new key.
     // hasStoredKey is cleared when the user switches away from the stored
@@ -462,7 +483,7 @@ export function PresetConnectDialog({
         name: name.trim() || preset.name,
         provider_type: preset.provider_type,
         protocol: preset.protocol,
-        base_url: baseUrl.trim(),
+        base_url: finalBaseUrl,
         api_key: apiKeyForSave,
         extra_env: finalExtraEnv,
         role_models_json: roleModelsJson,
@@ -559,6 +580,11 @@ export function PresetConnectDialog({
                 placeholder="https://api.example.com"
                 className="text-sm font-mono"
               />
+              {preset.protocol === 'openai-compatible' && (
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  {t('provider.form.openaiCompatibleBaseUrlHelp' as TranslationKey)}
+                </p>
+              )}
             </div>
           )}
 

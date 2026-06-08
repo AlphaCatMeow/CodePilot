@@ -104,7 +104,7 @@ function resolveIcon(iconKey: string): ReactNode {
 }
 
 /** Convert a VendorPreset to the frontend QuickPreset format */
-function toQuickPreset(vp: VendorPreset): QuickPreset {
+export function toQuickPreset(vp: VendorPreset): QuickPreset {
   return {
     key: vp.key,
     name: vp.name,
@@ -112,6 +112,7 @@ function toQuickPreset(vp: VendorPreset): QuickPreset {
     descriptionZh: vp.descriptionZh,
     icon: resolveIcon(vp.iconKey),
     provider_type: vp.protocol === 'openrouter' ? 'openrouter'
+      : vp.protocol === 'openai-compatible' ? 'openai-compatible'
       : vp.protocol === 'bedrock' ? 'bedrock'
       : vp.protocol === 'vertex' ? 'vertex'
       : vp.protocol === 'gemini-image' ? 'gemini-image'
@@ -174,9 +175,16 @@ export function getOpenAIImageModel(provider: ApiProvider): string {
 // ---------------------------------------------------------------------------
 
 export function findMatchingPreset(provider: ApiProvider): QuickPreset | undefined {
+  if (provider.provider_type === "openai-compatible" || provider.protocol === "openai-compatible") {
+    return QUICK_PRESETS.find(p => p.key === "openai-compatible-thirdparty");
+  }
   // Exact base_url match (most specific)
   if (provider.base_url) {
-    const match = QUICK_PRESETS.find(p => p.base_url && p.base_url === provider.base_url);
+    const match = QUICK_PRESETS.find(p => {
+      if (!p.base_url || p.base_url !== provider.base_url) return false;
+      if (provider.protocol && p.protocol !== provider.protocol) return false;
+      return true;
+    });
     if (match) return match;
   }
   // Type-based fallback for known types

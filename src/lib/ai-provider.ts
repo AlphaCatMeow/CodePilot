@@ -276,6 +276,9 @@ function createLanguageModel(config: AiSdkConfig, isThirdPartyProxy: boolean): L
         baseURL: config.baseUrl,
         ...(hasHeaders ? { headers: config.headers } : {}),
       });
+      if (config.forceChatCompletions) {
+        return openai.chat(config.modelId);
+      }
       return openai(config.modelId);
     }
 

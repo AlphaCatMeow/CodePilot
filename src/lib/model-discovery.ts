@@ -33,6 +33,7 @@
  */
 
 import { isCatalogOnlyPlanProvider, isOpenRouterProviderRecord } from './provider-catalog';
+import { normalizeOpenAICompatibleBaseUrl } from './provider-openai-compatible';
 
 export type DiscoveryClassification =
   /** Reliable public/compat endpoint we can probe with provided creds. */
@@ -380,7 +381,14 @@ async function probeOpenAICompat(
   }
   // Some catalog base_urls already include /v1 (e.g. openrouter.ai/api/v1),
   // others don't (e.g. api.example.com). Normalise to one /v1/models call.
-  const url = baseUrl.endsWith('/v1') ? `${baseUrl}/models` : `${baseUrl}/v1/models`;
+  const normalized = normalizeOpenAICompatibleBaseUrl(baseUrl);
+  if (!normalized.ok) {
+    return {
+      ok: false,
+      error: { code: normalized.code, message: normalized.message },
+    };
+  }
+  const url = `${normalized.value}/models`;
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (authStyle === 'auth_token') {
     headers.Authorization = `Bearer ${apiKey}`;

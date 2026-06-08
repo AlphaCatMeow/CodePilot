@@ -32,6 +32,7 @@ import { resolveWorkingDirectory } from './working-directory';
 import { wrapController } from './safe-stream';
 import { type ShadowHome } from './claude-home-shadow';
 import { prepareSdkSubprocessEnv } from './sdk-subprocess-env';
+import { normalizeOpenAICompatibleBaseUrl } from './provider-openai-compatible';
 // Static imports for resolveRuntime/detectTransport — used to be lazy
 // `require('./runtime')` / `require('./provider-transport')`, but Turbopack's
 // CJS↔ESM interop returns `{ default: ... }` shape that broke destructuring
@@ -2371,6 +2372,10 @@ export async function testProviderConnection(config: {
     };
   }
 
+  if (config.protocol === 'openai-compatible') {
+    return testOpenAICompatibleProviderConnection(config);
+  }
+
   // Media-only protocols: the rest of this function builds an Anthropic
   // /v1/messages probe with anthropic-version + x-api-key. That endpoint
   // doesn't exist for GPT Image or Nano Banana, so the generic probe would
@@ -2479,6 +2484,95 @@ export async function testProviderConnection(config: {
       providerMeta: config.providerMeta,
     });
 
+    return {
+      success: false,
+      error: {
+        code: classified.category,
+        message: classified.userMessage,
+        suggestion: classified.actionHint,
+        recoveryActions: classified.recoveryActions,
+      },
+    };
+  }
+}
+
+async function testOpenAICompatibleProviderConnection(config: {
+  apiKey: string;
+  baseUrl: string;
+  providerName?: string;
+  providerMeta?: { apiKeyUrl?: string; docsUrl?: string; pricingUrl?: string };
+}): Promise<ConnectionTestResult> {
+  const normalized = normalizeOpenAICompatibleBaseUrl(config.baseUrl);
+  if (!normalized.ok) {
+    return {
+      success: false,
+      error: {
+        code: normalized.code,
+        message: normalized.message,
+        suggestion: 'Use the OpenAI-compatible /v1 endpoint from your provider documentation',
+      },
+    };
+  }
+
+  const apiUrl = `${normalized.value}/models`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15_000);
+
+  try {
+    const response = await fetch(apiUrl, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${config.apiKey}`,
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      const json = await response.json().catch(() => null);
+      const data = (json as { data?: unknown } | null)?.data;
+      const hasModels = Array.isArray(data) && data.some((m) => (
+        typeof m === 'object' && m !== null && 'id' in m && typeof (m as { id: unknown }).id === 'string'
+      ));
+      if (hasModels) return { success: true };
+      return {
+        success: false,
+        error: {
+          code: 'BAD_MODEL_LIST',
+          message: 'The endpoint responded but did not return an OpenAI-compatible model list',
+          suggestion: 'Check that the base URL points to the provider v1 endpoint, not a dashboard or Anthropic endpoint',
+        },
+      };
+    }
+
+    let errorBody = '';
+    try { errorBody = await response.text(); } catch { /* ignore */ }
+
+    const classified = classifyError({
+      error: new Error(`HTTP ${response.status}: ${errorBody.slice(0, 500)}`),
+      providerName: config.providerName,
+      baseUrl: config.baseUrl,
+      providerMeta: config.providerMeta,
+    });
+
+    return {
+      success: false,
+      error: {
+        code: classified.category,
+        message: classified.userMessage,
+        suggestion: classified.actionHint,
+        recoveryActions: classified.recoveryActions,
+      },
+    };
+  } catch (err) {
+    clearTimeout(timeoutId);
+    const classified = classifyError({
+      error: err,
+      providerName: config.providerName,
+      baseUrl: config.baseUrl,
+      providerMeta: config.providerMeta,
+    });
     return {
       success: false,
       error: {

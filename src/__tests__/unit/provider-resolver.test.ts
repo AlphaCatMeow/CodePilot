@@ -692,6 +692,8 @@ describe('Provider Resolver', () => {
       assert.equal(config.sdkType, 'openai');
       assert.equal(config.apiKey, 'or-key');
       assert.equal(config.baseUrl, 'https://openrouter.ai/api/v1');
+      assert.equal(config.forceChatCompletions, true);
+      assert.equal(config.useResponsesApi, undefined);
     });
 
     it('openrouter protocol — empty base_url → defaults to OpenAI skin', () => {
@@ -721,6 +723,8 @@ describe('Provider Resolver', () => {
       const config = toAiSdkConfig(resolved);
       assert.equal(config.sdkType, 'openai');
       assert.equal(config.baseUrl, 'https://openrouter.ai/api/v1');
+      assert.equal(config.forceChatCompletions, true);
+      assert.equal(config.useResponsesApi, undefined);
     });
 
     it('bedrock protocol → injects env overrides', () => {
@@ -755,6 +759,62 @@ describe('Provider Resolver', () => {
       });
     });
 
+    it('bedrock protocol with base_url → OpenAI-compatible proxy uses Chat Completions', () => {
+      const resolved: ResolvedProvider = {
+        provider: {
+          id: 'test', name: 'Bedrock Proxy', provider_type: 'bedrock', protocol: 'bedrock',
+          base_url: 'https://bedrock-proxy.example.com/v1', api_key: 'proxy-key', is_active: 1, sort_order: 0,
+          extra_env: '{}', headers_json: '{}', env_overrides_json: '', role_models_json: '{}',
+          notes: '', created_at: '', updated_at: '', options_json: '{}',
+        },
+        protocol: 'bedrock',
+        authStyle: 'api_key',
+        model: 'gpt-5.5',
+        modelDisplayName: undefined,
+        upstreamModel: undefined,
+        headers: {},
+        envOverrides: {},
+        roleModels: {},
+        hasCredentials: true,
+        availableModels: [],
+        settingSources: ['project', 'local'],
+      };
+
+      const config = toAiSdkConfig(resolved);
+      assert.equal(config.sdkType, 'openai');
+      assert.equal(config.baseUrl, 'https://bedrock-proxy.example.com/v1');
+      assert.equal(config.forceChatCompletions, true);
+      assert.equal(config.useResponsesApi, undefined);
+    });
+
+    it('vertex protocol with base_url → OpenAI-compatible proxy uses Chat Completions', () => {
+      const resolved: ResolvedProvider = {
+        provider: {
+          id: 'test', name: 'Vertex Proxy', provider_type: 'vertex', protocol: 'vertex',
+          base_url: 'https://vertex-proxy.example.com/v1', api_key: 'proxy-key', is_active: 1, sort_order: 0,
+          extra_env: '{}', headers_json: '{}', env_overrides_json: '', role_models_json: '{}',
+          notes: '', created_at: '', updated_at: '', options_json: '{}',
+        },
+        protocol: 'vertex',
+        authStyle: 'api_key',
+        model: 'gpt-5.5',
+        modelDisplayName: undefined,
+        upstreamModel: undefined,
+        headers: {},
+        envOverrides: {},
+        roleModels: {},
+        hasCredentials: true,
+        availableModels: [],
+        settingSources: ['project', 'local'],
+      };
+
+      const config = toAiSdkConfig(resolved);
+      assert.equal(config.sdkType, 'openai');
+      assert.equal(config.baseUrl, 'https://vertex-proxy.example.com/v1');
+      assert.equal(config.forceChatCompletions, true);
+      assert.equal(config.useResponsesApi, undefined);
+    });
+
     it('openai-compatible protocol → openai SDK', () => {
       const resolved: ResolvedProvider = {
         provider: {
@@ -779,6 +839,8 @@ describe('Provider Resolver', () => {
       const config = toAiSdkConfig(resolved);
       assert.equal(config.sdkType, 'openai');
       assert.equal(config.baseUrl, 'https://my-server.com/v1');
+      assert.equal(config.forceChatCompletions, true);
+      assert.equal(config.useResponsesApi, undefined);
     });
 
     it('model override takes precedence', () => {
