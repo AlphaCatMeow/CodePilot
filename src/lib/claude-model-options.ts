@@ -7,8 +7,10 @@
  * have to be duplicated across paths and drift (which is exactly what Codex
  * flagged in the Opus 4.7 review).
  *
- * Scope for the Opus 4.7+ adaptive-thinking family (4.7 and 4.8, per the
- * official migration guides — they share the same request contract):
+ * Scope for the Opus 4.7+ adaptive-thinking family (4.7, 4.8, and Fable 5,
+ * per the official migration guides — they share the same request contract;
+ * Fable 5 additionally cannot turn thinking off AT ALL — adaptive thinking
+ * runs even when the param is omitted; see FABLE_PATTERN note below):
  *   - These models do NOT accept manual extended thinking
  *     ({ type: 'enabled', budgetTokens }) — returns 400. Convert to adaptive.
  *   - They support adaptive thinking + effort-based reasoning budget.
@@ -50,6 +52,13 @@ export interface ClaudeModelOptionsOutput {
    *  (4.7 / 4.8). Exposed so callers can log or make additional
    *  runtime-specific decisions. */
   isOpusAdaptiveThinking: boolean;
+  /** True when the caller asked for thinking:'disabled' on a model where
+   *  thinking cannot be turned off (Fable 5: an explicit 'disabled' 400s
+   *  AND an omitted param still runs adaptive thinking). The sanitized
+   *  request omits the param to stay wire-valid, but the user's "thinking
+   *  off" choice is NOT honored — callers MUST surface this (one-shot
+   *  notification), never swallow it silently. */
+  thinkingForcedOn: boolean;
 }
 
 // Opus 4.7 and 4.8 share the adaptive-thinking contract (no manual extended
@@ -61,9 +70,29 @@ export interface ClaudeModelOptionsOutput {
 // that assumption (Codex review P2, 2026-05-29).
 const OPUS_ADAPTIVE_THINKING_PATTERN = /opus-?4[-.]?[78]/i;
 
+// Fable 5 (claude-fable-5, 2026-06 launch) shares the Opus 4.7/4.8 request
+// contract (sampling params removed; 1M default) with ONE extra breaking
+// change per the official migration guide: thinking CANNOT be turned off.
+// "Adaptive thinking is the only thinking mode on claude-fable-5 ...
+// thinking: {type: 'disabled'} returns an error. On Claude Opus 4.8,
+// requests without a thinking field run without thinking; on
+// claude-fable-5, those requests run with adaptive thinking."
+// So omitting the param avoids the 400 but does NOT mean "thinking off" —
+// callers must surface that via `thinkingForcedOn` (Codex review P1,
+// 2026-06-10). Matches `claude-fable-5`, `fable-5`, and tagged variants
+// like `claude-fable-5[1m]`.
+const FABLE_PATTERN = /fable-?5/i;
+
+export function isFableModel(model: string | undefined): boolean {
+  if (!model) return false;
+  return FABLE_PATTERN.test(model);
+}
+
 export function isOpusAdaptiveThinkingModel(model: string | undefined): boolean {
   if (!model) return false;
-  return OPUS_ADAPTIVE_THINKING_PATTERN.test(model);
+  // Fable 5 is in the same adaptive-thinking family — every 4.7+ guard
+  // (enabled→adaptive conversion, no context-1m beta) applies to it too.
+  return OPUS_ADAPTIVE_THINKING_PATTERN.test(model) || FABLE_PATTERN.test(model);
 }
 
 /**
@@ -76,6 +105,7 @@ export function sanitizeClaudeModelOptions(
   const isOpusAdaptiveThinking = isOpusAdaptiveThinkingModel(input.model);
 
   let thinking = input.thinking;
+  let thinkingForcedOn = false;
   if (isOpusAdaptiveThinking && thinking) {
     // Opus 4.7+ reject manual extended thinking. Convert to adaptive so
     // the user's "thinking enabled" intent survives without triggering
@@ -88,6 +118,15 @@ export function sanitizeClaudeModelOptions(
       // disappears. Explicitly request 'summarized' so users still see the
       // reasoning UI they saw on 4.6.
       thinking = { ...thinking, display: 'summarized' };
+    } else if (thinking.type === 'disabled' && isFableModel(input.model)) {
+      // Fable 5: thinking cannot be turned off. An explicit
+      // { type: 'disabled' } returns 400, and a request WITHOUT a thinking
+      // field still runs adaptive thinking (official migration guide).
+      // Omitting is the only wire-valid shape, but it is NOT "thinking
+      // off" — flag it so callers tell the user instead of silently
+      // misrepresenting their choice.
+      thinking = undefined;
+      thinkingForcedOn = true;
     }
   }
 
@@ -100,5 +139,6 @@ export function sanitizeClaudeModelOptions(
     effort: input.effort as string | undefined,
     applyContext1mBeta,
     isOpusAdaptiveThinking,
+    thinkingForcedOn,
   };
 }

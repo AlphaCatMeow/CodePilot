@@ -18,6 +18,7 @@ import {
   isOpusAdaptiveThinkingModel,
 } from '../../lib/claude-model-options';
 import { getContextWindow } from '../../lib/model-context';
+import { ENV_CLAUDE_CODE_MODELS } from '../../lib/provider-catalog';
 
 const LIB = path.resolve(path.dirname(new URL(import.meta.url).pathname), '../../lib');
 const read = (f: string) => fs.readFileSync(path.join(LIB, f), 'utf8');
@@ -97,8 +98,13 @@ describe('Opus 4.8 catalog entries (source-pin) — Anthropic direct + OpenRoute
   it('OpenRouter has opus-4-8 → anthropic/claude-opus-4.8 (Codex-confirmed slug, explicit fixture)', () => {
     assert.match(catalog, /upstreamModelId:\s*'anthropic\/claude-opus-4\.8'/);
   });
-  it('env-mode (provider-resolver) has opus-4-8 → claude-opus-4-8', () => {
-    assert.match(resolver, /modelId:\s*'opus-4-8',\s*\n\s*upstreamModelId:\s*'claude-opus-4-8'/);
+  it('env-mode has opus-4-8 → claude-opus-4-8 (via shared ENV_CLAUDE_CODE_MODELS; resolver derives)', () => {
+    // 2026-06-10: the resolver's inline envModels copy was consolidated into
+    // provider-catalog's ENV_CLAUDE_CODE_MODELS (Codex P1 — three copies had
+    // drifted). Pin the canonical entry + that the resolver derives from it.
+    const opus48 = ENV_CLAUDE_CODE_MODELS.find(m => m.modelId === 'opus-4-8');
+    assert.equal(opus48?.upstreamModelId, 'claude-opus-4-8');
+    assert.match(resolver, /=\s*ENV_CLAUDE_CODE_MODELS/);
   });
   it('Opus 4.7 entries still present — not regressed (alias `opus` stays 4.7)', () => {
     assert.match(catalog, /upstreamModelId:\s*'claude-opus-4-7'/);
@@ -115,9 +121,10 @@ describe('Opus 4.8 catalog entries (source-pin) — Anthropic direct + OpenRoute
 });
 
 describe('#23 Sonnet 4.6 alias → upstream (no stale Sonnet 4.0 / 4.5 fallback)', () => {
-  it('provider-resolver env sonnet → claude-sonnet-4-6; no Sonnet 4.0/4.5 upstream', () => {
+  it('env sonnet → claude-sonnet-4-6 (shared list); resolver has no stale Sonnet 4.0/4.5 upstream', () => {
+    const sonnet = ENV_CLAUDE_CODE_MODELS.find(m => m.modelId === 'sonnet');
+    assert.equal(sonnet?.upstreamModelId, 'claude-sonnet-4-6');
     const src = read('provider-resolver.ts');
-    assert.match(src, /modelId:\s*'sonnet',\s*\n\s*upstreamModelId:\s*'claude-sonnet-4-6'/);
     assert.doesNotMatch(src, /'claude-sonnet-4-20250514'/);
     assert.doesNotMatch(src, /'claude-sonnet-4-5-20250929'/);
   });
@@ -134,11 +141,16 @@ describe('#23 Sonnet 4.6 alias → upstream (no stale Sonnet 4.0 / 4.5 fallback)
 });
 
 describe('#23 Sonnet 4.6 — API route layer (Codex review P1: providers/models, skills/search, media plan)', () => {
-  it('providers/models route: DEFAULT_MODELS + ENV_ALIAS sonnet → claude-sonnet-4-6 (no Sonnet 4.0)', () => {
+  it('providers/models route: DEFAULT_MODELS + ENV_ALIAS derive from ENV_CLAUDE_CODE_MODELS (no Sonnet 4.0)', () => {
     const src = readSrc('app/api/providers/models/route.ts');
     assert.doesNotMatch(src, /'claude-sonnet-4-20250514'/);
-    assert.match(src, /upstreamModelId:\s*'claude-sonnet-4-6'/);
-    assert.match(src, /sonnet:\s*'claude-sonnet-4-6'/);
+    // 2026-06-10 consolidation: the route no longer hardcodes the env model
+    // rows — it derives from the shared list, where sonnet pins to 4.6.
+    assert.match(src, /ENV_CLAUDE_CODE_MODELS/);
+    assert.equal(
+      ENV_CLAUDE_CODE_MODELS.find(m => m.modelId === 'sonnet')?.upstreamModelId,
+      'claude-sonnet-4-6',
+    );
   });
   it('skills/search MODEL_MAP: no stale sonnet 4.0 / opus 4.6 / old haiku', () => {
     const src = readSrc('app/api/skills/search/route.ts');

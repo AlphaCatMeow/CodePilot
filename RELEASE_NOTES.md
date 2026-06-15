@@ -1,24 +1,33 @@
-## CodePilot v0.55.2
+## CodePilot v0.56.0
 
-> v0.55.x 系列的稳定性维护版本：修复 Codex 终止后无法继续发送、发送截图/附件被吞、以及主日志异常增大三个问题，建议所有 0.55.x 用户升级。
+> 本次更新的部分修复由 Claude Fable 5 完成。
 >
-> 首次从 0.54.0 升级的用户，可一并参考 v0.55.0 的重构说明（多执行引擎 / 上下文用量可视化 / Codex 账号原生能力）。
+> 模型与渠道扩充版本：新增 Claude Fable 5、小米 MiMo UltraSpeed 模型与通用 OpenAI 兼容第三方渠道，并修复用量统计、回复状态丢失、服务商列表刷新等一批问题。推荐所有用户升级。
+
+### 新增功能
+
+- **支持 Claude Fable 5** — Anthropic 最新发布的旗舰模型（定位在 Opus 之上），在 Anthropic 官方服务商和内置 Claude Code 模式下均可选用，支持 1M 上下文窗口与全部思考深度（Effort）档位。注意官方定价为 Opus 4.8 的两倍，请按需选用。
+- **小米 MiMo 新增 UltraSpeed 超高速模型** — MiMo 渠道可选用 `mimo-v2.5-pro-ultraspeed`（官方超高速体验模式，资源有限、按日审批）；默认模型保持不变，不影响现有会话。
+- **通用 OpenAI 兼容第三方渠道** — 设置 > 服务商中可以新增任意 OpenAI 协议兼容的网关：填入 Base URL、API Key 和模型名即可在 CodePilot 与 Codex 引擎中使用（Claude Code 引擎不支持此类渠道，界面有明确标注）。
 
 ### 修复问题
 
-- **Codex 终止后无法发送新指令** — 在 Codex 引擎下点击「终止」停止当前任务后，同一个对话再发新消息会没有反应、像整个卡死，需要新建会话或重启才能继续。现在「终止」会真正中断后端任务并恢复输入，停止后可以直接接着发。
-- **发送截图 / 附件时图片直接消失** — 在对话框贴图后点发送，如果这条消息其实没有真正发出去（服务还在加载、所选服务 / 模型不兼容、被中断、或新建对话时创建会话失败等），截图会被直接清空、白丢。现在只要消息没真正发出，你的文字和截图都会保留在输入框里，等条件就绪再发。
-- **主日志异常增大** — 在 Codex 引擎下长时间使用后，应用主日志（codepilot-main.log）会无节制增长，个别用户甚至涨到 10GB 以上，挤占磁盘并可能拖累应用稳定性。现在日志有大小上限并自动轮转，不会再无限增长。
+- 修复对话中途出错时，该轮 token 用量不计入统计的问题——此前成本和上下文用量会被悄悄低估。
+- 修复回复结束后切换会话或长时间挂机回来，完成状态（终止原因、用量信息）丢失的问题。
+- 修复编辑或删除服务商后，聊天页的模型列表最长要等 5 分钟才更新的问题，现在立即生效。
+- 修复模型选择器「Claude Code」分组一直缺少 Opus 4.8 的问题（本次随 Fable 5 接入一并补齐）。
+- 修复早期版本创建的 OpenAI 兼容服务商可能在应用重启后丢失的问题。
 
 ### 优化改进
 
-- **大幅降低 Codex 引擎日志噪声** — 默认只记录关键诊断信息，不再把海量调试 tracing 写入日志；需要完整日志排查问题时可手动开启。
-- **新增崩溃诊断线索** — 应用异常退出前会记录日志大小、内存占用、子进程 / 渲染进程退出等信息，便于后续定位偶发闪退。
+- 选用 Fable 5 且设置了「关闭思考」时，会明确提示该模型思考始终开启（官方限制），不再静默忽略你的设置；思考深度可改用 Effort 调节。
+- 运行中的命令实时输出窗口不再从半行中间开始显示。
 
 ### 已知问题
 
 以下问题已记录、不影响主流程，仍在跟进（欢迎到 GitHub Issues 反馈复现细节）：
 
+- 新增的 OpenAI 兼容渠道与 MiMo UltraSpeed 已通过完整自动化测试，真实第三方网关 / 审批 key 的端到端验证仍在补充中，遇到接入问题请反馈。
 - Windows 上服务商编辑窗口右上角关闭按钮在个别情况下点击无反应（仍在 Windows 真机验证中）。
 - 流式回复期间继续追加消息进队列的行为异常（核查中）。
 - MCP 在设置页能看到，但运行时模型调不到，需要把 MCP 配置到项目路径才识别（排查中）。
@@ -28,11 +37,11 @@
 ## 下载地址
 
 ### macOS
-- [Apple Silicon (M1/M2/M3/M4)](https://github.com/op7418/CodePilot/releases/download/v0.55.2/CodePilot-0.55.2-arm64.dmg)
-- [Intel](https://github.com/op7418/CodePilot/releases/download/v0.55.2/CodePilot-0.55.2-x64.dmg)
+- [Apple Silicon (M1/M2/M3/M4)](https://github.com/op7418/CodePilot/releases/download/v0.56.0/CodePilot-0.56.0-arm64.dmg)
+- [Intel](https://github.com/op7418/CodePilot/releases/download/v0.56.0/CodePilot-0.56.0-x64.dmg)
 
 ### Windows
-- [Windows 安装包](https://github.com/op7418/CodePilot/releases/download/v0.55.2/CodePilot.Setup.0.55.2.exe)
+- [Windows 安装包](https://github.com/op7418/CodePilot/releases/download/v0.56.0/CodePilot.Setup.0.56.0.exe)
 
 ## 安装说明
 

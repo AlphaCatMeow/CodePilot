@@ -10,13 +10,12 @@ OpenAI 兼容第三方服务商是一个 chat 类 Provider preset，用于接入
 
 ## Provider 接入
 
-入口由 `src/lib/provider-catalog.ts` 的 `openai-compatible-thirdparty` preset 提供：
+入口由 `src/lib/provider-catalog.ts` 的 `openai-compatible` preset 提供：
 
 - `protocol: 'openai-compatible'`
 - `provider_type: 'openai-compatible'`
 - `authStyle: 'api_key'`
-- `fields: ['name', 'api_key', 'base_url']`
-- `category: 'chat'`
+- `fields: ['name', 'api_key', 'base_url', 'model_names']`
 - `iconKey: 'openai'`
 
 前端 `src/components/settings/provider-presets.tsx` 从 `VENDOR_PRESETS` 生成 Add Service 卡片。`toQuickPreset()` 对 `openai-compatible` 保留同名 `provider_type`，避免历史兜底把它写成 `anthropic`。编辑时 `findMatchingPreset()` 也优先按 `provider_type` 或 `protocol` 识别该 preset，避免 `https://api.openai.com/v1` 被误匹配到 `openai-image` 图片服务。

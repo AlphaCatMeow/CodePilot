@@ -372,6 +372,21 @@ const ANTHROPIC_FIRST_PARTY_MODELS: CatalogModel[] = [
     },
   },
   {
+    modelId: 'fable-5',
+    upstreamModelId: 'claude-fable-5',
+    displayName: 'Fable 5',
+    // No `role`: Fable 5 (2026-06 launch, the tier above Opus) is an
+    // explicit pick, same policy as Opus 4.8 — no silent default switch.
+    // Request contract = Opus 4.7/4.8 family (adaptive thinking only,
+    // 1M context) with one extra guard handled in claude-model-options.ts
+    // (explicit thinking:disabled returns 400 — omitted instead).
+    capabilities: {
+      supportsEffort: true,
+      supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
+      supportsAdaptiveThinking: true,
+    },
+  },
+  {
     modelId: 'haiku',
     upstreamModelId: 'claude-haiku-4-5-20251001',
     displayName: 'Haiku 4.5',
@@ -382,6 +397,21 @@ const ANTHROPIC_FIRST_PARTY_MODELS: CatalogModel[] = [
     },
   },
 ];
+
+// Single source of truth for the built-in "Claude Code" (env) provider's
+// model list — same aliases + concrete upstream IDs as the first-party
+// catalog, minus `role` (env mode has no role-mapping semantics).
+//
+// Consumers must DERIVE from this export, never re-hardcode (Codex review
+// P1, 2026-06-10: three hand-maintained copies had drifted — the model
+// picker's env group and the client fallback were missing opus-4-8 AND
+// fable-5 while the resolver had both):
+//   - provider-resolver.ts            envModels (alias → upstream resolution)
+//   - app/api/providers/models/route.ts  DEFAULT_MODELS + ENV_ALIAS_TO_UPSTREAM
+//   - hooks/useProviderModels.ts      DEFAULT_MODEL_OPTIONS (client fallback)
+export const ENV_CLAUDE_CODE_MODELS: CatalogModel[] = ANTHROPIC_FIRST_PARTY_MODELS.map(
+  ({ role: _role, ...model }) => model,
+);
 
 // Bedrock / Vertex: per Claude Code docs, the `opus` alias still resolves
 // to Opus 4.6 on these platforms (unlike first-party Anthropic). Users who
@@ -458,20 +488,32 @@ export const VENDOR_PRESETS: VendorPreset[] = [
     iconKey: 'anthropic',
   },
 
-  // ── OpenAI-compatible Third-party (generic chat) ──
+  // ── OpenAI-Compatible Third-party (generic) ──
+  // Generic OpenAI-compatible chat gateway: user supplies base_url + key +
+  // model. Routes through @ai-sdk/openai's chat-completions wire, so it's
+  // reachable from CodePilot Runtime and Codex Runtime but NOT Claude Code
+  // (Anthropic wire). runtime-compat maps protocol 'openai-compatible' to the
+  // `codepilot_only` tier; getProviderCompat reaches that tier only when this
+  // preset is matched (see findMatchingPresetForRecord / findMatchingPreset).
+  // NOT sdkProxyOnly (that flag means "Claude Code subprocess only" — the
+  // opposite of this). NOT claudeCodeVerified (only meaningful for anthropic).
+  // No default model catalog — the user names their own model; never fabricate
+  // an official-OpenAI lineup for an arbitrary third-party gateway.
   {
-    key: 'openai-compatible-thirdparty',
-    name: 'OpenAI-compatible Third-party',
-    description: 'OpenAI-compatible chat API — provide v1 URL and Key',
-    descriptionZh: 'OpenAI 兼容第三方 — 填写 v1 地址和密钥',
+    key: 'openai-compatible',
+    name: 'OpenAI-Compatible API',
+    description: 'OpenAI-compatible chat API — provide URL, key and model (CodePilot / Codex runtimes)',
+    descriptionZh: 'OpenAI 兼容第三方 API — 填写地址、密钥和模型（用于 CodePilot / Codex 运行时）',
     protocol: 'openai-compatible',
     authStyle: 'api_key',
     baseUrl: '',
     defaultEnvOverrides: {},
     defaultModels: [],
-    fields: ['name', 'api_key', 'base_url'],
-    category: 'chat',
+    fields: ['name', 'api_key', 'base_url', 'model_names'],
     iconKey: 'openai',
+    meta: {
+      billingModel: 'pay_as_you_go',
+    },
   },
 
   // ── OpenRouter ──
@@ -726,6 +768,13 @@ export const VENDOR_PRESETS: VendorPreset[] = [
     defaultEnvOverrides: {},
     defaultModels: [
       { modelId: 'sonnet', upstreamModelId: 'mimo-v2.5-pro', displayName: 'MiMo-V2.5-Pro', role: 'default' },
+      // UltraSpeed — high-throughput experience mode of MiMo-V2.5-Pro.
+      // Optional + approval-gated by Xiaomi, so NOT the default. The official
+      // model page lists Anthropic-protocol access on this same .../anthropic
+      // channel with model="mimo-v2.5-pro-ultraspeed" (streaming + thinking) —
+      // verified against the page's Anthropic-protocol sample 2026-06-09.
+      // Capabilities limited to what the doc states; no unsourced contextWindow.
+      { modelId: 'mimo-v2.5-pro-ultraspeed', upstreamModelId: 'mimo-v2.5-pro-ultraspeed', displayName: 'MiMo-V2.5-Pro-UltraSpeed', capabilities: { toolUse: true, reasoning: true } },
     ],
     defaultRoleModels: {
       default: 'mimo-v2.5-pro',
@@ -1296,7 +1345,7 @@ export function getProviderAccessType(record: {
     return 'subscription_token';
   }
   // Generic anthropic-compatible relay / custom gateway preset.
-  if (preset.key === 'anthropic-thirdparty' || preset.key === 'openai-compatible-thirdparty') return 'gateway';
+  if (preset.key === 'anthropic-thirdparty' || preset.key === 'openai-compatible') return 'gateway';
   // Fall through: pay-as-you-go API key / free-tier (treated the same
   // here — user puts a key in the form field).
   return 'api_key';
@@ -1579,7 +1628,14 @@ export function findMatchingPresetForRecord(record: {
   provider_type: string;
   base_url: string;
 }): VendorPreset | undefined {
-  if (record.provider_type === 'openai-compatible') return getPreset('openai-compatible-thirdparty');
+  // provider_type='openai-compatible' wins over base_url match: a user who
+  // explicitly created an openai-compatible provider pointing at
+  // https://api.openai.com/v1 must NOT be reclassified as the official
+  // openai-image preset. Image presets share that baseUrl, so without this
+  // early return the exact-URL check below would steal them.
+  if (record.provider_type === 'openai-compatible') {
+    return getPreset('openai-compatible');
+  }
   if (record.base_url) {
     const exact = VENDOR_PRESETS.find(p => p.baseUrl && p.baseUrl === record.base_url);
     if (exact) return exact;

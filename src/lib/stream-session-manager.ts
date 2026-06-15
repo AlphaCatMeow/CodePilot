@@ -563,7 +563,15 @@ async function runStream(stream: ActiveStream, params: StartStreamParams): Promi
       onToolOutput: (data) => {
         markActive();
         const next = stream.toolOutputAccumulated + (stream.toolOutputAccumulated ? '\n' : '') + data;
-        stream.toolOutputAccumulated = next.length > 2000 ? next.slice(-2000) : next;
+        if (next.length > 2000) {
+          // Keep the rolling tail aligned to a line boundary so the
+          // live terminal window never opens on a mid-line fragment.
+          const tail = next.slice(-2000);
+          const nl = tail.indexOf('\n');
+          stream.toolOutputAccumulated = nl >= 0 ? tail.slice(nl + 1) : tail;
+        } else {
+          stream.toolOutputAccumulated = next;
+        }
         emit(stream, 'snapshot-updated');
       },
       onToolProgress: (toolName, elapsed) => {
@@ -1085,11 +1093,15 @@ export async function respondToPermission(
 export function clearSnapshot(sessionId: string): void {
   const stream = getStreamsMap().get(sessionId);
   if (stream && stream.snapshot.phase !== 'active') {
-    if (stream.gcTimer) clearTimeout(stream.gcTimer);
-    // Reset the snapshot (listeners are in a separate registry)
+    // Only mark finalMessageContent as consumed (it must not be appended
+    // twice on remount). The rest of the snapshot — terminal reason, token
+    // usage, context usage — stays readable until GC: resetting startedAt
+    // to 0 here made getSnapshot() return null for the whole entry, which
+    // is the root cause of the post-stream display loss after idle/remount.
+    // The GC timer scheduled at the terminal transition keeps running so
+    // the entry is still reclaimed after the grace window.
     stream.snapshot = {
       ...stream.snapshot,
-      startedAt: 0,
       finalMessageContent: null,
     };
   }

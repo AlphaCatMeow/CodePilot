@@ -37,12 +37,12 @@ function putReq(body: unknown): NextRequest {
 
 describe('OpenAI-compatible third-party provider preset', () => {
   it('ships a chat preset that passes catalog schema validation', () => {
-    const preset = VENDOR_PRESETS.find((p) => p.key === 'openai-compatible-thirdparty');
-    assert.ok(preset, 'openai-compatible-thirdparty preset must exist');
+    const preset = VENDOR_PRESETS.find((p) => p.key === 'openai-compatible');
+    assert.ok(preset, 'openai-compatible preset must exist');
     assert.equal(preset.protocol, 'openai-compatible');
     assert.equal(preset.authStyle, 'api_key');
     assert.equal(preset.baseUrl, '');
-    assert.deepEqual(preset.fields, ['name', 'api_key', 'base_url']);
+    assert.deepEqual(preset.fields, ['name', 'api_key', 'base_url', 'model_names']);
     assert.notEqual(preset.category, 'media');
     assert.equal(PresetSchema.safeParse(preset).success, true);
   });
@@ -53,7 +53,7 @@ describe('OpenAI-compatible third-party provider preset', () => {
       base_url: 'https://api.example.com/v1',
     };
     assert.equal(getEffectiveProviderProtocol(record.provider_type, '', record.base_url), 'openai-compatible');
-    assert.equal(findMatchingPresetForRecord(record)?.key, 'openai-compatible-thirdparty');
+    assert.equal(findMatchingPresetForRecord(record)?.key, 'openai-compatible');
     assert.equal(canReliablyFetchModels(record).reliable, true);
     assert.equal(getProviderCompat(record), 'codepilot_only');
   });
@@ -64,7 +64,7 @@ describe('OpenAI-compatible third-party provider preset', () => {
         provider_type: 'openai-compatible',
         base_url: 'https://api.openai.com/v1',
       })?.key,
-      'openai-compatible-thirdparty',
+      'openai-compatible',
     );
   });
 

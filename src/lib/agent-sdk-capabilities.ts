@@ -73,6 +73,15 @@ export function isCacheFresh(providerId: string = 'env'): boolean {
   return !!cache && cache.capturedAt > 0 && (Date.now() - cache.capturedAt) < CACHE_TTL_MS;
 }
 
+/**
+ * Drop the cached capabilities for a provider. Must be called when the
+ * provider row is edited or deleted — otherwise model lists and account
+ * info captured under the old config keep serving for up to CACHE_TTL_MS.
+ */
+export function invalidateCapabilityCache(providerId: string): void {
+  getCacheMap().delete(providerId);
+}
+
 // ==========================================
 // Capture
 // ==========================================

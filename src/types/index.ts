@@ -382,7 +382,9 @@ export interface ProviderModelGroup {
  *                               (the skin is most reliable for those).
  *  - `codepilot_only`           Non-Anthropic protocol (OpenRouter `/v1`
  *                               OpenAI-compat skin, OpenAI-compat chat, Google
- *                               chat). Only flows through CodePilot Runtime.
+ *                               chat). Flows through CodePilot Runtime AND
+ *                               Codex Runtime (via the provider proxy); not
+ *                               Claude Code Runtime (Anthropic wire only).
  *  - `media_only`               Image / video / embedding services. Never enters
  *                               the chat picker.
  *  - `unknown`                  Custom URL with no matched preset. UI uses

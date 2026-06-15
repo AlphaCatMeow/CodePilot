@@ -30,6 +30,7 @@ const PROVIDER_PRESETS: Record<string, { base_url: string; extra_env: string; pr
   openrouter: { base_url: "https://openrouter.ai/api", extra_env: '{"ANTHROPIC_API_KEY":""}', protocol: "openrouter" },
   bedrock: { base_url: "", extra_env: '{"CLAUDE_CODE_USE_BEDROCK":"1","AWS_REGION":"us-east-1","CLAUDE_CODE_SKIP_BEDROCK_AUTH":"1"}', protocol: "bedrock" },
   vertex: { base_url: "", extra_env: '{"CLAUDE_CODE_USE_VERTEX":"1","CLOUD_ML_REGION":"us-east5","CLAUDE_CODE_SKIP_VERTEX_AUTH":"1"}', protocol: "vertex" },
+  "openai-compatible": { base_url: "", extra_env: "{}", protocol: "openai-compatible" },
   custom: { base_url: "", extra_env: "{}", protocol: "anthropic" },
 };
 
@@ -38,6 +39,7 @@ const PROVIDER_TYPES = [
   { value: "openrouter", label: "OpenRouter" },
   { value: "bedrock", label: "AWS Bedrock" },
   { value: "vertex", label: "Google Vertex" },
+  { value: "openai-compatible", label: "OpenAI-Compatible" },
   { value: "custom", label: "Custom" },
 ];
 

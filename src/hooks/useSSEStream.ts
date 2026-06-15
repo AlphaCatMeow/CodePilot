@@ -104,7 +104,8 @@ export interface RateLimitInfo {
  * needs to see regardless of subsequent streaming progress belong here.
  */
 export const TOAST_STATUS_CODES = new Set<string>([
-  'RUNTIME_EFFORT_IGNORED', // Opus 4.7 on native runtime — explicit effort dropped
+  'RUNTIME_EFFORT_IGNORED', // Opus 4.7+ family on native runtime — explicit effort dropped
+  'THINKING_ALWAYS_ON', // Fable 5 — thinking:'disabled' cannot be honored, adaptive runs anyway
 ]);
 
 /**
@@ -118,7 +119,7 @@ export function maybeShowStatusToast(statusData: { code?: string; message?: stri
   if (!statusData?.code || !TOAST_STATUS_CODES.has(statusData.code)) return;
   void import('./useToast').then(({ showToast }) => {
     showToast({
-      type: statusData.code === 'RUNTIME_EFFORT_IGNORED' ? 'warning' : 'info',
+      type: statusData.code === 'RUNTIME_EFFORT_IGNORED' || statusData.code === 'THINKING_ALWAYS_ON' ? 'warning' : 'info',
       message: statusData.message || statusData.title || 'Status notification',
       duration: 8000,
     });
@@ -154,8 +155,10 @@ function handleSSEEvent(
           name: toolData.name,
           input: toolData.input,
         });
-      } catch {
-        // skip malformed tool_use data
+      } catch (err) {
+        // A dropped tool_use leaves no UI trace and orphans the later
+        // tool_result — log enough to diagnose it from the console.
+        console.error('[SSE] malformed tool_use event, dropped:', event.data.slice(0, 200), err);
       }
       return accumulated;
     }
@@ -171,8 +174,10 @@ function handleSSEEvent(
             ? { media: resultData.media }
             : {}),
         });
-      } catch {
-        // skip malformed tool_result data
+      } catch (err) {
+        // A dropped tool_result leaves its tool stuck in "running" in
+        // the UI — log enough to diagnose it from the console.
+        console.error('[SSE] malformed tool_result event, dropped:', event.data.slice(0, 200), err);
       }
       return accumulated;
     }

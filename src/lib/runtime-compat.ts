@@ -35,7 +35,7 @@ const CLAUDE_CODE_READY_PRESETS = new Set(['anthropic-official', 'bedrock', 'ver
  *                                        integration doc recommends. Reaches
  *                                        Claude Code Runtime.
  *   - `https://openrouter.ai/api/v1`   — OpenAI-compatible (`/chat/completions`).
- *                                        CodePilot Runtime only.
+ *                                        CodePilot + Codex Runtime (codepilot_only).
  *
  * The default OpenRouter preset shipped in `provider-catalog.ts` uses the
  * Anthropic skin. Users editing the URL or pasting from OpenAI tutorials
@@ -284,7 +284,7 @@ export function compatLabel(compat: ProviderRuntimeCompat, isZh: boolean): strin
     case 'claude_code_experimental': return isZh ? 'Claude Code 实验' : 'Claude Code experimental';
     case 'openrouter_anthropic_skin':
       return isZh ? 'OpenRouter · Claude Code 兼容' : 'OpenRouter · Claude Code compat';
-    case 'codepilot_only':           return isZh ? '仅 CodePilot Runtime' : 'CodePilot Runtime only';
+    case 'codepilot_only':           return isZh ? 'CodePilot · Codex' : 'CodePilot · Codex';
     case 'codex_account':            return isZh ? 'Codex 账号' : 'Codex Account';
     case 'media_only':               return isZh ? '图片生成' : 'Image gen';
     case 'unknown':                  return isZh ? '需验证' : 'Needs verification';
@@ -312,8 +312,8 @@ export function compatTooltip(compat: ProviderRuntimeCompat, isZh: boolean): str
         : 'Reaches Claude Code via the OpenRouter Anthropic skin — best suited to anthropic/claude-* models. Other models route through OpenRouter too, but tool calling / thinking behavior depends on the upstream vendor.';
     case 'codepilot_only':
       return isZh
-        ? 'OpenAI 兼容协议，仅在 CodePilot Runtime 下可用（不会出现在 Claude Code Runtime 的模型选择器中）'
-        : 'OpenAI-compatible protocol — only reachable from CodePilot Runtime; never shown in the Claude Code Runtime picker';
+        ? 'OpenAI 兼容协议，可在 CodePilot Runtime 与 Codex Runtime 下使用；不支持 Claude Code Runtime（不会出现在其模型选择器中）'
+        : 'OpenAI-compatible protocol — usable from CodePilot Runtime and Codex Runtime; not supported by Claude Code Runtime (never shown in its picker)';
     case 'codex_account':
       return isZh
         ? '已登录 Codex 账号的原生模型，仅通过本机 codex app-server 在 Codex Runtime 下使用'

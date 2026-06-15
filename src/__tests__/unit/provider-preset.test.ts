@@ -12,8 +12,11 @@ describe('Preset Schema Validation', () => {
         }
       });
 
-      it('has at least one default model (or intentionally starts empty)', () => {
-        if (preset.key === 'volcengine' || preset.key === 'ollama' || preset.key === 'openai-compatible-thirdparty') return;
+      it('has at least one default model (or is volcengine/ollama/openai-compatible)', () => {
+        // openai-compatible is a generic third-party gateway: the user names
+        // their own model. Fabricating a default lineup would be fake data —
+        // same rationale as volcengine/ollama.
+        if (preset.key === 'volcengine' || preset.key === 'ollama' || preset.key === 'openai-compatible') return;
         assert.ok(preset.defaultModels.length > 0, `Preset ${preset.key} expected at least one default model`);
       });
 
@@ -68,6 +71,19 @@ describe('Preset Schema Validation', () => {
   it('Bailian uses auth_token', () => {
     const p = VENDOR_PRESETS.find(v => v.key === 'bailian')!;
     assert.equal(p.authStyle, 'auth_token');
+  });
+
+  it('openai-compatible preset exists: openai-compatible protocol, api_key auth, no fixed URL, no fabricated catalog', () => {
+    const p = VENDOR_PRESETS.find(v => v.key === 'openai-compatible');
+    assert.ok(p, 'generic openai-compatible preset must exist');
+    assert.equal(p!.protocol, 'openai-compatible');
+    assert.equal(p!.authStyle, 'api_key');
+    assert.equal(p!.baseUrl, '', 'generic gateway has no fixed base URL — the user supplies it');
+    assert.equal(p!.defaultModels.length, 0, 'must not fabricate a model lineup for an arbitrary gateway');
+    assert.ok(p!.fields.includes('base_url'), 'must expose base_url so the user can enter their endpoint');
+    assert.ok(p!.fields.includes('model_names'), 'must expose model_names so the user can set their model');
+    assert.notEqual(p!.sdkProxyOnly, true, 'openai-compatible uses the AI SDK path, not the Claude Code subprocess');
+    assert.notEqual(p!.meta?.claudeCodeVerified, true, 'claudeCodeVerified is only meaningful for anthropic presets');
   });
 });
 

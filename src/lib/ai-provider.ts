@@ -276,10 +276,16 @@ function createLanguageModel(config: AiSdkConfig, isThirdPartyProxy: boolean): L
         baseURL: config.baseUrl,
         ...(hasHeaders ? { headers: config.headers } : {}),
       });
-      if (config.forceChatCompletions) {
-        return openai.chat(config.modelId);
-      }
-      return openai(config.modelId);
+      // Chat Completions, NOT the Responses API. In @ai-sdk/openai v3 the bare
+      // `openai(modelId)` call defaults to `.responses()` (/v1/responses), but
+      // every provider that reaches this non-OAuth branch speaks the OpenAI
+      // Chat Completions wire: openai-compatible third-party gateways,
+      // OpenRouter /v1, and bedrock/vertex/google-via-baseUrl proxies. The
+      // Codex OAuth path that genuinely needs Responses returns earlier via
+      // `openai.responses()` under `config.useResponsesApi`. Third-party
+      // gateways implement /v1/chat/completions, not /v1/responses, so
+      // `.chat()` is the correct + portable wire here.
+      return openai.chat(config.modelId);
     }
 
     case 'google': {

@@ -1195,6 +1195,22 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
           context1m,
         });
 
+        if (sanitized.thinkingForcedOn) {
+          // Fable 5: thinking cannot be turned off — the sanitizer omitted
+          // the user's thinking:'disabled' to avoid a 400, but adaptive
+          // thinking still runs. Tell the user once per send instead of
+          // silently misrepresenting the "thinking off" choice
+          // (Codex review P1, same surfacing as the native path).
+          controller.enqueue(formatSSE({
+            type: 'status',
+            data: JSON.stringify({
+              notification: true,
+              code: 'THINKING_ALWAYS_ON',
+              title: 'Thinking stays on for this model',
+              message: `Fable 5 always uses adaptive thinking — the "thinking off" setting can't apply to this model. Use Effort to tune thinking depth instead.`,
+            }),
+          }));
+        }
         if (sanitized.thinking) {
           queryOptions.thinking = sanitized.thinking;
         }
@@ -2387,6 +2403,16 @@ export async function testProviderConnection(config: {
     return testMediaProviderConnection(config);
   }
 
+  // OpenAI-compatible chat gateways speak /v1/chat/completions with Bearer
+  // auth, NOT the Anthropic /v1/messages + x-api-key shape the generic probe
+  // below builds. Without this branch an openai-compatible gateway is tested
+  // against /v1/messages (always fails); worse, an empty base URL would fall
+  // through to https://api.anthropic.com and send the user's key to the
+  // official Anthropic API. Route to a dedicated OpenAI-shape probe.
+  if (config.protocol === 'openai-compatible') {
+    return testOpenAICompatibleConnection(config);
+  }
+
   // Reject third-party / custom Anthropic providers without a base URL.
   // Otherwise the fallback to https://api.anthropic.com would test the
   // official endpoint, giving a misleading green signal before saving a
@@ -2573,6 +2599,86 @@ async function testOpenAICompatibleProviderConnection(config: {
       baseUrl: config.baseUrl,
       providerMeta: config.providerMeta,
     });
+    return {
+      success: false,
+      error: {
+        code: classified.category,
+        message: classified.userMessage,
+        suggestion: classified.actionHint,
+        recoveryActions: classified.recoveryActions,
+      },
+    };
+  }
+}
+
+/**
+ * Connection probe for OpenAI-compatible chat gateways. Uses GET {base}/models
+ * with Bearer auth — the same cheap, body-less, model-agnostic probe the OpenAI
+ * image provider uses: 200 → auth + endpoint reachable, 401/403 → bad key. A
+ * non-empty base URL is REQUIRED: an empty one must never fall back to
+ * api.openai.com / api.anthropic.com (wrong service + the user's third-party
+ * key would leak there).
+ */
+async function testOpenAICompatibleConnection(config: {
+  apiKey: string;
+  baseUrl: string;
+  providerName?: string;
+  providerMeta?: { apiKeyUrl?: string; docsUrl?: string; pricingUrl?: string };
+}): Promise<ConnectionTestResult> {
+  if (!config.baseUrl?.trim()) {
+    return {
+      success: false,
+      error: {
+        code: 'MISSING_BASE_URL',
+        message: 'Base URL is required for OpenAI-compatible providers',
+        suggestion: 'Enter your gateway endpoint, e.g. https://your-gateway.example.com/v1',
+      },
+    };
+  }
+
+  const apiUrl = `${config.baseUrl.replace(/\/+$/, '')}/models`;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${config.apiKey}`,
+  };
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15_000);
+
+  try {
+    const response = await fetch(apiUrl, { method: 'GET', headers, signal: controller.signal });
+    clearTimeout(timeoutId);
+
+    if (response.ok) return { success: true };
+
+    let errorBody = '';
+    try { errorBody = await response.text(); } catch { /* ignore */ }
+
+    const classified = classifyError({
+      error: new Error(`HTTP ${response.status}: ${errorBody.slice(0, 500)}`),
+      providerName: config.providerName,
+      baseUrl: config.baseUrl,
+      providerMeta: config.providerMeta,
+    });
+
+    return {
+      success: false,
+      error: {
+        code: classified.category,
+        message: classified.userMessage,
+        suggestion: classified.actionHint,
+        recoveryActions: classified.recoveryActions,
+      },
+    };
+  } catch (err) {
+    clearTimeout(timeoutId);
+    const classified = classifyError({
+      error: err,
+      providerName: config.providerName,
+      baseUrl: config.baseUrl,
+      providerMeta: config.providerMeta,
+    });
+
     return {
       success: false,
       error: {

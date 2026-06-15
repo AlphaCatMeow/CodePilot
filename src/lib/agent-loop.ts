@@ -308,6 +308,24 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
             context1m,
           });
           const isOpusAdaptiveThinking = sanitized.isOpusAdaptiveThinking;
+          if (sanitized.thinkingForcedOn && step === 1) {
+            // Fable 5: thinking cannot be turned off — the sanitizer omitted
+            // the user's thinking:'disabled' to stay wire-valid, but adaptive
+            // thinking still runs. Surface it once instead of silently
+            // misrepresenting the "thinking off" choice (Codex review P1).
+            console.warn(
+              `[agent-loop] Fable 5: thinking cannot be disabled — request runs with adaptive thinking despite thinking_mode='disabled'.`,
+            );
+            controller.enqueue(formatSSE({
+              type: 'status',
+              data: JSON.stringify({
+                notification: true,
+                code: 'THINKING_ALWAYS_ON',
+                title: 'Thinking stays on for this model',
+                message: `Fable 5 always uses adaptive thinking — the "thinking off" setting can't apply to this model. Use Effort to tune thinking depth instead.`,
+              }),
+            }));
+          }
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           let providerOptions: any;
           if (config.sdkType === 'anthropic') {
@@ -344,10 +362,10 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
               if (sanitized.thinking) {
                 anthropicOpts.thinking = sanitized.thinking;
               }
-              // Gate effort on the Opus 4.7+ family (4.7 / 4.8) to avoid the
-              // stale effort-2025-11-24 beta header the installed
-              // @ai-sdk/anthropic still attaches. Other models keep the
-              // existing effort plumbing.
+              // Gate effort on the Opus 4.7+ family (4.7 / 4.8 / Fable 5)
+              // to avoid the stale effort-2025-11-24 beta header the
+              // installed @ai-sdk/anthropic still attaches. Other models
+              // keep the existing effort plumbing.
               if (sanitized.effort && !isOpusAdaptiveThinking) {
                 anthropicOpts.effort = sanitized.effort;
               } else if (sanitized.effort && isOpusAdaptiveThinking && step === 1) {
@@ -357,7 +375,7 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
                 // this via the status event pipeline; ChatView can treat
                 // code=RUNTIME_EFFORT_IGNORED as a one-shot toast.
                 console.warn(
-                  `[agent-loop] Opus 4.7+ (incl. 4.8) on native runtime: dropping explicit effort='${sanitized.effort}' — @ai-sdk/anthropic still attaches deprecated effort-2025-11-24 beta. Switch to SDK runtime for explicit effort control.`,
+                  `[agent-loop] Opus 4.7+ (incl. 4.8 / Fable 5) on native runtime: dropping explicit effort='${sanitized.effort}' — @ai-sdk/anthropic still attaches deprecated effort-2025-11-24 beta. Switch to SDK runtime for explicit effort control.`,
                 );
                 controller.enqueue(formatSSE({
                   type: 'status',
@@ -365,7 +383,7 @@ export function runAgentLoop(options: AgentLoopOptions): ReadableStream<string> 
                     notification: true,
                     code: 'RUNTIME_EFFORT_IGNORED',
                     title: 'Effort ignored on this runtime',
-                    message: `Opus 4.7 / 4.8 on the native runtime can't send explicit effort yet (would ship a deprecated beta header). Using API default — switch to SDK runtime to control effort.`,
+                    message: `Opus 4.7 / 4.8 / Fable 5 on the native runtime can't send explicit effort yet (would ship a deprecated beta header). Using API default — switch to SDK runtime to control effort.`,
                   }),
                 }));
               }

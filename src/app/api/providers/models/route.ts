@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAllProviders, getDefaultProviderId, setDefaultProviderId, getProvider, getAllModelsForProvider, getSetting } from '@/lib/db';
 import { getContextWindow } from '@/lib/model-context';
-import { getDefaultModelsForProvider, getEffectiveProviderProtocol, findPresetForLegacy } from '@/lib/provider-catalog';
+import { getDefaultModelsForProvider, getEffectiveProviderProtocol, findPresetForLegacy, ENV_CLAUDE_CODE_MODELS } from '@/lib/provider-catalog';
 import type { Protocol } from '@/lib/provider-catalog';
 import type { ErrorResponse, ProviderModelGroup } from '@/types';
 import { getOAuthStatus } from '@/lib/openai-oauth-manager';
@@ -25,43 +25,29 @@ const OPENAI_OAUTH_MODELS = [
 // Default Claude model options (for the built-in 'env' provider).
 // Capability metadata ensures `xhigh` appears in the effort dropdown even
 // before SDK capability discovery populates getCachedModels('env').
-// upstreamModelId mirrors provider-resolver.ts's envModels table so the
-// chat-page context indicator can resolve alias-specific windows
-// (env Opus alias = claude-opus-4-7 = 1M, vs Bedrock/Vertex opus = 200K).
-const DEFAULT_MODELS = [
-  {
-    value: 'sonnet',
-    label: 'Sonnet 4.6',
-    upstreamModelId: 'claude-sonnet-4-6',
-    supportsEffort: true,
-    supportedEffortLevels: ['low', 'medium', 'high', 'max'],
-    supportsAdaptiveThinking: true,
-  },
-  {
-    value: 'opus',
-    label: 'Opus 4.7',
-    upstreamModelId: 'claude-opus-4-7',
-    supportsEffort: true,
-    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
-    supportsAdaptiveThinking: true,
-  },
-  {
-    value: 'haiku',
-    label: 'Haiku 4.5',
-    upstreamModelId: 'claude-haiku-4-5-20251001',
-    supportsEffort: true,
-    supportedEffortLevels: ['low', 'medium', 'high'],
-  },
-];
+// DERIVED from provider-catalog's ENV_CLAUDE_CODE_MODELS — the same single
+// source the env resolver uses — so the picker, the resolver, and the
+// client fallback can never drift again (Codex review P1, 2026-06-10:
+// this hand-maintained copy was missing opus-4-8 and fable-5).
+const DEFAULT_MODELS = ENV_CLAUDE_CODE_MODELS.map(m => ({
+  value: m.modelId,
+  label: m.displayName,
+  ...(m.upstreamModelId ? { upstreamModelId: m.upstreamModelId } : {}),
+  ...(m.capabilities?.supportsEffort ? { supportsEffort: true } : {}),
+  ...(m.capabilities?.supportedEffortLevels
+    ? { supportedEffortLevels: m.capabilities.supportedEffortLevels }
+    : {}),
+  ...(m.capabilities?.supportsAdaptiveThinking ? { supportsAdaptiveThinking: true } : {}),
+}));
 
 // Short alias → upstream ID map for cached SDK models that may only
-// return bare aliases (sonnet/opus/haiku). Mirrors the env provider's
-// alias table in provider-resolver.ts.
-const ENV_ALIAS_TO_UPSTREAM: Record<string, string> = {
-  sonnet: 'claude-sonnet-4-6',
-  opus: 'claude-opus-4-7',
-  haiku: 'claude-haiku-4-5-20251001',
-};
+// return bare aliases (sonnet/opus/haiku). Derived from the same source
+// as DEFAULT_MODELS — keep it derived.
+const ENV_ALIAS_TO_UPSTREAM: Record<string, string> = Object.fromEntries(
+  ENV_CLAUDE_CODE_MODELS
+    .filter(m => m.upstreamModelId)
+    .map(m => [m.modelId, m.upstreamModelId as string]),
+);
 
 interface ModelEntry {
   value: string;

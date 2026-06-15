@@ -114,6 +114,14 @@ describe('MiMo resolver honors a user-set model (no silent revert) — #577A', (
       'empty mapping back-fills the preset default — the model_names field now lets the user override it',
     );
   });
+
+  it('a user who selects UltraSpeed gets it verbatim (no revert to mimo-v2.5-pro)', async () => {
+    const provider = await createMimoProvider({ default: 'mimo-v2.5-pro-ultraspeed' });
+    const { resolveProvider, toClaudeCodeEnv } = await import('../../lib/provider-resolver');
+    const resolved = resolveProvider({ providerId: provider.id });
+    const env = toClaudeCodeEnv({}, resolved);
+    assert.equal(env.ANTHROPIC_MODEL, 'mimo-v2.5-pro-ultraspeed', 'user-picked UltraSpeed must be honored verbatim');
+  });
 });
 
 // ── Wiring source pins (connect dialog pre-fill) ─────────────────────────────
@@ -142,5 +150,30 @@ describe('connect dialog pre-fills the model field from the preset default (#577
       /setModelName\(preset\.defaultModelId \|\| ""\)/,
       'create mode must pre-fill the model field from the preset default',
     );
+  });
+});
+
+// ── MiMo UltraSpeed — PAYG/API only, never the default, never on Token Plan ──
+
+describe('MiMo UltraSpeed model (2026-06-09)', () => {
+  const payg = VENDOR_PRESETS.find((p) => p.key === 'xiaomi-mimo');
+  const tokenPlan = VENDOR_PRESETS.find((p) => p.key === 'xiaomi-mimo-token-plan');
+  const hasUltraSpeed = (preset?: { defaultModels: { modelId: string; upstreamModelId?: string }[] }) =>
+    !!preset?.defaultModels.some(
+      (m) => m.modelId === 'mimo-v2.5-pro-ultraspeed' || m.upstreamModelId === 'mimo-v2.5-pro-ultraspeed',
+    );
+
+  it('PAYG (API) preset offers mimo-v2.5-pro-ultraspeed as a selectable model', () => {
+    assert.ok(payg, 'xiaomi-mimo PAYG preset must exist');
+    assert.ok(hasUltraSpeed(payg), 'PAYG preset must include UltraSpeed as an optional model');
+  });
+
+  it('UltraSpeed is NOT the default — default stays mimo-v2.5-pro (approval-gated model)', () => {
+    assert.equal(payg!.defaultRoleModels?.default, 'mimo-v2.5-pro');
+  });
+
+  it('Token Plan preset does NOT include UltraSpeed (no Token-Plan doc/smoke yet)', () => {
+    assert.ok(tokenPlan, 'token-plan preset must exist');
+    assert.ok(!hasUltraSpeed(tokenPlan), 'UltraSpeed must NOT be added to the token-plan preset');
   });
 });

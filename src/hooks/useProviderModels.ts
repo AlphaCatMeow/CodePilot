@@ -11,6 +11,11 @@ import { isRuntimeId, type RuntimeId } from '@/lib/runtime/runtime-id';
 // surface resolves a saved canonical id the same way. Re-exported below for
 // existing importers of this hook.
 import { findModelOption } from '@/lib/model-option-match';
+// provider-catalog is client-safe (zod only; already imported by
+// provider-presets.tsx) — the env default model list must DERIVE from this
+// single source, not be re-hardcoded (Codex review P1, 2026-06-10: this
+// fallback copy was missing opus-4-8 and fable-5).
+import { ENV_CLAUDE_CODE_MODELS } from '@/lib/provider-catalog';
 
 export { findModelOption };
 
@@ -22,26 +27,14 @@ export interface DefaultModelOption {
   supportedEffortLevels?: string[];
 }
 
-export const DEFAULT_MODEL_OPTIONS: DefaultModelOption[] = [
-  {
-    value: 'sonnet',
-    label: 'Sonnet 4.6',
-    supportsEffort: true,
-    supportedEffortLevels: ['low', 'medium', 'high', 'max'],
-  },
-  {
-    value: 'opus',
-    label: 'Opus 4.7',
-    supportsEffort: true,
-    supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
-  },
-  {
-    value: 'haiku',
-    label: 'Haiku 4.5',
-    supportsEffort: true,
-    supportedEffortLevels: ['low', 'medium', 'high'],
-  },
-];
+export const DEFAULT_MODEL_OPTIONS: DefaultModelOption[] = ENV_CLAUDE_CODE_MODELS.map(m => ({
+  value: m.modelId,
+  label: m.displayName,
+  ...(m.capabilities?.supportsEffort ? { supportsEffort: true } : {}),
+  ...(m.capabilities?.supportedEffortLevels
+    ? { supportedEffortLevels: m.capabilities.supportedEffortLevels as string[] }
+    : {}),
+}));
 
 /**
  * Should the chat composer show "正在准备运行环境…"?
@@ -349,9 +342,10 @@ export function useProviderModels(
   // `providerWasFilteredOut` signal below to surface an inline notice
   // and gate send.
   const currentProviderIdValue = currentGroup?.provider_id ?? preferredProviderId;
-  // DEFAULT_MODEL_OPTIONS (sonnet/opus/haiku) is reserved for the env
-  // provider only — when the user is genuinely on the built-in Claude
-  // Code path, the picker shows the canonical short aliases.
+  // DEFAULT_MODEL_OPTIONS (the canonical env aliases, derived from
+  // ENV_CLAUDE_CODE_MODELS) is reserved for the env provider only — when
+  // the user is genuinely on the built-in Claude Code path, the picker
+  // shows the canonical short aliases.
   //
   // We deliberately do NOT fall back to defaults on `providerGroups.length === 0`
   // anymore: with the API-failure path now synthesizing an `env` group in

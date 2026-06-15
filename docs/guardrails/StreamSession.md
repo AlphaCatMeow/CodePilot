@@ -37,7 +37,7 @@
 
 ## 常见坑
 
-- `clearSnapshot()` 重置 `startedAt: 0`；用户长 idle 后返回时 `getSnapshot()` 返回 null，导致输出不显示（memory "Known Bugs" 已记录）。
+- ~~`clearSnapshot()` 重置 `startedAt: 0`；用户长 idle 后返回时 `getSnapshot()` 返回 null，导致输出不显示~~ **已修 2026-06-10**：`clearSnapshot()` 现在只清 `finalMessageContent`（防 remount 重复 append），快照其余状态（终止原因 / tokenUsage / contextUsage）保留到 GC 回收。不要再让 `clearSnapshot` 触碰 `startedAt`，也不要取消 GC 定时器（旧行为会留下永不回收的隐形条目）。
 - 不要在 `/chat` 和 `/chat/[id]` 之间共享 effort/thinking state—两边都必须独立持有。
 
 ## 测试覆盖
@@ -45,9 +45,10 @@
 | 契约 | 测试文件 |
 |------|----------|
 | Rewind emission | `session-runtime-immunity.test.ts` 等 |
-| | （待填充） |
+| clearSnapshot 只消费 finalMessageContent、快照保持可读 | `clear-snapshot-preserves-state.test.ts` |
+| Provider 编辑/删除后 capability cache 失效 | `capability-cache-invalidation.test.ts` |
 
 ## 设计决策日志
 
 - 已实现：SDK Capabilities Integration 5 阶段（详见 `sdk-integration.md`）。
-- 待修：长 idle 后输出不显示——keep finalMessageContent in snapshot even after clear，或从 DB 还原。
+- 2026-06-10：长 idle 后输出不显示已修——`clearSnapshot` 收窄为"标记 finalMessageContent 已消费"，不再用 `startedAt: 0` 把整个快照藏起来；GC（5 分钟宽限）负责最终回收。

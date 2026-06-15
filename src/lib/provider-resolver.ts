@@ -17,6 +17,7 @@ import {
   getDefaultModelsForProvider,
   getEffectiveProviderProtocol,
   findPresetForLegacy,
+  ENV_CLAUDE_CODE_MODELS,
 } from './provider-catalog';
 import {
   getProvider,
@@ -927,49 +928,12 @@ function buildResolution(
       ? globalDefaultModel : undefined;
     const model = opts.model || opts.sessionModel || applicableGlobalDefault || getSetting('default_model') || undefined;
 
-    // Env mode uses short aliases (sonnet/opus/haiku) in the UI.
-    // Map them to full Anthropic model IDs so toAiSdkConfig can resolve correctly.
-    const envModels: CatalogModel[] = [
-      {
-        modelId: 'sonnet',
-        upstreamModelId: 'claude-sonnet-4-6',
-        displayName: 'Sonnet 4.6',
-        capabilities: {
-          supportsEffort: true,
-          supportedEffortLevels: ['low', 'medium', 'high', 'max'],
-          supportsAdaptiveThinking: true,
-        },
-      },
-      {
-        modelId: 'opus',
-        upstreamModelId: 'claude-opus-4-7',
-        displayName: 'Opus 4.7',
-        capabilities: {
-          supportsEffort: true,
-          supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
-          supportsAdaptiveThinking: true,
-        },
-      },
-      {
-        modelId: 'opus-4-8',
-        upstreamModelId: 'claude-opus-4-8',
-        displayName: 'Opus 4.8',
-        capabilities: {
-          supportsEffort: true,
-          supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'],
-          supportsAdaptiveThinking: true,
-        },
-      },
-      {
-        modelId: 'haiku',
-        upstreamModelId: 'claude-haiku-4-5-20251001',
-        displayName: 'Haiku 4.5',
-        capabilities: {
-          supportsEffort: true,
-          supportedEffortLevels: ['low', 'medium', 'high'],
-        },
-      },
-    ];
+    // Env mode uses short aliases (sonnet/opus/haiku/...) in the UI.
+    // Map them to full Anthropic model IDs so toAiSdkConfig can resolve
+    // correctly. Single source of truth lives in provider-catalog.ts —
+    // do NOT re-inline a copy here (three copies drifted before; Codex
+    // review P1, 2026-06-10).
+    const envModels: CatalogModel[] = ENV_CLAUDE_CODE_MODELS;
 
     // Resolve upstream model from the alias table
     const catalogEntry = model ? envModels.find(m => m.modelId === model) : undefined;

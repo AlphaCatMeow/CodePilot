@@ -1047,7 +1047,9 @@ async function collectStreamResponse(
             .join('')
             .trim();
       if (content) {
-        addMessage(sessionId, 'assistant', content);
+        // Keep token accounting on the error path too — the result event
+        // often arrives before the exception, so usage is already known.
+        addMessage(sessionId, 'assistant', content, tokenUsage ? JSON.stringify(tokenUsage) : null);
       }
     }
   } finally {

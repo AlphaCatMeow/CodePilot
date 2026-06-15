@@ -149,6 +149,21 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // OpenAI-compatible third-party chat providers share the same base_url
+    // ambiguity: an empty base_url makes @ai-sdk/openai's createOpenAI()
+    // default to https://api.openai.com/v1, so a user's third-party key would
+    // be sent to official OpenAI (wrong service + key leak). Require an
+    // explicit URL, mirroring the Anthropic / media guards above.
+    if (effectiveProtocol === 'openai-compatible' && !body.base_url?.trim()) {
+      return NextResponse.json<ErrorResponse>(
+        {
+          error: 'OpenAI-compatible providers must specify a base URL (e.g. https://your-gateway.example.com/v1)',
+          code: 'OPENAI_COMPATIBLE_BASE_URL_REQUIRED',
+        },
+        { status: 400 }
+      );
+    }
+
     const provider = createProvider(body);
 
     // Eager catalog seed for OpenRouter — the rest of the OpenRouter UX

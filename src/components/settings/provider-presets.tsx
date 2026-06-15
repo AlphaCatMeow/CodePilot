@@ -176,7 +176,7 @@ export function getOpenAIImageModel(provider: ApiProvider): string {
 
 export function findMatchingPreset(provider: ApiProvider): QuickPreset | undefined {
   if (provider.provider_type === "openai-compatible" || provider.protocol === "openai-compatible") {
-    return QUICK_PRESETS.find(p => p.key === "openai-compatible-thirdparty");
+    return QUICK_PRESETS.find(p => p.key === "openai-compatible");
   }
   // Exact base_url match (most specific)
   if (provider.base_url) {
@@ -215,7 +215,13 @@ export function findMatchingPreset(provider: ApiProvider): QuickPreset | undefin
   if (provider.provider_type === "anthropic" && provider.base_url) {
     return QUICK_PRESETS.find(p => p.key === "anthropic-thirdparty");
   }
-  // Custom providers no longer have a matching preset (OpenAI-compatible removed).
-  // They are deleted during DB migration; any survivors use the generic edit form.
+  // Generic OpenAI-compatible third-party gateway → generic openai-compatible
+  // preset. Mirrors the server-side findMatchingPresetForRecord branch so the
+  // settings page and runtime-compat agree: the provider groups under
+  // Third-party and classifies as codepilot_only (CodePilot + Codex), not
+  // unknown.
+  if (provider.provider_type === "openai-compatible") {
+    return QUICK_PRESETS.find(p => p.key === "openai-compatible");
+  }
   return undefined;
 }
