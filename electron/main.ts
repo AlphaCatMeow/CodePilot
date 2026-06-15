@@ -1060,6 +1060,31 @@ function createWindow(url?: string) {
 
   mainWindow = new BrowserWindow(windowOptions);
 
+  // [debug-session] Dev-only renderer→main console forwarder. Mirrors the
+  // renderer's console output, page crashes, and resource load failures into
+  // the main-process stdout so a combined `electron:dev` log captures frontend
+  // errors alongside backend (`next` subprocess) and main-process logs.
+  // TEMPORARY — remove when the debug session that added it is closed.
+  if (isDev) {
+    mainWindow.webContents.on('console-message', (details) => {
+      const { level, message, sourceId, lineNumber } = details;
+      // Only surface warnings/errors to keep the combined log readable; info
+      // and debug from the renderer would flood it (HMR, React devtools, etc.).
+      if (level === 'error' || level === 'warning') {
+        console.log(`[renderer:${level}] ${message} (${sourceId}:${lineNumber})`);
+      }
+    });
+    mainWindow.webContents.on('did-fail-load', (_e, errorCode, errorDescription, validatedURL) => {
+      console.error(`[renderer:did-fail-load] ${errorCode} ${errorDescription} url=${validatedURL}`);
+    });
+    mainWindow.webContents.on('render-process-gone', (_e, gone) => {
+      console.error(`[renderer:process-gone] reason=${gone.reason} exitCode=${gone.exitCode}`);
+    });
+    mainWindow.webContents.on('preload-error', (_e, preloadPath, error) => {
+      console.error(`[renderer:preload-error] ${preloadPath}: ${error?.message ?? error}`);
+    });
+  }
+
   // External links: open in system default browser instead of Electron
   mainWindow.webContents.setWindowOpenHandler(({ url: targetUrl }) => {
     if (targetUrl.startsWith('http://') || targetUrl.startsWith('https://')) {

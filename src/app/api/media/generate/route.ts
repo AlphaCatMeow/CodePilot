@@ -52,7 +52,19 @@ export async function POST(request: NextRequest) {
       { status: 200, headers: { 'Content-Type': 'application/json' } }
     );
   } catch (error) {
-    console.error('[media/generate] Failed:', error);
+    // [debug-session] Richer error trace — message + stack + cause. The
+    // generic responses below flatten this for the client; the log keeps the
+    // full detail for diagnosis. TEMPORARY: trim back on debug-session close.
+    const e = error as Record<string, unknown>;
+    console.error('[media/generate] Failed:', {
+      name: e?.name,
+      message: e?.message,
+      statusCode: e?.statusCode,
+      cause: e?.cause instanceof Error ? e.cause.message : e?.cause,
+    });
+    if (error instanceof Error && error.stack) {
+      console.error('[media/generate] stack:', error.stack);
+    }
 
     if (NoImageGeneratedError.isInstance(error)) {
       return new Response(

@@ -223,6 +223,13 @@ function pickImageProvider(
     "SELECT id, provider_type, api_key, base_url, extra_env FROM api_providers WHERE provider_type IN ('gemini-image', 'openai-image') AND api_key != ''"
   ).all() as ProviderRow[];
 
+  // [debug-session] Provider selection trace. NEVER logs api_key — only id /
+  // type / base_url / whether a key is present. TEMPORARY: remove on close.
+  console.log(`[image-debug] pickImageProvider: familyHint=${family ?? 'none'} explicitProviderId=${providerId ?? 'none'} candidates=${rows.length}`);
+  for (const r of rows) {
+    console.log(`[image-debug]   candidate id=${r.id} type=${r.provider_type} base_url=${r.base_url || '(default)'} hasKey=${!!r.api_key}`);
+  }
+
   if (rows.length === 0) {
     throw new Error('No image provider configured. Please add a Gemini Image or OpenAI Image provider in Settings.');
   }
@@ -236,30 +243,45 @@ function pickImageProvider(
     if (!match) {
       throw new Error(`Image provider '${providerId}' is not configured or has no API key. Check Settings → Media Providers.`);
     }
+    console.log(`[image-debug] picked by explicit providerId: id=${match.id} family=${toFamily(match.provider_type)}`);
     return { row: match, family: toFamily(match.provider_type) };
   }
 
   // 2) Family hint from the model id (e.g. user passed model='gpt-image-2').
   if (family) {
     const match = byFamily(family);
-    if (match) return { row: match, family };
+    if (match) {
+      console.log(`[image-debug] picked by family hint '${family}': id=${match.id}`);
+      return { row: match, family };
+    }
     throw new Error(`No ${family === 'openai' ? 'OpenAI Image' : 'Gemini Image'} provider configured. Please add one in Settings.`);
   }
 
   // 3) User-chosen active provider from settings.
   const activeId = getSetting('active_image_provider_id');
+  console.log(`[image-debug] active_image_provider_id setting=${activeId ?? 'none'}`);
   if (activeId) {
     const match = rows.find(r => r.id === activeId);
-    if (match) return { row: match, family: toFamily(match.provider_type) };
+    if (match) {
+      console.log(`[image-debug] picked by active setting: id=${match.id} family=${toFamily(match.provider_type)}`);
+      return { row: match, family: toFamily(match.provider_type) };
+    }
+    console.warn(`[image-debug] active_image_provider_id=${activeId} no longer matches any media provider — falling through to implicit pick`);
     // Stored id no longer valid (provider deleted / key cleared) — fall through
     // to the implicit picker rather than throwing, so callers aren't broken.
   }
 
   // 4) Fallback: prefer gemini for back-compat when both are configured.
   const gemini = byFamily('gemini');
-  if (gemini) return { row: gemini, family: 'gemini' };
+  if (gemini) {
+    console.log(`[image-debug] picked by fallback (gemini-first): id=${gemini.id}`);
+    return { row: gemini, family: 'gemini' };
+  }
   const openai = byFamily('openai');
-  if (openai) return { row: openai, family: 'openai' };
+  if (openai) {
+    console.log(`[image-debug] picked by fallback (openai): id=${openai.id}`);
+    return { row: openai, family: 'openai' };
+  }
   // rows.length > 0 guarantees we won't reach here, but TypeScript wants it
   return { row: rows[0], family: toFamily(rows[0].provider_type) };
 }
@@ -286,6 +308,9 @@ export async function generateSingleImage(params: GenerateSingleImageParams): Pr
   const aspectRatio = (params.aspectRatio || '1:1') as `${number}:${number}`;
   const imageSize = params.imageSize || '1K';
 
+  // [debug-session] Request trace. TEMPORARY: remove on close.
+  console.log(`[image-debug] generateSingleImage: family=${family} requestedModel=${requestedModel} configuredModel=${configuredModel} aspectRatio=${aspectRatio} imageSize=${imageSize} refImages=${(params.referenceImages?.length ?? 0) + (params.referenceImagePaths?.length ?? 0)} skipSave=${!!params.skipSave} sessionId=${params.sessionId ?? 'none'}`);
+
   // Collect reference images (base64 strings). Both referenceImagePaths and
   // referenceImages may be provided together.
   const refImageData: string[] = [];
@@ -305,46 +330,68 @@ export async function generateSingleImage(params: GenerateSingleImageParams): Pr
 
   let images: { mediaType: string; uint8Array: Uint8Array }[];
 
-  if (family === 'openai') {
-    const openai = createOpenAI({
-      apiKey: provider.api_key,
-      baseURL: provider.base_url || undefined,
-    });
-    const size = mapAspectToOpenAISize(aspectRatio, imageSize, requestedModel);
-    // When reference images are present, pass them as `prompt.images` — the
-    // ai SDK routes this to /images/edits for OpenAI (see @ai-sdk/openai
-    // image doGenerate) and supplies them as `input_image` for Gemini.
-    const prompt = refImageData.length > 0
-      ? { text: params.prompt, images: refImageData }
-      : params.prompt;
-    const result = await generateImage({
-      model: openai.image(requestedModel),
-      prompt,
-      size,
-      maxRetries: 3,
-      abortSignal: params.abortSignal || AbortSignal.timeout(300_000),
-    });
-    images = result.images.map(img => ({ mediaType: img.mediaType, uint8Array: img.uint8Array }));
-  } else {
-    const google = createGoogleGenerativeAI({
-      apiKey: provider.api_key,
-      baseURL: provider.base_url || undefined,
-    });
-    const prompt = refImageData.length > 0
-      ? { text: params.prompt, images: refImageData }
-      : params.prompt;
-    const result = await generateImage({
-      model: google.image(requestedModel),
-      prompt,
-      providerOptions: {
-        google: {
-          imageConfig: { aspectRatio, imageSize },
+  try {
+    if (family === 'openai') {
+      const openai = createOpenAI({
+        apiKey: provider.api_key,
+        baseURL: provider.base_url || undefined,
+      });
+      const size = mapAspectToOpenAISize(aspectRatio, imageSize, requestedModel);
+      // [debug-session] Upstream request trace. TEMPORARY: remove on close.
+      console.log(`[image-debug] openai.image upstream: model=${requestedModel} size=${size} baseURL=${provider.base_url || '(sdk default)'}`);
+      // When reference images are present, pass them as `prompt.images` — the
+      // ai SDK routes this to /images/edits for OpenAI (see @ai-sdk/openai
+      // image doGenerate) and supplies them as `input_image` for Gemini.
+      const prompt = refImageData.length > 0
+        ? { text: params.prompt, images: refImageData }
+        : params.prompt;
+      const result = await generateImage({
+        model: openai.image(requestedModel),
+        prompt,
+        size,
+        maxRetries: 3,
+        abortSignal: params.abortSignal || AbortSignal.timeout(300_000),
+      });
+      images = result.images.map(img => ({ mediaType: img.mediaType, uint8Array: img.uint8Array }));
+    } else {
+      const google = createGoogleGenerativeAI({
+        apiKey: provider.api_key,
+        baseURL: provider.base_url || undefined,
+      });
+      // [debug-session] Upstream request trace. TEMPORARY: remove on close.
+      console.log(`[image-debug] google.image upstream: model=${requestedModel} aspectRatio=${aspectRatio} imageSize=${imageSize} baseURL=${provider.base_url || '(sdk default)'}`);
+      const prompt = refImageData.length > 0
+        ? { text: params.prompt, images: refImageData }
+        : params.prompt;
+      const result = await generateImage({
+        model: google.image(requestedModel),
+        prompt,
+        providerOptions: {
+          google: {
+            imageConfig: { aspectRatio, imageSize },
+          },
         },
-      },
-      maxRetries: 3,
-      abortSignal: params.abortSignal || AbortSignal.timeout(300_000),
+        maxRetries: 3,
+        abortSignal: params.abortSignal || AbortSignal.timeout(300_000),
+      });
+      images = result.images.map(img => ({ mediaType: img.mediaType, uint8Array: img.uint8Array }));
+    }
+  } catch (upstreamErr) {
+    // [debug-session] Capture the REAL upstream failure (status, response body,
+    // cause) before it's flattened by the route's generic 500. TEMPORARY.
+    const e = upstreamErr as Record<string, unknown>;
+    console.error(`[image-debug] upstream ${family} generateImage FAILED:`, {
+      name: e?.name,
+      message: e?.message,
+      statusCode: e?.statusCode,
+      url: e?.url,
+      responseBody: typeof e?.responseBody === 'string' ? (e.responseBody as string).slice(0, 1000) : e?.responseBody,
+      cause: e?.cause instanceof Error ? e.cause.message : e?.cause,
     });
-    images = result.images.map(img => ({ mediaType: img.mediaType, uint8Array: img.uint8Array }));
+    if (upstreamErr instanceof Error && upstreamErr.stack) {
+      console.error('[image-debug] upstream stack:', upstreamErr.stack);
+    }
+    throw upstreamErr;
   }
 
   const elapsed = Date.now() - startTime;
