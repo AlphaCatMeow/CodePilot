@@ -1,0 +1,29 @@
+feature: chat-generated-image-assets
+status: done
+steps:
+  - id: schema
+    title: chat_media_assets schema and server helper
+    status: done
+    exit_signal: chat image base64 can be cached as a tracked asset without writing base64 to media_generations
+  - id: api
+    title: chat media asset content and promote APIs
+    status: done
+    exit_signal: asset content is served from controlled paths and promote creates/reuses media_generations rows without setting favorited
+  - id: ui
+    title: lightbox and markdown image integration
+    status: done
+    exit_signal: chat markdown images open large preview and can download, add to library, then favorite through separated asset APIs
+  - id: tests
+    title: regression tests and typecheck
+    status: done
+    exit_signal: relevant unit tests and typecheck pass
+checks:
+  - id: no_base64_in_media_generations
+    title: media_generations stores file paths and metadata, not base64
+    status: done
+  - id: favorite_idempotent
+    title: repeated chat favorite does not create duplicate media rows
+    status: done
+  - id: serve_boundaries
+    title: /api/media/serve remains limited to .codepilot-media while chat cache has its own content route
+    status: done
