@@ -28,7 +28,7 @@
 
 import { useEffect, useRef, useCallback, useMemo } from "react";
 import type React from "react";
-import { MessageResponse } from "@/components/ai-elements/message";
+import { MessageResponse, type MessageResponseProps } from "@/components/ai-elements/message";
 import { usePanel } from "@/hooks/usePanel";
 import { classifyPath } from "@/lib/preview-source";
 import {
@@ -48,7 +48,7 @@ const SKIP_TAGS = new Set(["PRE", "CODE", "A", "BUTTON"]);
  *  re-process already-chipified content. */
 const PROCESSED_ATTR = "data-codepilot-dev-processed";
 
-export function DevOutputSegment({ text }: { text: string }) {
+export function DevOutputSegment({ text, components }: { text: string; components?: MessageResponseProps['components'] }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const { workingDirectory, setPreviewSource } = usePanel();
 
@@ -176,7 +176,7 @@ export function DevOutputSegment({ text }: { text: string }) {
 
   return (
     <div ref={containerRef} onClick={onClick}>
-      <MessageResponse components={{ a: linkRenderer }}>{text}</MessageResponse>
+      <MessageResponse components={{ ...components, a: linkRenderer }}>{text}</MessageResponse>
     </div>
   );
 }

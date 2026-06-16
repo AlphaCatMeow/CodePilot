@@ -274,8 +274,8 @@ export function GalleryDetail({
                 >
                   <CodePilotIcon name="delete" size="sm" aria-hidden />
                   {confirmDelete
-                    ? t('gallery.confirmDelete' as TranslationKey)
-                    : t('gallery.delete' as TranslationKey)}
+                    ? t('gallery.confirmRemoveFromLibrary' as TranslationKey)
+                    : t('gallery.removeFromLibrary' as TranslationKey)}
                 </Button>
               </div>
             </div>

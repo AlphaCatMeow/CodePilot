@@ -31,6 +31,7 @@ import { useCallback, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { CodePilotIcon } from "@/components/ui/semantic-icon";
 import { showToast } from "@/hooks/useToast";
+import { ImageLightbox } from "./ImageLightbox";
 
 // Shared card-action-button class — same geometry as Widget toolbar.
 // `justify-center` is intentional: icon-only variants (h-7 w-7 px-0)
@@ -264,13 +265,59 @@ function ChatStrong(props: ComponentProps<"strong">) {
 }
 
 // `img` — center + rounded; keeps images sane in the chat column.
-function ChatImg(props: ComponentProps<"img">) {
+function parseDataImage(src?: string): { mimeType: string; data: string } | null {
+  if (!src) return null;
+  const match = /^data:(image\/(?:png|jpe?g|webp|gif));base64,(.+)$/i.exec(src);
+  if (!match) return null;
+  const mimeType = match[1].toLowerCase() === "image/jpg" ? "image/jpeg" : match[1].toLowerCase();
+  return { mimeType, data: match[2] };
+}
+
+export function ChatImg({
+  className,
+  alt,
+  src,
+  ...props
+}: ComponentProps<"img"> & { promptHint?: string; messageId?: string; sessionId?: string }) {
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const { promptHint, messageId, sessionId, ...imgProps } = props;
+  const srcText = typeof src === "string" ? src : undefined;
+  const dataImage = parseDataImage(srcText);
+  const altText = typeof alt === "string" && alt.length > 0 ? alt : "Generated image";
+  const promptText = promptHint?.trim() || altText;
+
+  if (!srcText) {
+    return null;
+  }
+
   return (
-    <img
-      className="my-3 max-w-full rounded-lg border border-border/40"
-      loading="lazy"
-      {...props}
-    />
+    <>
+      <img
+        className={cn(
+          "my-3 max-w-full rounded-lg border border-border/40 cursor-zoom-in hover:opacity-90 transition-opacity",
+          className,
+        )}
+        loading="lazy"
+        alt={altText}
+        src={srcText}
+        {...imgProps}
+        onClick={() => setLightboxOpen(true)}
+      />
+      <ImageLightbox
+        images={[{
+          src: srcText,
+          alt: altText,
+          data: dataImage?.data,
+          mimeType: dataImage?.mimeType,
+          prompt: promptText,
+          messageId,
+          sessionId,
+        }]}
+        initialIndex={0}
+        open={lightboxOpen}
+        onOpenChange={setLightboxOpen}
+      />
+    </>
   );
 }
 

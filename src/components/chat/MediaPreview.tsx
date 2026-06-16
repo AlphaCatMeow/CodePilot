@@ -31,6 +31,12 @@ export function MediaPreview({ media }: MediaPreviewProps) {
   const lightboxImages = images.map((img, i) => ({
     src: mediaUrl(img),
     alt: `Media ${i + 1}`,
+    data: img.data,
+    mimeType: img.mimeType,
+    localPath: img.localPath,
+    mediaId: img.mediaId,
+    prompt: img.sourceMetadata?.prompt,
+    model: img.sourceMetadata?.model,
   }));
 
   return (

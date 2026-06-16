@@ -178,6 +178,26 @@ function initDb(db: Database.Database): void {
       completed_at TEXT
     );
 
+    CREATE TABLE IF NOT EXISTS chat_media_assets (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      message_id TEXT,
+      kind TEXT NOT NULL DEFAULT 'image' CHECK(kind IN ('image','video','audio')),
+      source TEXT NOT NULL DEFAULT 'markdown-data-url',
+      mime_type TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      cache_path TEXT NOT NULL,
+      media_generation_id TEXT,
+      prompt TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
+      metadata TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      promoted_at TEXT,
+      FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL,
+      FOREIGN KEY (media_generation_id) REFERENCES media_generations(id) ON DELETE SET NULL
+    );
+
     CREATE TABLE IF NOT EXISTS media_tags (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL UNIQUE,
@@ -243,6 +263,10 @@ function initDb(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_media_created_at ON media_generations(created_at);
     CREATE INDEX IF NOT EXISTS idx_media_session_id ON media_generations(session_id);
     CREATE INDEX IF NOT EXISTS idx_media_status ON media_generations(status);
+    CREATE INDEX IF NOT EXISTS idx_chat_media_assets_session_id ON chat_media_assets(session_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_media_assets_message_id ON chat_media_assets(message_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_media_assets_sha256 ON chat_media_assets(sha256);
+    CREATE INDEX IF NOT EXISTS idx_chat_media_assets_media_generation_id ON chat_media_assets(media_generation_id);
     CREATE INDEX IF NOT EXISTS idx_media_jobs_session_id ON media_jobs(session_id);
     CREATE INDEX IF NOT EXISTS idx_media_jobs_status ON media_jobs(status);
     CREATE INDEX IF NOT EXISTS idx_media_job_items_job_id ON media_job_items(job_id);
@@ -620,9 +644,33 @@ function migrateDb(db: Database.Database): void {
       created_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
+    CREATE TABLE IF NOT EXISTS chat_media_assets (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      message_id TEXT,
+      kind TEXT NOT NULL DEFAULT 'image' CHECK(kind IN ('image','video','audio')),
+      source TEXT NOT NULL DEFAULT 'markdown-data-url',
+      mime_type TEXT NOT NULL,
+      sha256 TEXT NOT NULL,
+      cache_path TEXT NOT NULL,
+      media_generation_id TEXT,
+      prompt TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
+      metadata TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      promoted_at TEXT,
+      FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+      FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE SET NULL,
+      FOREIGN KEY (media_generation_id) REFERENCES media_generations(id) ON DELETE SET NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_media_created_at ON media_generations(created_at);
     CREATE INDEX IF NOT EXISTS idx_media_session_id ON media_generations(session_id);
     CREATE INDEX IF NOT EXISTS idx_media_status ON media_generations(status);
+    CREATE INDEX IF NOT EXISTS idx_chat_media_assets_session_id ON chat_media_assets(session_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_media_assets_message_id ON chat_media_assets(message_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_media_assets_sha256 ON chat_media_assets(sha256);
+    CREATE INDEX IF NOT EXISTS idx_chat_media_assets_media_generation_id ON chat_media_assets(media_generation_id);
   `);
 
   // Ensure media_jobs tables exist for databases created before this migration

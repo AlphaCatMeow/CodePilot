@@ -247,6 +247,23 @@ export interface MediaBlock {
   };
 }
 
+export interface ChatMediaAsset {
+  id: string;
+  session_id: string;
+  message_id?: string | null;
+  kind: 'image' | 'audio' | 'video';
+  source: string;
+  mime_type: string;
+  sha256: string;
+  cache_path: string;
+  media_generation_id?: string | null;
+  prompt: string;
+  model: string;
+  metadata: string;
+  created_at: string;
+  promoted_at?: string | null;
+}
+
 // Structured message content blocks (stored as JSON in messages.content)
 export type MessageContentBlock =
   | { type: 'text'; text: string }

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type ComponentProps } from 'react';
 import { useTranslation } from '@/hooks/useTranslation';
 import {
   Message as AIMessage,
@@ -15,6 +15,7 @@ import { ImageGenConfirmation } from './ImageGenConfirmation';
 import { BatchPlanInlinePreview } from './batch-image-gen/BatchPlanInlinePreview';
 import { WidgetRenderer } from './WidgetRenderer';
 import { parseAllShowWidgets, computePartialWidgetKey, MalformedWidgetNotice } from './MessageItem';
+import { ChatImg } from './markdown-components';
 import { PENDING_KEY, buildReferenceImages } from '@/lib/image-ref-store';
 import type { PlannerOutput, MediaBlock } from '@/types';
 
@@ -113,6 +114,7 @@ interface StreamingMessageProps {
   thinkingContent?: string;
   statusText?: string;
   onForceStop?: () => void;
+  imagePromptHint?: string;
 }
 
 /**
@@ -293,9 +295,18 @@ export function StreamingMessage({
   thinkingContent,
   statusText,
   onForceStop,
+  imagePromptHint,
 }: StreamingMessageProps) {
   const { t } = useTranslation();
   const bufferedContent = useBufferedContent(content, isStreaming);
+  const imagePromptComponents = {
+    img: (props: ComponentProps<'img'>) => (
+      <ChatImg {...props} promptHint={imagePromptHint} sessionId={sessionId} />
+    ),
+  };
+  const renderMarkdown = (text: string, key?: string) => (
+    <MessageResponse key={key} components={imagePromptComponents}>{text}</MessageResponse>
+  );
   const runningTools = toolUses.filter(
     (tool) => !toolResults.some((r) => r.tool_use_id === tool.id)
   );
@@ -357,7 +368,7 @@ export function StreamingMessage({
           if (hasWidgetFence && isStreaming) {
             // Fence-agnostic: find the last show-widget marker
             const lastMarkerMatch = [...content.matchAll(/`{1,3}show-widget/g)].pop();
-            if (!lastMarkerMatch) return <MessageResponse>{content}</MessageResponse>;
+            if (!lastMarkerMatch) return renderMarkdown(content);
 
             const lastFenceStart = lastMarkerMatch.index!;
             const afterLastFence = content.slice(lastFenceStart);
@@ -384,7 +395,7 @@ export function StreamingMessage({
                 <>
                   {allSegments.map((seg, i) => {
                     if (seg.type === 'text') {
-                      return <MessageResponse key={`t-${i}`}>{seg.content}</MessageResponse>;
+                      return renderMarkdown(seg.content, `t-${i}`);
                     }
                     if (seg.type === 'malformed_widget') {
                       return <MalformedWidgetNotice key={`mw-${i}`} reason={seg.reason} raw={seg.raw} />;
@@ -456,12 +467,12 @@ export function StreamingMessage({
               <>
                 {/* Plain text before the first widget fence (no completed fences yet) */}
                 {!hasCompletedFences && beforePart && (
-                  <MessageResponse key="pre-text">{beforePart}</MessageResponse>
+                  renderMarkdown(beforePart, 'pre-text')
                 )}
                 {/* Completed widget fences + interleaved text */}
                 {completedSegments.map((seg, i) => {
                   if (seg.type === 'text') {
-                    return <MessageResponse key={`t-${i}`}>{seg.content}</MessageResponse>;
+                    return renderMarkdown(seg.content, `t-${i}`);
                   }
                   if (seg.type === 'malformed_widget') {
                     return <MalformedWidgetNotice key={`mw-${i}`} reason={seg.reason} raw={seg.raw} />;
@@ -485,7 +496,7 @@ export function StreamingMessage({
                 <>
                   {widgetSegments.map((seg, i) => {
                     if (seg.type === 'text') {
-                      return <MessageResponse key={`t-${i}`}>{seg.content}</MessageResponse>;
+                      return renderMarkdown(seg.content, `t-${i}`);
                     }
                     if (seg.type === 'malformed_widget') {
                       return <MalformedWidgetNotice key={`mw-${i}`} reason={seg.reason} raw={seg.raw} />;
@@ -502,9 +513,9 @@ export function StreamingMessage({
           if (batchPlanResult) {
             return (
               <>
-                {batchPlanResult.beforeText && <MessageResponse>{batchPlanResult.beforeText}</MessageResponse>}
+                {batchPlanResult.beforeText && renderMarkdown(batchPlanResult.beforeText)}
                 <BatchPlanInlinePreview plan={batchPlanResult.plan} messageId="streaming-preview" />
-                {batchPlanResult.afterText && <MessageResponse>{batchPlanResult.afterText}</MessageResponse>}
+                {batchPlanResult.afterText && renderMarkdown(batchPlanResult.afterText)}
               </>
             );
           }
@@ -520,7 +531,7 @@ export function StreamingMessage({
             );
             return (
               <>
-                {parsed.beforeText && <MessageResponse>{parsed.beforeText}</MessageResponse>}
+                {parsed.beforeText && renderMarkdown(parsed.beforeText)}
                 <ImageGenConfirmation
                   sessionId={sessionId}
                   initialPrompt={parsed.request.prompt}
@@ -529,7 +540,7 @@ export function StreamingMessage({
                   rawRequestBlock={parsed.rawBlock}
                   referenceImages={refs.length > 0 ? refs : undefined}
                 />
-                {parsed.afterText && <MessageResponse>{parsed.afterText}</MessageResponse>}
+                {parsed.afterText && renderMarkdown(parsed.afterText)}
               </>
             );
           }
@@ -544,7 +555,7 @@ export function StreamingMessage({
               .replace(/```batch-plan[\s\S]*$/, '')
               .replace(/```show-widget[\s\S]*$/, '')
               .trim();
-            if (stripped) return <MessageResponse key="pre-text">{stripped}</MessageResponse>;
+            if (stripped) return renderMarkdown(stripped, 'pre-text');
             // Show shimmer while the structured block is being streamed
             if (hasImageGenBlock || hasBatchPlanBlock) return <Shimmer>{t('streaming.thinking')}</Shimmer>;
             return null;
@@ -554,7 +565,7 @@ export function StreamingMessage({
             .replace(/```batch-plan[\s\S]*?```/g, '')
             .replace(/```show-widget[\s\S]*?(```|$)/g, '')
             .trim();
-          return stripped ? <MessageResponse>{stripped}</MessageResponse> : null;
+          return stripped ? renderMarkdown(stripped) : null;
         })()}
 
         {/* Loading indicator when no content yet and no thinking content — evolves over time */}

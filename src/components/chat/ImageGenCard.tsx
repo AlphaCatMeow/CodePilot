@@ -13,6 +13,7 @@ interface ImageGenImage {
   data: string;
   mimeType: string;
   localPath?: string;
+  mediaId?: string;
 }
 
 interface ImageGenCardProps {
@@ -48,6 +49,12 @@ export function ImageGenCard({
   const lightboxImages = images.map((img, i) => ({
     src: imageUrl(img),
     alt: `${t('imageGen.generated' as TranslationKey)} ${i + 1}`,
+    data: img.data,
+    mimeType: img.mimeType,
+    localPath: img.localPath,
+    mediaId: img.mediaId,
+    prompt,
+    model,
   }));
 
   const handlePreview = useCallback((index: number) => {

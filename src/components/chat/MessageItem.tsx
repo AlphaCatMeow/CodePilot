@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef, useEffect, useMemo, memo } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo, memo, type ComponentProps } from 'react';
 import { motion } from 'motion/react';
 import { cn } from '@/lib/utils';
 import type { Message, TokenUsage, FileAttachment, MediaBlock } from '@/types';
@@ -29,6 +29,7 @@ import { usePanel } from '@/hooks/usePanel';
 import { classifyPath } from '@/lib/preview-source';
 import { isWriteTool, isCreateTool, extractWritePath, resolveToolPath } from '@/lib/file-write-tools';
 import { DevOutputSegment } from './DevOutputChips';
+import { ChatImg } from './markdown-components';
 import type { PlannerOutput } from '@/types';
 
 interface ImageGenRequest {
@@ -417,6 +418,8 @@ interface MessageItemProps {
   isAssistantProject?: boolean;
   /** Assistant name for avatar */
   assistantName?: string;
+  /** Prompt that produced assistant markdown images in this turn. */
+  imagePromptHint?: string;
 }
 
 interface ToolBlock {
@@ -618,7 +621,7 @@ function TokenUsageDisplay({ usage }: { usage: TokenUsage }) {
 
 const COLLAPSE_HEIGHT = 300;
 
-export const MessageItem = memo(function MessageItem({ message, sessionId, isAssistantProject, assistantName }: MessageItemProps) {
+export const MessageItem = memo(function MessageItem({ message, sessionId, isAssistantProject, assistantName, imagePromptHint }: MessageItemProps) {
   const isUser = message.role === 'user';
 
   // Collapse/expand state for long user messages (hooks must be called unconditionally)
@@ -762,7 +765,7 @@ export const MessageItem = memo(function MessageItem({ message, sessionId, isAss
                 </Button>
               )}
             </div>
-          ) : <AssistantContent displayText={displayText} messageId={message.id} sessionId={sessionId} />
+          ) : <AssistantContent displayText={displayText} messageId={message.id} sessionId={sessionId} imagePromptHint={imagePromptHint} />
         )}
       </MessageContent>
 
@@ -961,8 +964,27 @@ function PinnableWidget({ widgetCode, title }: {
  * Memoized assistant message content — avoids re-running parseBatchPlan / parseImageGenResult /
  * parseImageGenRequest on every render when only unrelated props change.
  */
-const AssistantContent = memo(function AssistantContent({ displayText, messageId, sessionId }: { displayText: string; messageId: string; sessionId?: string }) {
+const AssistantContent = memo(function AssistantContent({
+  displayText,
+  messageId,
+  sessionId,
+  imagePromptHint,
+}: {
+  displayText: string;
+  messageId: string;
+  sessionId?: string;
+  imagePromptHint?: string;
+}) {
   return useMemo(() => {
+    const imagePromptComponents = {
+      img: (props: ComponentProps<'img'>) => (
+        <ChatImg {...props} promptHint={imagePromptHint} messageId={messageId} sessionId={sessionId} />
+      ),
+    };
+    const renderMarkdown = (text: string, key?: string) => (
+      <MessageResponse key={key} components={imagePromptComponents}>{text}</MessageResponse>
+    );
+
     // Try show-widget first (Generative UI) — supports multiple widgets interleaved with text
     const widgetSegments = parseAllShowWidgets(displayText);
     if (widgetSegments.length > 0) {
@@ -970,7 +992,7 @@ const AssistantContent = memo(function AssistantContent({ displayText, messageId
         <>
           {widgetSegments.map((seg, i) => {
             if (seg.type === 'text') {
-              return <MessageResponse key={`t-${i}`}>{seg.content}</MessageResponse>;
+              return renderMarkdown(seg.content, `t-${i}`);
             }
             if (seg.type === 'malformed_widget') {
               return <MalformedWidgetNotice key={`mw-${i}`} reason={seg.reason} raw={seg.raw} />;
@@ -986,9 +1008,9 @@ const AssistantContent = memo(function AssistantContent({ displayText, messageId
     if (batchPlanResult) {
       return (
         <>
-          {batchPlanResult.beforeText && <MessageResponse>{batchPlanResult.beforeText}</MessageResponse>}
+          {batchPlanResult.beforeText && renderMarkdown(batchPlanResult.beforeText)}
           <BatchPlanInlinePreview plan={batchPlanResult.plan} messageId={messageId} />
-          {batchPlanResult.afterText && <MessageResponse>{batchPlanResult.afterText}</MessageResponse>}
+          {batchPlanResult.afterText && renderMarkdown(batchPlanResult.afterText)}
         </>
       );
     }
@@ -1000,30 +1022,30 @@ const AssistantContent = memo(function AssistantContent({ displayText, messageId
       if (result.status === 'generating') {
         return (
           <>
-            {genResult.beforeText && <MessageResponse>{genResult.beforeText}</MessageResponse>}
+            {genResult.beforeText && renderMarkdown(genResult.beforeText)}
             <div className="flex items-center gap-2 py-3">
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" />
               <span className="text-sm text-muted-foreground">Generating image...</span>
             </div>
-            {genResult.afterText && <MessageResponse>{genResult.afterText}</MessageResponse>}
+            {genResult.afterText && renderMarkdown(genResult.afterText)}
           </>
         );
       }
       if (result.status === 'error') {
         return (
           <>
-            {genResult.beforeText && <MessageResponse>{genResult.beforeText}</MessageResponse>}
+            {genResult.beforeText && renderMarkdown(genResult.beforeText)}
             <div className="rounded-md border border-status-error-border bg-status-error-muted p-3">
               <p className="text-sm text-status-error-foreground">{result.error || 'Image generation failed'}</p>
             </div>
-            {genResult.afterText && <MessageResponse>{genResult.afterText}</MessageResponse>}
+            {genResult.afterText && renderMarkdown(genResult.afterText)}
           </>
         );
       }
       if (result.status === 'completed' && result.images && result.images.length > 0) {
         return (
           <>
-            {genResult.beforeText && <MessageResponse>{genResult.beforeText}</MessageResponse>}
+            {genResult.beforeText && renderMarkdown(genResult.beforeText)}
             <ImageGenCard
               images={result.images.map(img => ({
                 data: img.data || '',
@@ -1035,7 +1057,7 @@ const AssistantContent = memo(function AssistantContent({ displayText, messageId
               imageSize={result.resolution}
               model={result.model}
             />
-            {genResult.afterText && <MessageResponse>{genResult.afterText}</MessageResponse>}
+            {genResult.afterText && renderMarkdown(genResult.afterText)}
           </>
         );
       }
@@ -1052,7 +1074,7 @@ const AssistantContent = memo(function AssistantContent({ displayText, messageId
       );
       return (
         <>
-          {parsed.beforeText && <MessageResponse>{parsed.beforeText}</MessageResponse>}
+          {parsed.beforeText && renderMarkdown(parsed.beforeText)}
           <ImageGenConfirmation
             messageId={messageId}
             sessionId={sessionId}
@@ -1062,7 +1084,7 @@ const AssistantContent = memo(function AssistantContent({ displayText, messageId
             rawRequestBlock={parsed.rawBlock}
             referenceImages={refs.length > 0 ? refs : undefined}
           />
-          {parsed.afterText && <MessageResponse>{parsed.afterText}</MessageResponse>}
+          {parsed.afterText && renderMarkdown(parsed.afterText)}
         </>
       );
     }
@@ -1077,6 +1099,6 @@ const AssistantContent = memo(function AssistantContent({ displayText, messageId
     // rendering them as clickable chips alongside the streamdown
     // markdown render. Plain text without dev-output tokens falls
     // through to a normal <MessageResponse> with zero overhead.
-    return stripped ? <DevOutputSegment text={stripped} /> : null;
-  }, [displayText, messageId, sessionId]);
+    return stripped ? <DevOutputSegment text={stripped} components={imagePromptComponents} /> : null;
+  }, [displayText, imagePromptHint, messageId, sessionId]);
 });

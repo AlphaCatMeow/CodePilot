@@ -5,7 +5,7 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function PUT(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
@@ -17,7 +17,10 @@ export async function PUT(
       return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 
-    const newValue = row.favorited ? 0 : 1;
+    const body = await request.json().catch(() => ({})) as { favorited?: boolean };
+    const newValue = typeof body.favorited === 'boolean'
+      ? (body.favorited ? 1 : 0)
+      : (row.favorited ? 0 : 1);
     db.prepare('UPDATE media_generations SET favorited = ? WHERE id = ?').run(newValue, id);
 
     return NextResponse.json({ favorited: newValue });

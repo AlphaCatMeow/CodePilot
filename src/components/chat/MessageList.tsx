@@ -48,6 +48,44 @@ function ScrollOnStream({ isStreaming, messageCount }: { isStreaming: boolean; m
   return null;
 }
 
+function extractPromptText(message: Message | undefined): string | undefined {
+  if (!message) return undefined;
+  const raw = message.content || '';
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      const text = parsed
+        .map((block) => {
+          if (block && typeof block === 'object' && 'type' in block && block.type === 'text' && 'text' in block) {
+            return String(block.text || '');
+          }
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n')
+        .trim();
+      return text || undefined;
+    }
+  } catch {
+    // Plain text message.
+  }
+  const trimmed = raw.trim();
+  return trimmed || undefined;
+}
+
+function findPreviousUserPrompt(messages: Message[], index: number): string | undefined {
+  for (let i = index - 1; i >= 0; i--) {
+    if (messages[i].role === 'user') {
+      return extractPromptText(messages[i]);
+    }
+  }
+  return undefined;
+}
+
+function findLastUserPrompt(messages: Message[]): string | undefined {
+  return findPreviousUserPrompt(messages, messages.length);
+}
+
 /**
  * Rewind button shown on user messages that have file checkpoints.
  */
@@ -369,7 +407,13 @@ export function MessageList({
           return (
             <div key={message.id} id={`msg-${message.id}`} className="group">
               {leadingMarker}
-              <MessageItem message={message} sessionId={sessionId} isAssistantProject={isAssistantProject} assistantName={assistantName} />
+              <MessageItem
+                message={message}
+                sessionId={sessionId}
+                isAssistantProject={isAssistantProject}
+                assistantName={assistantName}
+                imagePromptHint={message.role === 'assistant' ? findPreviousUserPrompt(messages, idx) : undefined}
+              />
               {rewindSdkUuid && sessionId && !isStreaming && (
                 <RewindButton sessionId={sessionId} userMessageId={rewindSdkUuid} />
               )}
@@ -406,6 +450,7 @@ export function MessageList({
             thinkingContent={streamingThinkingContent}
             statusText={statusText}
             onForceStop={onForceStop}
+            imagePromptHint={findLastUserPrompt(messages)}
           />
         )}
       </ConversationContent>
