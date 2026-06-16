@@ -27,6 +27,7 @@
 import type { ToolSet } from 'ai';
 import { adaptForNative } from '@/lib/harness/runtime-adapter';
 import { shouldSkipPermission } from '@/lib/harness/mutation-level';
+import { createMediaTools, MEDIA_SYSTEM_PROMPT } from './media';
 
 export interface BuiltinToolGroup {
   name: string;
@@ -282,17 +283,17 @@ function getToolGroups(options: GetBuiltinToolsOptions): BuiltinToolGroup[] {
     });
   } catch { /* module not available */ }
 
-  // Media tools — keyword-gated
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { createMediaTools, MEDIA_SYSTEM_PROMPT } = require('./media');
-    groups.push({
-      name: 'codepilot-media',
-      systemPrompt: MEDIA_SYSTEM_PROMPT,
-      condition: 'always',
-      tools: createMediaTools(),
-    });
-  } catch { /* module not available */ }
+  // Media tools — always registered in Native Runtime so image generation
+  // requests can call the configured image provider from chat.
+  groups.push({
+    name: 'codepilot-media',
+    systemPrompt: MEDIA_SYSTEM_PROMPT,
+    condition: 'always',
+    tools: createMediaTools({
+      sessionId: options.sessionId,
+      workingDirectory: options.workspacePath,
+    }),
+  });
 
   // Memory search tools — workspace-gated
   if (options.workspacePath) {
