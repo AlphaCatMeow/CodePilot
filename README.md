@@ -13,6 +13,23 @@
 
 ---
 
+## Fork Differences
+
+This repository is a personal fork of [op7418/CodePilot](https://github.com/op7418/CodePilot). As of 2026-06-17, this branch is synced with upstream `main` through the upstream v0.56.0 release and has no missing upstream commits in the local comparison.
+
+Compared with the upstream repository, this fork currently adds:
+
+- **OpenAI-compatible third-party providers** -- provider preset, model discovery, persistence, resolver, settings UI, and regression coverage for third-party OpenAI-compatible endpoints.
+- **Proxy-aware provider networking** -- outbound provider calls can use local proxy settings without installing a global dispatcher that interferes with local app API routes.
+- **Chat image compatibility fixes** -- assistant Markdown can safely render raster base64 `data:image` responses; OpenAI-compatible chat providers that return images through `chat/completions` stay in the chat-provider path instead of being forced into a media-only provider class.
+- **Native media tool routing improvements** -- image-generation prompts can expose the built-in media tools with session and workspace context so generated media can attach back to the active chat.
+- **Chat-generated image asset workflow** -- generated chat images can open in a lightbox, save to disk, be added to the media library, be favorited separately from library membership, and keep the real generation prompt instead of generic alt text such as `image_1`.
+- **Local agent workflow documentation** -- this fork keeps project-specific Codex / Claude Code entry rules, execution plans, handover notes, and worklogs for ongoing fork development.
+
+The release badges and download links below still point to the upstream project unless this fork publishes its own release.
+
+---
+
 ![CodePilot](https://github.com/user-attachments/assets/9750450a-9f6f-49ce-acd4-c623a4e24281)
 
 ---
