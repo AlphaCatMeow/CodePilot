@@ -31,6 +31,7 @@ import {
 } from "react";
 import { Streamdown } from "streamdown";
 import { CHAT_MARKDOWN_COMPONENTS } from "@/components/chat/markdown-components";
+import { chatRehypePlugins } from "@/lib/markdown/chat-rehype-plugins";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -339,12 +340,13 @@ const _codePlugin = createSharedCodePlugin();
 const streamdownPlugins = { cjk, code: _codePlugin, math, mermaid };
 
 export const MessageResponse = memo(
-  ({ className, components, ...props }: MessageResponseProps) => (
+  ({ className, components, rehypePlugins = chatRehypePlugins, ...props }: MessageResponseProps) => (
     <Streamdown
       className={cn(
         "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
         className
       )}
+      rehypePlugins={rehypePlugins}
       plugins={streamdownPlugins}
       // Round 12 chat UI refresh — every markdown element rendered
       // here goes through CHAT_MARKDOWN_COMPONENTS so tables, code
