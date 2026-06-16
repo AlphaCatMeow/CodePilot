@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
-import type { Message, MessagesResponse, FileAttachment, SessionStreamSnapshot, MentionRef, TaskRunSummary } from '@/types';
+import type { Message, MessagesResponse, FileAttachment, SessionStreamSnapshot, MentionRef, TaskRunSummary, MessageContentBlock, MediaBlock } from '@/types';
 import { MessageList } from './MessageList';
 import { NewChatWelcome } from './NewChatWelcome';
 import { TerminalReasonChip } from './TerminalReasonChip';
@@ -77,6 +77,13 @@ interface QueuedMessage {
    *  across the queue so dequeued sends carry them through to producer.
    *  Codex review v4 P1 fix (2026-05-20). */
   selectedSkills?: readonly string[];
+}
+
+interface DirectImageGenerationRequest {
+  prompt: string;
+  aspectRatio: string;
+  imageSize: string;
+  referenceImages?: Array<{ mimeType: string; data: string }>;
 }
 
 interface ChatViewProps {
@@ -1019,6 +1026,153 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
     [sessionId, mode, currentModel, currentProviderId, selectedEffort, context1m, buildThinkingConfig, handleModeChange, noCompatibleProvider, providerFetchState, resolvedProviderId, resolvedModel, sessionProviderRuntimeIncompatible]
   );
 
+  const handleDirectImageGeneration = useCallback(async (request: DirectImageGenerationRequest) => {
+    if (!request.prompt.trim()) return false;
+    if (isStreaming) {
+      console.warn('[ChatView] direct image generation suppressed: chat stream is active');
+      return false;
+    }
+
+    const now = new Date().toISOString();
+    const userTempId = `temp-image-user-${Date.now()}`;
+    const assistantTempId = `temp-image-assistant-${Date.now()}`;
+    const displayPrompt = request.prompt.trim();
+    const toolUseId = `toolu_direct_image_${Date.now().toString(36)}`;
+    const toolInput = {
+      prompt: displayPrompt,
+      aspectRatio: request.aspectRatio,
+      imageSize: request.imageSize,
+      ...(request.referenceImages && request.referenceImages.length > 0
+        ? { referenceImages: request.referenceImages.map((img) => ({ mimeType: img.mimeType })) }
+        : {}),
+    };
+    const toolUseBlock: MessageContentBlock = {
+      type: 'tool_use',
+      id: toolUseId,
+      name: 'codepilot_generate_image',
+      input: toolInput,
+    };
+    const pendingAssistant: Message = {
+      id: assistantTempId,
+      session_id: sessionId,
+      role: 'assistant',
+      content: JSON.stringify([{ type: 'text', text: t('imageGen.generating' as TranslationKey) } satisfies MessageContentBlock]),
+      created_at: now,
+      token_usage: null,
+    };
+    const userMessage: Message = {
+      id: userTempId,
+      session_id: sessionId,
+      role: 'user',
+      content: displayPrompt,
+      created_at: now,
+      token_usage: null,
+    };
+
+    const persistMessage = async (role: 'user' | 'assistant', content: string): Promise<Message | null> => {
+      const response = await fetch('/api/chat/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, role, content }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(payload.error || response.statusText);
+      }
+      const payload = await response.json();
+      return (payload.message || null) as Message | null;
+    };
+
+    const replaceAssistant = (content: string, saved?: Message | null) => {
+      cappedSetMessages((prev) => prev.map((m) => {
+        if (m.id !== assistantTempId) return m;
+        return saved
+          ? { ...saved, content }
+          : { ...m, content };
+      }));
+    };
+
+    cappedSetMessages((prev) => [...prev, userMessage, pendingAssistant]);
+
+    try {
+      const savedUser = await persistMessage('user', displayPrompt);
+      if (savedUser) {
+        cappedSetMessages((prev) => prev.map((m) => m.id === userTempId ? savedUser : m));
+      }
+
+      const response = await fetch('/api/media/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt: displayPrompt,
+          aspectRatio: request.aspectRatio,
+          imageSize: request.imageSize,
+          sessionId,
+          ...(request.referenceImages && request.referenceImages.length > 0
+            ? { referenceImages: request.referenceImages }
+            : {}),
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({ error: response.statusText }));
+        throw new Error(payload.error || response.statusText);
+      }
+
+      const result = await response.json();
+      const media: MediaBlock[] = (Array.isArray(result.images) ? result.images : []).map((img: { mimeType?: string; localPath?: string; data?: string }) => ({
+        type: 'image',
+        mimeType: img.mimeType || 'image/png',
+        ...(img.localPath ? { localPath: img.localPath } : {}),
+        ...(img.data ? { data: img.data } : {}),
+        ...(result.id ? { mediaId: result.id } : {}),
+        sourceMetadata: {
+          prompt: displayPrompt,
+          model: result.model || '',
+        },
+      }));
+
+      if (media.length === 0) {
+        throw new Error(t('imageGen.noImagesGenerated' as TranslationKey));
+      }
+
+      const localPaths = media.map((m) => m.localPath).filter(Boolean) as string[];
+      if (localPaths.length > 0) {
+        setLastGeneratedImages(sessionId, localPaths);
+      }
+
+      const toolResultBlock: MessageContentBlock = {
+        type: 'tool_result',
+        tool_use_id: toolUseId,
+        content: localPaths.length > 0
+          ? `Image generated successfully. Local paths: ${localPaths.join(', ')}`
+          : 'Image generated successfully.',
+        is_error: false,
+        media,
+      };
+      const content = JSON.stringify([toolUseBlock, toolResultBlock]);
+      const savedAssistant = await persistMessage('assistant', content);
+      replaceAssistant(content, savedAssistant);
+      window.dispatchEvent(new CustomEvent('session-updated'));
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : t('imageGen.error' as TranslationKey);
+      const toolResultBlock: MessageContentBlock = {
+        type: 'tool_result',
+        tool_use_id: toolUseId,
+        content: `Failed: ${message}`,
+        is_error: true,
+      };
+      const content = JSON.stringify([toolUseBlock, toolResultBlock]);
+      try {
+        const savedAssistant = await persistMessage('assistant', content);
+        replaceAssistant(content, savedAssistant);
+      } catch {
+        replaceAssistant(JSON.stringify([{ type: 'text', text: `**Error:** ${message}` } satisfies MessageContentBlock]));
+      }
+      return true;
+    }
+  }, [sessionId, isStreaming, cappedSetMessages, t]);
+
   const sendMessage = useCallback(
     async (content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string, mentions?: MentionRef[], selectedSkills?: readonly string[]) => {
       // Hoist provider-state guards above message append. Without this
@@ -1289,6 +1443,7 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
             <MessageInput
               key={sessionId}
               onSend={sendMessage}
+              onGenerateImage={handleDirectImageGeneration}
               onCommand={handleCommand}
               onStop={stopStreaming}
               disabled={
@@ -1558,6 +1713,7 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
       <MessageInput
         key={sessionId}
         onSend={sendMessage}
+        onGenerateImage={handleDirectImageGeneration}
         onCommand={handleCommand}
         onStop={stopStreaming}
         // Phase 2 Step 3b review: disable composer (textarea + send

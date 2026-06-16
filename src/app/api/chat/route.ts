@@ -15,6 +15,8 @@ import { ensureSchedulerRunning } from '@/lib/task-scheduler';
 import { predictNativeRuntime } from '@/lib/runtime';
 import { hasCodePilotProvider } from '@/lib/provider-presence';
 import { createSessionLockSettler } from '@/lib/session-lock-settle';
+import { parseDirectImageGenerationRequest } from '@/lib/media-intent';
+import { generateSingleImage } from '@/lib/image-generator';
 
 // codex-stop-recovery Phase 3 — after the request aborts (Stop force-abort /
 // client disconnect), how long to wait for the natural interrupt→terminal→
@@ -32,6 +34,23 @@ import os from 'os';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+
+function sseEvent(type: string, data: string): string {
+  return `data: ${JSON.stringify({ type, data })}\n\n`;
+}
+
+function streamImmediateEvents(events: string[]): ReadableStream<string> {
+  return new ReadableStream<string>({
+    start(controllerRaw) {
+      const controller = wrapController(controllerRaw);
+      for (const event of events) {
+        controller.enqueue(event);
+        if (controller.closed) break;
+      }
+      controller.close();
+    },
+  });
+}
 
 export async function POST(request: NextRequest) {
   let activeSessionId: string | undefined;
@@ -427,6 +446,99 @@ export async function POST(request: NextRequest) {
     request.signal.addEventListener('abort', () => {
       abortController.abort();
     });
+
+    const directImageRequest = !autoTrigger
+      ? parseDirectImageGenerationRequest(content)
+      : null;
+    if (directImageRequest) {
+      const toolUseId = `toolu_direct_image_${crypto.randomBytes(8).toString('hex')}`;
+      const toolInput = {
+        prompt: directImageRequest.prompt,
+        ...(directImageRequest.aspectRatio ? { aspectRatio: directImageRequest.aspectRatio } : {}),
+        ...(directImageRequest.imageSize ? { imageSize: directImageRequest.imageSize } : {}),
+      };
+      const toolUseBlock: MessageContentBlock = {
+        type: 'tool_use',
+        id: toolUseId,
+        name: 'codepilot_generate_image',
+        input: toolInput,
+      };
+
+      const finishDirectImageTurn = (
+        toolResultBlock: MessageContentBlock,
+        runtimeError?: string,
+      ) => {
+        addMessage(session_id, 'assistant', JSON.stringify([toolUseBlock, toolResultBlock]));
+        const stillOwnsLock = releaseSessionLock(session_id, lockId);
+        if (stillOwnsLock) {
+          setSessionRuntimeStatus(session_id, 'idle', runtimeError);
+        }
+        activeSessionId = undefined;
+        activeLockId = undefined;
+
+        const events = [
+          sseEvent('tool_use', JSON.stringify(toolUseBlock)),
+          sseEvent('tool_result', JSON.stringify(toolResultBlock)),
+          sseEvent('done', ''),
+        ];
+        return new Response(streamImmediateEvents(events), {
+          headers: {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+          },
+        });
+      };
+
+      console.log('[chat API] Direct image generation request detected:', {
+        sessionId: session_id,
+        promptLength: directImageRequest.prompt.length,
+        aspectRatio: directImageRequest.aspectRatio || 'default',
+        imageSize: directImageRequest.imageSize || 'default',
+      });
+
+      try {
+        const result = await generateSingleImage({
+          prompt: directImageRequest.prompt,
+          aspectRatio: directImageRequest.aspectRatio,
+          imageSize: directImageRequest.imageSize,
+          sessionId: session_id,
+          cwd: session.sdk_cwd || session.working_directory || undefined,
+          abortSignal: abortController.signal,
+        });
+        const media: MediaBlock[] = result.images.map((img) => ({
+          type: 'image',
+          mimeType: img.mimeType || 'image/png',
+          localPath: img.localPath,
+          mediaId: result.mediaGenerationId,
+          sourceMetadata: {
+            prompt: directImageRequest.prompt,
+            model: result.model,
+          },
+        }));
+        const localPaths = media.map((m) => m.localPath).filter(Boolean).join(', ');
+        const toolResultBlock: MessageContentBlock = {
+          type: 'tool_result',
+          tool_use_id: toolUseId,
+          content: media.length > 0
+            ? `Image generated successfully. Local paths: ${localPaths}`
+            : 'Image generated.',
+          is_error: false,
+          ...(media.length > 0 ? { media } : {}),
+        };
+        return finishDirectImageTurn(toolResultBlock);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to generate image';
+        console.error('[chat API] Direct image generation failed:', message);
+        const toolResultBlock: MessageContentBlock = {
+          type: 'tool_result',
+          tool_use_id: toolUseId,
+          content: `Failed: ${message}`,
+          is_error: true,
+        };
+        return finishDirectImageTurn(toolResultBlock, message);
+      }
+    }
 
     // Convert file attachments to the format expected by streamClaude.
     // Include filePath from the already-saved files so claude-client can

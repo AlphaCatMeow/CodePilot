@@ -23,6 +23,7 @@ Compared with the upstream repository, this fork currently adds:
 - **Proxy-aware provider networking** -- outbound provider calls can use local proxy settings without installing a global dispatcher that interferes with local app API routes.
 - **Chat image compatibility fixes** -- assistant Markdown can safely render raster base64 `data:image` responses; OpenAI-compatible chat providers that return images through `chat/completions` stay in the chat-provider path instead of being forced into a media-only provider class.
 - **Native media tool routing improvements** -- image-generation prompts can expose the built-in media tools with session and workspace context so generated media can attach back to the active chat.
+- **Built-in composer image mode** -- the chat composer can switch into a deterministic image-generation mode that calls the active media provider directly, bypassing chat-model tool calling, MCP, or skill setup while still storing results as chat media blocks.
 - **Chat-generated image asset workflow** -- generated chat images can open in a lightbox, save to disk, be added to the media library, be favorited separately from library membership, and keep the real generation prompt instead of generic alt text such as `image_1`.
 - **Local agent workflow documentation** -- this fork keeps project-specific Codex / Claude Code entry rules, execution plans, handover notes, and worklogs for ongoing fork development.
 
@@ -140,7 +141,7 @@ npm run electron:dev     # full desktop app
 | Skills | Custom / project / global skills, skills.sh marketplace |
 | Bridge | Telegram / Feishu / Discord / QQ / WeChat remote control |
 | CLI import | Import Claude Code CLI .jsonl session history |
-| Image generation | Gemini image gen, batch tasks, gallery |
+| Image generation | Gemini / OpenAI-compatible image providers, direct chat composer image mode, batch tasks, gallery |
 
 ### Data & Workspace
 

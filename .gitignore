@@ -57,6 +57,7 @@ src/__tests__/e2e/*-snapshots/
 
 # user uploads (runtime data)
 .codepilot-uploads/
+.codepilot-images/
 
 # local runtime artifacts
 .codepilot/

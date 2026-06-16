@@ -691,6 +691,11 @@ const zh: Record<TranslationKey, string> = {
   'imageGen.noActiveProvider': '未设置图片生成服务商',
   'imageGen.activeProviderStale': '图片生成服务商不可用',
   'imageGen.activeProviderStaleHint': '当前默认图片服务商缺少密钥或类型已变更，请前往设置页调整',
+  'imageGen.directModeLabel': '图片生成',
+  'imageGen.directModeToggle': '切换图片生成模式',
+  'imageGen.exitDirectMode': '退出图片生成模式',
+  'imageGen.directModePlaceholder': '描述要生成的图片...',
+  'imageGen.noImagesGenerated': '模型未返回图片',
 
   // ── Batch Image Generation ─────────────────────────────────
   'batchImageGen.toggle': '批量生图',

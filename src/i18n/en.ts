@@ -704,6 +704,11 @@ const en = {
   'imageGen.noActiveProvider': 'No image provider set',
   'imageGen.activeProviderStale': 'Image provider unavailable',
   'imageGen.activeProviderStaleHint': 'The active image provider is missing its key or was changed. Open Settings to reconfigure.',
+  'imageGen.directModeLabel': 'Image generation',
+  'imageGen.directModeToggle': 'Toggle image generation mode',
+  'imageGen.exitDirectMode': 'Exit image generation mode',
+  'imageGen.directModePlaceholder': 'Describe the image to generate...',
+  'imageGen.noImagesGenerated': 'The model did not return an image',
 
   // ── Batch Image Generation ─────────────────────────────────
   'batchImageGen.toggle': 'Batch Generate',

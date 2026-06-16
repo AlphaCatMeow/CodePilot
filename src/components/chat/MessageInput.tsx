@@ -2,6 +2,7 @@
 
 import { useRef, useState, useCallback, useEffect, useMemo, type KeyboardEvent, type FormEvent } from 'react';
 import { CodePilotIcon } from "@/components/ui/semantic-icon";
+import { Button } from '@/components/ui/button';
 import { useTranslation } from '@/hooks/useTranslation';
 import type { TranslationKey } from '@/i18n';
 import {
@@ -75,6 +76,12 @@ interface MessageInputProps {
   // preserves the user's text + attachments. true / void means accepted — either
   // sent or queued — so the composer clears. (#615 screenshot-eaten fix)
   onSend: (content: string, files?: FileAttachment[], systemPromptAppend?: string, displayOverride?: string, mentions?: MentionRef[], selectedSkills?: readonly string[]) => boolean | void | Promise<boolean | void>;
+  onGenerateImage?: (request: {
+    prompt: string;
+    aspectRatio: string;
+    imageSize: string;
+    referenceImages?: Array<{ mimeType: string; data: string }>;
+  }) => boolean | void | Promise<boolean | void>;
   onCommand?: (command: string) => void;
   onStop?: () => void;
   disabled?: boolean;
@@ -141,6 +148,14 @@ interface MessageInputProps {
   runtime: ChatRuntimeParam;
 }
 
+interface ActiveImageInfo {
+  providerName?: string;
+  providerType?: 'gemini-image' | 'openai-image';
+  model?: string;
+  modelLabel?: string;
+  stale?: boolean;
+}
+
 function joinPath(base: string, rel: string): string {
   const b = base.replace(/[\\/]+$/, '');
   const r = rel.replace(/^[\\/]+/, '');
@@ -176,6 +191,7 @@ async function fileResponseToAttachment(
 
 export function MessageInput({
   onSend,
+  onGenerateImage,
   onCommand,
   onStop,
   disabled,
@@ -213,6 +229,11 @@ export function MessageInput({
     if (initialValue) return initialValue;
     try { return sessionStorage.getItem(draftKey) || ''; } catch { return ''; }
   });
+  const [imageMode, setImageMode] = useState(false);
+  const [imageAspectRatio, setImageAspectRatio] = useState('1:1');
+  const [imageSize, setImageSize] = useState('1K');
+  const [imageGenerating, setImageGenerating] = useState(false);
+  const [activeImageInfo, setActiveImageInfo] = useState<ActiveImageInfo | null>(null);
   // Track the last `initialValue` we've reconciled so the warm-navigation
   // sync below fires only when the prop ACTUALLY transitions (not on every
   // render where it's stable). State (not a ref) so the reconcile can run
@@ -254,6 +275,26 @@ export function MessageInput({
       setInputValueRaw(initialValue);
     }
   }
+
+  useEffect(() => {
+    if (!imageMode) return;
+    let cancelled = false;
+    const load = () => {
+      fetch('/api/providers/active-image')
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (!cancelled && data) setActiveImageInfo(data);
+        })
+        .catch(() => {});
+    };
+    load();
+    const handler = () => load();
+    window.addEventListener('provider-changed', handler);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('provider-changed', handler);
+    };
+  }, [imageMode]);
 
   // Phase 4 — `codepilot:add-to-chat` listener. Selection from
   // PreviewPanel dispatches a window event with the selected text +
@@ -600,6 +641,32 @@ export function MessageInput({
       return { mentions: dedupedMentions, files: mentionFiles, directoryNotes, limitNotes };
     };
 
+    if (imageMode) {
+      if (!onGenerateImage) abortComposerSubmit('composer-image-mode-unavailable');
+      if (isStreaming || imageGenerating) abortComposerSubmit('composer-image-mode-busy');
+      if (!content) return;
+
+      const uploadedFiles = await convertFiles();
+      const referenceImages = uploadedFiles
+        .filter((f) => f.type.startsWith('image/') && !!f.data)
+        .map((f) => ({ mimeType: f.type, data: f.data }));
+
+      setImageGenerating(true);
+      try {
+        const delivered = await onGenerateImage({
+          prompt: content,
+          aspectRatio: imageAspectRatio,
+          imageSize,
+          ...(referenceImages.length > 0 ? { referenceImages } : {}),
+        });
+        if (delivered === false) abortComposerSubmit('composer-image-generate-not-delivered');
+        setInputValue('');
+        return;
+      } finally {
+        setImageGenerating(false);
+      }
+    }
+
     // If one or more badges are active, dispatch by kind (multi-skill combines).
     // Block during streaming — badges carry slash/skill semantics, not safe to queue.
     if (badges.length > 0) {
@@ -721,7 +788,7 @@ export function MessageInput({
     if (cliBadge) setCliBadge(null);
     setInputValue('');
     setDirectoryRefs([]);
-  }, [inputValue, mentionNodeTypes, directoryRefs, onSend, onCommand, disabled, isStreaming, popover, badges, cliBadge, addBadgeWithOrder, clearBadgesWithOrder, setCliBadge, setInputValue, fetchDirectorySummary, fetchMentionFileAttachment, blockingReasonIds]);
+  }, [inputValue, mentionNodeTypes, directoryRefs, onSend, onGenerateImage, onCommand, disabled, isStreaming, imageMode, imageGenerating, imageAspectRatio, imageSize, popover, badges, cliBadge, addBadgeWithOrder, clearBadgesWithOrder, setCliBadge, setInputValue, fetchDirectorySummary, fetchMentionFileAttachment, blockingReasonIds]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1019,6 +1086,12 @@ export function MessageInput({
 
   const currentModelValue = modelName || 'sonnet';
   const chatStatus: ChatStatus = isStreaming ? 'streaming' : 'ready';
+  const effectiveDisabled = disabled && !imageMode;
+  const imageProviderLabel = activeImageInfo?.stale
+    ? t('imageGen.activeProviderStale' as TranslationKey)
+    : activeImageInfo?.providerName
+      ? `${activeImageInfo.providerName}${activeImageInfo.modelLabel || activeImageInfo.model ? ` / ${activeImageInfo.modelLabel || activeImageInfo.model}` : ''}`
+      : t('imageGen.noActiveProvider' as TranslationKey);
 
   // Composer shell bg routed through the platform token (Phase 7b /
   // Phase 2). Default = `var(--background)` matches prior
@@ -1103,13 +1176,63 @@ export function MessageInput({
               estimates={directoryRefEstimates}
             />
 
+            {imageMode && (
+              <div className="order-first flex w-full flex-wrap items-center gap-2 px-3 pt-2.5 pb-0">
+                <div className="inline-flex h-7 items-center gap-1.5 rounded-full border border-border/50 bg-muted/40 px-2.5 text-xs text-foreground">
+                  <CodePilotIcon name="image" size={14} aria-hidden />
+                  <span>{t('imageGen.directModeLabel' as TranslationKey)}</span>
+                  <span className="max-w-[220px] truncate text-muted-foreground">{imageProviderLabel}</span>
+                </div>
+                <div className="inline-flex h-7 items-center rounded-full border border-border/50 bg-card p-0.5">
+                  {['1:1', '16:9', '9:16'].map((ratio) => (
+                    <Button
+                      key={ratio}
+                      type="button"
+                      variant={imageAspectRatio === ratio ? 'secondary' : 'ghost'}
+                      size="sm"
+                      className="h-6 rounded-full px-2 text-[11px]"
+                      onClick={() => setImageAspectRatio(ratio)}
+                    >
+                      {ratio}
+                    </Button>
+                  ))}
+                </div>
+                <div className="inline-flex h-7 items-center rounded-full border border-border/50 bg-card p-0.5">
+                  {['1K', '2K'].map((size) => (
+                    <Button
+                      key={size}
+                      type="button"
+                      variant={imageSize === size ? 'secondary' : 'ghost'}
+                      size="sm"
+                      className="h-6 rounded-full px-2 text-[11px]"
+                      onClick={() => setImageSize(size)}
+                    >
+                      {size}
+                    </Button>
+                  ))}
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-xs"
+                  onClick={() => setImageMode(false)}
+                  aria-label={t('imageGen.exitDirectMode' as TranslationKey)}
+                  title={t('imageGen.exitDirectMode' as TranslationKey)}
+                >
+                  <CodePilotIcon name="cancel" size={12} aria-hidden />
+                </Button>
+              </div>
+            )}
+
             <PromptInputBody>
               <PromptInputTextarea
                 ref={textareaRef}
                 placeholder={
-                  isProviderLoading
-                    ? t('messageInput.placeholderLoading' as TranslationKey)
-                    : badges.length > 0
+                  imageMode
+                    ? t('imageGen.directModePlaceholder' as TranslationKey)
+                    : isProviderLoading
+                      ? t('messageInput.placeholderLoading' as TranslationKey)
+                      : badges.length > 0
                       ? t('messageInput.placeholderWithBadges' as TranslationKey)
                       : cliBadge
                         ? t('messageInput.placeholderCli' as TranslationKey)
@@ -1119,7 +1242,7 @@ export function MessageInput({
                 onChange={(e) => slashCommands.handleInputChange(e.currentTarget.value)}
                 onKeyDown={handleKeyDown}
                 onFocus={handleAssistantFocus}
-                disabled={disabled}
+                disabled={effectiveDisabled || imageGenerating}
                 className="min-h-12 px-4 py-3"
               />
             </PromptInputBody>
@@ -1146,21 +1269,45 @@ export function MessageInput({
                   </PromptInputActionMenuContent>
                 </PromptInputActionMenu>
 
-                <ModelSelectorDropdown
-                  currentModelValue={currentModelValue}
-                  currentProviderIdValue={currentProviderIdValue}
-                  providerGroups={providerGroups}
-                  modelOptions={modelOptions}
-                  onModelChange={onModelChange}
-                  onProviderModelChange={onProviderModelChange}
-                  globalDefaultModel={globalDefaultModel}
-                  globalDefaultProvider={globalDefaultProvider}
-                  runtimeApplied={runtimeApplied}
-                  isLoading={isProviderLoading}
-                  onAfterModelSelect={restoreComposerFocus}
-                />
+                <Button
+                  type="button"
+                  variant={imageMode ? 'secondary' : 'ghost'}
+                  size="icon-sm"
+                  className="rounded-full"
+                  onClick={() => {
+                    setImageMode((v) => {
+                      const next = !v;
+                      if (next) {
+                        clearBadgesWithOrder();
+                        if (cliBadge) setCliBadge(null);
+                      }
+                      return next;
+                    });
+                    requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }));
+                  }}
+                  aria-label={t('imageGen.directModeToggle' as TranslationKey)}
+                  title={t('imageGen.directModeToggle' as TranslationKey)}
+                >
+                  <CodePilotIcon name="image" size="md" aria-hidden />
+                </Button>
 
-                {showEffortSelector && (
+                {!imageMode && (
+                  <ModelSelectorDropdown
+                    currentModelValue={currentModelValue}
+                    currentProviderIdValue={currentProviderIdValue}
+                    providerGroups={providerGroups}
+                    modelOptions={modelOptions}
+                    onModelChange={onModelChange}
+                    onProviderModelChange={onProviderModelChange}
+                    globalDefaultModel={globalDefaultModel}
+                    globalDefaultProvider={globalDefaultProvider}
+                    runtimeApplied={runtimeApplied}
+                    isLoading={isProviderLoading}
+                    onAfterModelSelect={restoreComposerFocus}
+                  />
+                )}
+
+                {!imageMode && showEffortSelector && (
                   <EffortSelectorDropdown
                     selectedEffort={selectedEffort}
                     onEffortChange={setSelectedEffort}
@@ -1172,7 +1319,7 @@ export function MessageInput({
               <FileAwareSubmitButton
                 status={chatStatus}
                 onStop={onStop}
-                disabled={disabled}
+                disabled={effectiveDisabled || imageGenerating}
                 inputValue={inputValue}
                 hasBadge={hasBadge}
               />
