@@ -19,6 +19,7 @@
  */
 
 import type { ApiProvider } from '@/types';
+import { proxyAwareFetch } from './proxy-aware-fetch';
 
 export interface OpenRouterCandidate {
   /** Upstream model id, e.g. "anthropic/claude-3.5-sonnet". */
@@ -108,7 +109,7 @@ async function fetchUpstream(provider: ApiProvider): Promise<OpenRouterCandidate
   if (provider.api_key) {
     headers['Authorization'] = `Bearer ${provider.api_key}`;
   }
-  const res = await fetch(url, { method: 'GET', headers });
+  const res = await proxyAwareFetch(url, { method: 'GET', headers });
   if (!res.ok) {
     throw new Error(`OpenRouter /v1/models returned ${res.status} ${res.statusText}`);
   }

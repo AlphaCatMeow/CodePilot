@@ -1663,7 +1663,7 @@ export function resolveProviderForSession(
     return { ...fallback, invalidReason: 'provider-missing' };
   }
   // Healthy path — same priority chain as the legacy resolver.
-  return resolveProvider({
+  const resolved = resolveProvider({
     providerId: requestProviderId || undefined,
     sessionProviderId: sessionProviderId || undefined,
     model: intent.requestModel,
@@ -1671,4 +1671,28 @@ export function resolveProviderForSession(
     useCase: extras.useCase,
     runtime: extras.runtime,
   });
+
+  const intendedModel = intent.requestModel || intent.model || resolved.model;
+  if (intendedModel && resolved.provider) {
+    const catalogEntry = resolved.availableModels.find(m => (
+      m.modelId === intendedModel
+      || m.upstreamModelId === intendedModel
+      || m.modelId === resolved.model
+    ));
+    const cap = getModelCompat({
+      modelId: intendedModel,
+      upstreamModelId: catalogEntry?.upstreamModelId || resolved.upstreamModel,
+      providerCompat: getProviderCompat({
+        provider_type: resolved.provider.provider_type,
+        base_url: resolved.provider.base_url,
+      }),
+      capabilities: catalogEntry?.capabilities,
+    });
+
+    if (cap.media) {
+      return { ...resolved, invalidReason: 'model-missing' };
+    }
+  }
+
+  return resolved;
 }

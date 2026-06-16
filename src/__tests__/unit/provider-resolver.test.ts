@@ -282,7 +282,7 @@ describe('Provider Catalog', () => {
 
 // ── Provider Resolver Tests ─────────────────────────────────────
 
-import { resolveProvider, toClaudeCodeEnv, toAiSdkConfig } from '../../lib/provider-resolver';
+import { resolveProvider, resolveProviderForSession, toClaudeCodeEnv, toAiSdkConfig } from '../../lib/provider-resolver';
 import type { ResolvedProvider } from '../../lib/provider-resolver';
 
 describe('Provider Resolver', () => {
@@ -1995,6 +1995,48 @@ describe('provider-resolver runtime gate', () => {
       });
       assert.equal(resolved.model, 'meta-llama/llama-3.1-70b',
         'explicit opts.model bypasses the runtime gate (caller asked by name)');
+    } finally {
+      deleteProvider(provider.id);
+      teardown();
+    }
+  });
+
+  it('session-aware resolver preserves image-looking models on chat-compatible providers', () => {
+    setup();
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { createProvider, deleteProvider, upsertProviderModel } = require('../../lib/db');
+    const provider = createProvider({
+      name: '__test_media_model_on_chat_provider__',
+      provider_type: 'openai-compatible',
+      protocol: 'openai-compatible',
+      base_url: 'https://example.test/v1',
+      api_key: 'test-key',
+    });
+    try {
+      upsertProviderModel({
+        provider_id: provider.id,
+        model_id: 'gpt-image-2',
+        upstream_model_id: 'gpt-image-2',
+        display_name: 'GPT Image 2',
+        enabled: 1,
+        source: 'api',
+        user_edited: 0,
+        sort_order: 0,
+      });
+
+      const resolved = resolveProviderForSession(
+        {
+          provider_id: provider.id,
+          model: 'gpt-image-2',
+          requestProviderId: provider.id,
+          requestModel: 'gpt-image-2',
+        },
+        { runtime: 'codepilot_runtime' },
+      );
+
+      assert.equal(resolved.invalidReason, undefined);
+      assert.equal(resolved.provider?.id, provider.id);
+      assert.equal(resolved.model, 'gpt-image-2');
     } finally {
       deleteProvider(provider.id);
       teardown();

@@ -34,6 +34,7 @@
 
 import { isCatalogOnlyPlanProvider, isOpenRouterProviderRecord } from './provider-catalog';
 import { normalizeOpenAICompatibleBaseUrl } from './provider-openai-compatible';
+import { proxyAwareFetch } from './proxy-aware-fetch';
 
 export type DiscoveryClassification =
   /** Reliable public/compat endpoint we can probe with provided creds. */
@@ -485,7 +486,7 @@ async function fetchAndParse(
   parser: (json: unknown) => { ids: string[] },
 ): Promise<Partial<DiscoveryResult>> {
   try {
-    const res = await fetch(url, {
+    const res = await proxyAwareFetch(url, {
       ...init,
       signal: AbortSignal.timeout(timeoutMs),
     });

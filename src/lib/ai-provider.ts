@@ -32,6 +32,7 @@ import {
 } from './provider-resolver';
 import { ensureTokenFresh } from './openai-oauth-manager';
 import { hasClaudeSettingsCredentials } from './claude-settings';
+import { proxyAwareFetch } from './proxy-aware-fetch';
 
 // ── Public API ──────────────────────────────────────────────────
 
@@ -173,6 +174,7 @@ function createLanguageModel(config: AiSdkConfig, isThirdPartyProxy: boolean): L
           : { apiKey: config.apiKey }),
         baseURL,
         headers,
+        fetch: proxyAwareFetch,
       });
       return anthropic(config.modelId);
     }
@@ -250,7 +252,7 @@ function createLanguageModel(config: AiSdkConfig, isThirdPartyProxy: boolean): L
               : timeoutCtl.signal;
 
             try {
-              const resp = await fetch(targetUrl, { ...init, headers, signal: combinedSignal });
+              const resp = await proxyAwareFetch(targetUrl, { ...init, headers, signal: combinedSignal });
               clearTimeout(timer);
               if (!resp.ok) {
                 const body = await resp.clone().text().catch(() => '');
@@ -275,6 +277,7 @@ function createLanguageModel(config: AiSdkConfig, isThirdPartyProxy: boolean): L
         apiKey: config.apiKey,
         baseURL: config.baseUrl,
         ...(hasHeaders ? { headers: config.headers } : {}),
+        fetch: proxyAwareFetch,
       });
       // Chat Completions, NOT the Responses API. In @ai-sdk/openai v3 the bare
       // `openai(modelId)` call defaults to `.responses()` (/v1/responses), but
@@ -293,6 +296,7 @@ function createLanguageModel(config: AiSdkConfig, isThirdPartyProxy: boolean): L
         apiKey: config.apiKey,
         baseURL: config.baseUrl,
         ...(hasHeaders ? { headers: config.headers } : {}),
+        fetch: proxyAwareFetch,
       });
       return google(config.modelId);
     }
@@ -318,6 +322,7 @@ function createLanguageModel(config: AiSdkConfig, isThirdPartyProxy: boolean): L
           : { apiKey: config.apiKey }),
         baseURL: config.baseUrl,
         ...(hasHeaders ? { headers: config.headers } : {}),
+        fetch: proxyAwareFetch,
       });
       return anthropic(config.modelId);
     }

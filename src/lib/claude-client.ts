@@ -33,6 +33,7 @@ import { wrapController } from './safe-stream';
 import { type ShadowHome } from './claude-home-shadow';
 import { prepareSdkSubprocessEnv } from './sdk-subprocess-env';
 import { normalizeOpenAICompatibleBaseUrl } from './provider-openai-compatible';
+import { proxyAwareFetch } from './proxy-aware-fetch';
 // Static imports for resolveRuntime/detectTransport — used to be lazy
 // `require('./runtime')` / `require('./provider-transport')`, but Turbopack's
 // CJS↔ESM interop returns `{ default: ... }` shape that broke destructuring
@@ -61,6 +62,7 @@ import { normalizeOpenAICompatibleBaseUrl } from './provider-openai-compatible';
 // resolveRuntime() fires here.
 import { resolveRuntime, getRuntime } from './runtime/registry';
 import { detectTransport, isNativeCompatible } from './provider-transport';
+import { promptNeedsMedia } from './media-intent';
 import os from 'os';
 import fs from 'fs';
 import path from 'path';
@@ -1019,14 +1021,7 @@ export function streamClaudeSdk(options: ClaudeStreamOptions): ReadableStream<st
         // Codex P1 — heartbeat never needs media tools; skip even
         // before keyword evaluation so a HEARTBEAT.md mentioning the
         // word "图片" can't accidentally pull the MCP in.
-        const needsMediaMcp = !isHeartbeatMode && (() => {
-          const mediaKeywords = /生成图片|画一|图像|图片|素材|保存.*素材|import.*library|save.*library|codepilot_import_media|codepilot_generate_image/i;
-          if (mediaKeywords.test(prompt)) return true;
-          if (conversationHistory?.some(m =>
-            mediaKeywords.test(m.content)
-          )) return true;
-          return false;
-        })();
+        const needsMediaMcp = !isHeartbeatMode && promptNeedsMedia(prompt, conversationHistory);
 
         if (needsMediaMcp) {
           const { createMediaImportMcpServer } = await import('@/lib/media-import-mcp');
@@ -2466,7 +2461,7 @@ export async function testProviderConnection(config: {
   const timeoutId = setTimeout(() => controller.abort(), 15_000);
 
   try {
-    const response = await fetch(apiUrl, {
+    const response = await proxyAwareFetch(apiUrl, {
       method: 'POST',
       headers,
       body,
@@ -2545,7 +2540,7 @@ async function testOpenAICompatibleProviderConnection(config: {
   const timeoutId = setTimeout(() => controller.abort(), 15_000);
 
   try {
-    const response = await fetch(apiUrl, {
+    const response = await proxyAwareFetch(apiUrl, {
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -2646,7 +2641,7 @@ async function testOpenAICompatibleConnection(config: {
   const timeoutId = setTimeout(() => controller.abort(), 15_000);
 
   try {
-    const response = await fetch(apiUrl, { method: 'GET', headers, signal: controller.signal });
+    const response = await proxyAwareFetch(apiUrl, { method: 'GET', headers, signal: controller.signal });
     clearTimeout(timeoutId);
 
     if (response.ok) return { success: true };
@@ -2732,7 +2727,7 @@ async function testMediaProviderConnection(config: {
   const timeoutId = setTimeout(() => controller.abort(), 15_000);
 
   try {
-    const response = await fetch(apiUrl, { method: 'GET', headers, signal: controller.signal });
+    const response = await proxyAwareFetch(apiUrl, { method: 'GET', headers, signal: controller.signal });
     clearTimeout(timeoutId);
 
     if (response.ok) return { success: true };

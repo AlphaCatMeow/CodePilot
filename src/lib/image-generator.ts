@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { proxyAwareFetch } from './proxy-aware-fetch';
 
 const dataDir = process.env.CLAUDE_GUI_DATA_DIR || path.join(os.homedir(), '.codepilot');
 const MEDIA_DIR = path.join(dataDir, '.codepilot-media');
@@ -335,6 +336,7 @@ export async function generateSingleImage(params: GenerateSingleImageParams): Pr
       const openai = createOpenAI({
         apiKey: provider.api_key,
         baseURL: provider.base_url || undefined,
+        fetch: proxyAwareFetch,
       });
       const size = mapAspectToOpenAISize(aspectRatio, imageSize, requestedModel);
       // [debug-session] Upstream request trace. TEMPORARY: remove on close.
@@ -357,6 +359,7 @@ export async function generateSingleImage(params: GenerateSingleImageParams): Pr
       const google = createGoogleGenerativeAI({
         apiKey: provider.api_key,
         baseURL: provider.base_url || undefined,
+        fetch: proxyAwareFetch,
       });
       // [debug-session] Upstream request trace. TEMPORARY: remove on close.
       console.log(`[image-debug] google.image upstream: model=${requestedModel} aspectRatio=${aspectRatio} imageSize=${imageSize} baseURL=${provider.base_url || '(sdk default)'}`);

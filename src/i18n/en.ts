@@ -108,6 +108,8 @@ const en = {
   // continue. The picker below already only lists real providers, so
   // picking one and sending again will route through the new choice.
   'chat.invalidSessionProvider.message': 'This session\'s saved provider "{providerId}" was deleted and the message could not be sent. Pick another provider in the composer below, or return to Settings to reconnect it.',
+  'chat.invalidSessionProvider.modelMessage': 'This session\'s saved model is not a chat model or is no longer available. Pick a text chat model in the composer below.',
+  'chat.invalidSessionProvider.runtimeMessage': 'This session\'s saved provider or model is not reachable under the current execution engine. Pick another model below, or switch the engine in Settings.',
 
   // ── Settings: General ───────────────────────────────────────
   'settings.title': 'Settings',
@@ -768,6 +770,8 @@ const en = {
   'gallery.delete': 'Delete',
   'gallery.confirmDelete': 'Confirm delete?',
   'gallery.deleteConfirm': 'Delete this image? This cannot be undone.',
+  'gallery.removeFromLibrary': 'Remove from library',
+  'gallery.confirmRemoveFromLibrary': 'Confirm remove?',
   'gallery.tags': 'Tags',
   'gallery.addTag': 'Add tag',
   'gallery.newTag': 'New tag name',

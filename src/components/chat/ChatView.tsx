@@ -278,15 +278,16 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
   // which makes the banner irrelevant; we clear on that signal).
   const [invalidSessionProvider, setInvalidSessionProvider] = useState<{
     sessionProviderId: string;
-    reason: string;
+    reason: 'provider-missing' | 'model-missing' | 'runtime-incompatible' | string;
   } | null>(null);
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ sessionId?: string; sessionProviderId?: string; reason?: string }>).detail;
       if (!detail || detail.sessionId !== sessionId) return;
+      const reason = detail.reason ?? 'provider-missing';
       setInvalidSessionProvider({
         sessionProviderId: detail.sessionProviderId ?? '',
-        reason: detail.reason ?? 'provider-missing',
+        reason,
       });
       // Step 4b review fix round 3 — remove ONLY the optimistic bubble
       // that `sendMessage`/dequeue pushed for *this* failed attempt.
@@ -1525,9 +1526,13 @@ export function ChatView({ sessionId, initialMessages = [], initialHasMore = fal
           className="mb-2 rounded-md border border-status-error-border bg-status-error-muted px-3 py-2 text-xs text-status-error-foreground"
           role="alert"
         >
-          {t('chat.invalidSessionProvider.message' as TranslationKey, {
-            providerId: invalidSessionProvider.sessionProviderId,
-          })}
+          {invalidSessionProvider.reason === 'model-missing'
+            ? t('chat.invalidSessionProvider.modelMessage' as TranslationKey)
+            : invalidSessionProvider.reason === 'runtime-incompatible'
+              ? t('chat.invalidSessionProvider.runtimeMessage' as TranslationKey)
+              : t('chat.invalidSessionProvider.message' as TranslationKey, {
+                  providerId: invalidSessionProvider.sessionProviderId,
+                })}
         </div>
       )}
       {sessionProviderRuntimeIncompatible && (

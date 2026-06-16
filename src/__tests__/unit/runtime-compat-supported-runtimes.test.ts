@@ -98,6 +98,26 @@ describe('getModelCompat → supportedRuntimes', () => {
     assert.equal(cap.supportedRuntimes, undefined);
   });
 
+  it('image-looking model ids stay chat-capable on chat-compatible providers', () => {
+    for (const modelId of [
+      'gpt-image-2',
+      'chatgpt-image-1',
+      'dall-e-3',
+      'imagen-4',
+      'gemini-3.1-flash-image',
+      'gemini-2.0-flash-exp-image-generation',
+      'grok-imagine-image-lite',
+    ]) {
+      const cap = getModelCompat({
+        modelId,
+        providerCompat: 'codepilot_only',
+      });
+      assert.equal(cap.media, undefined, `${modelId} must not be marked media-only by name`);
+      assert.equal(cap.chat, true, `${modelId} should remain available to chat-compatible providers`);
+      assert.ok(cap.supportedRuntimes?.includes('codepilot_runtime'));
+    }
+  });
+
   it('codex_account exposes ONLY codex_runtime + carries reasons for the others', () => {
     // Phase 5 Phase 2 (2026-05-13) — Codex account models flow only
     // through Codex Runtime; legacy compat booleans stay unset.

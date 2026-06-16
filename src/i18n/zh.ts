@@ -105,6 +105,8 @@ const zh: Record<TranslationKey, string> = {
   // 「保存的服务商不在了，请在下方挑一个新的」，picker 已经只显示
   // 真实存在的 provider，所以挑完再发就会走新 provider。
   'chat.invalidSessionProvider.message': '本会话保存的服务商「{providerId}」已经被删除，无法继续发送。请在下方挑选其它服务商或返回设置重新连接。',
+  'chat.invalidSessionProvider.modelMessage': '本会话保存的模型不是聊天模型或已不可用，无法继续发送。请在下方挑选一个文本聊天模型。',
+  'chat.invalidSessionProvider.runtimeMessage': '本会话保存的服务商或模型在当前执行引擎下不可用，无法继续发送。请在下方挑选其它模型，或在 Settings 切换执行引擎。',
 
   // ── Settings: General ───────────────────────────────────────
   'settings.title': '设置',
@@ -755,6 +757,8 @@ const zh: Record<TranslationKey, string> = {
   'gallery.delete': '删除',
   'gallery.confirmDelete': '确认删除？',
   'gallery.deleteConfirm': '确定删除这张图片？此操作无法撤销。',
+  'gallery.removeFromLibrary': '移出素材库',
+  'gallery.confirmRemoveFromLibrary': '确认移出？',
   'gallery.tags': '标签',
   'gallery.addTag': '添加标签',
   'gallery.newTag': '新标签名称',

@@ -103,8 +103,10 @@ export function getProviderCompatFromApi(provider: ApiProvider): ProviderRuntime
 
 /**
  * Model-layer compat. We don't try to introspect every upstream model —
- * we project from provider compat + model id heuristics + any catalog
- * capability flags the caller passes through.
+ * we project from provider compat + any catalog capability flags the caller
+ * passes through. Do not classify by image-looking model id here:
+ * OpenAI-compatible relays may expose image-generating models through
+ * chat/completions and return image data in a chat response.
  */
 export function getModelCompat(args: {
   modelId: string;
@@ -118,7 +120,7 @@ export function getModelCompat(args: {
     supportsAdaptiveThinking?: boolean;
   };
 }): ModelRuntimeCompat {
-  const { modelId, upstreamModelId, providerCompat, capabilities } = args;
+  const { providerCompat, capabilities } = args;
 
   if (providerCompat === 'media_only') {
     return { media: true };

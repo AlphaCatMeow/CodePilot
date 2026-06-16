@@ -117,13 +117,19 @@ export async function POST(request: NextRequest) {
       { runtime: effectiveSessionRuntime },
     );
     if (resolved.invalidReason) {
+      const invalidError =
+        resolved.invalidReason === 'provider-missing'
+          ? 'Session points at a provider that no longer exists.'
+          : resolved.invalidReason === 'model-missing'
+            ? 'Session points at a model that is not available for chat.'
+            : 'Session points at a provider/model that is incompatible with the current runtime.';
       releaseSessionLock(session_id, lockId);
       activeSessionId = undefined;
       activeLockId = undefined;
       setSessionRuntimeStatus(session_id, 'idle');
       return new Response(
         JSON.stringify({
-          error: 'Session points at a provider that no longer exists.',
+          error: invalidError,
           code: 'INVALID_SESSION_PROVIDER',
           reason: resolved.invalidReason,
           // Frontend can use this to render "your saved provider was
