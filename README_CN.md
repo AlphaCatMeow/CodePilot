@@ -3,10 +3,10 @@
 
 **多模型 AI Agent 桌面客户端** -- 连接任意 AI 服务商，通过 MCP 和 Skills 扩展能力，手机远程控制，让你的助理学会你的工作方式。
 
-[![GitHub release](https://img.shields.io/github/v/release/op7418/CodePilot)](https://github.com/op7418/CodePilot/releases)
-[![Downloads](https://img.shields.io/github/downloads/op7418/CodePilot/total)](https://github.com/op7418/CodePilot/releases)
-[![GitHub stars](https://img.shields.io/github/stars/op7418/CodePilot)](https://github.com/op7418/CodePilot/stargazers)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](https://github.com/op7418/CodePilot/releases)
+[![GitHub release](https://img.shields.io/github/v/release/AlphaCatMeow/CodePilot)](https://github.com/AlphaCatMeow/CodePilot/releases)
+[![Downloads](https://img.shields.io/github/downloads/AlphaCatMeow/CodePilot/total)](https://github.com/AlphaCatMeow/CodePilot/releases)
+[![GitHub stars](https://img.shields.io/github/stars/AlphaCatMeow/CodePilot)](https://github.com/AlphaCatMeow/CodePilot/stargazers)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](https://github.com/AlphaCatMeow/CodePilot/releases)
 [![License](https://img.shields.io/badge/license-BSL--1.1-orange)](LICENSE)
 
 [English](./README.md) | [日本語](./README_JA.md)
@@ -23,11 +23,11 @@
 
 | 平台 | 下载 | 架构 |
 |---|---|---|
-| macOS | [Apple Silicon (.dmg)](https://github.com/op7418/CodePilot/releases/latest) · [Intel (.dmg)](https://github.com/op7418/CodePilot/releases/latest) | arm64 / x64 |
-| Windows | [安装包 (.exe)](https://github.com/op7418/CodePilot/releases/latest) | x64 + arm64 |
+| macOS | [Apple Silicon (.dmg)](https://github.com/AlphaCatMeow/CodePilot/releases/latest) · [Intel (.dmg)](https://github.com/AlphaCatMeow/CodePilot/releases/latest) | arm64 / x64 |
+| Windows | [安装包 (.exe)](https://github.com/AlphaCatMeow/CodePilot/releases/latest) | x64 + arm64 |
 | Linux | 从源码构建 | x64 + arm64 |
 
-或访问 [Releases](https://github.com/op7418/CodePilot/releases) 页面获取所有版本。
+或访问 [Releases](https://github.com/AlphaCatMeow/CodePilot/releases) 页面获取所有版本。
 
 ---
 
@@ -87,7 +87,7 @@ CodePilot 从编程工具起步，已成长为**通用 AI Agent 桌面客户端*
 | npm | 9+（Node 18 自带） |
 
 ```bash
-git clone https://github.com/op7418/CodePilot.git
+git clone https://github.com/AlphaCatMeow/CodePilot.git
 cd CodePilot
 npm install
 npm run dev              # 浏览器模式，访问 http://localhost:3000
@@ -240,8 +240,8 @@ xattr -cr /Applications/CodePilot.app
 
 扫描二维码加入微信用户群，交流使用心得、反馈问题和获取最新动态。
 
-- [GitHub Issues](https://github.com/op7418/CodePilot/issues) -- Bug 反馈和功能建议
-- [GitHub Discussions](https://github.com/op7418/CodePilot/discussions) -- 提问和讨论
+- [GitHub Issues](https://github.com/AlphaCatMeow/CodePilot/issues) -- Bug 反馈和功能建议
+- [GitHub Discussions](https://github.com/AlphaCatMeow/CodePilot/discussions) -- 提问和讨论
 
 ---
 

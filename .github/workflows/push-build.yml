@@ -1,0 +1,157 @@
+name: Push Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Target platform"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - windows
+          - macos
+          - linux
+
+permissions:
+  contents: read
+
+concurrency:
+  group: push-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Report package version
+        run: |
+          echo "package.json version: $(node -p "require('./package.json').version")"
+          echo "package-lock root version: $(node -p "require('./package-lock.json').version")"
+          echo "package-lock package version: $(node -p "require('./package-lock.json').packages[''].version")"
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Targeted unit tests
+        run: |
+          CODEX_DISABLED=1 npx tsx --test --import ./src/__tests__/db-isolation.setup.ts \
+            src/__tests__/unit/codex-binary-discovery.test.ts \
+            src/__tests__/unit/codex-app-server-client.test.ts \
+            src/__tests__/unit/provider-resolver.test.ts \
+            src/__tests__/unit/direct-image-mode.test.ts \
+            src/__tests__/unit/media-intent.test.ts
+
+      - name: Next build
+        run: npm run build
+
+  build-windows:
+    name: Build Windows x64
+    needs: verify
+    if: ${{ github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'windows' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Electron app
+        run: npm run electron:build
+
+      - name: Package Windows x64
+        run: npx electron-builder --win --x64 --config electron-builder.yml --publish never
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: codepilot-windows-x64
+          path: |
+            release/CodePilot.Setup.*.exe
+            release/win-unpacked/**
+          retention-days: 7
+
+  build-macos:
+    name: Build macOS arm64
+    needs: verify
+    if: ${{ github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'macos' }}
+    runs-on: macos-15
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Electron app
+        run: npm run electron:build
+
+      - name: Package macOS arm64 unsigned
+        run: npx electron-builder --mac --arm64 --config electron-builder.yml --publish never
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: codepilot-macos-arm64
+          path: |
+            release/CodePilot-*-arm64.dmg
+            release/CodePilot-*-arm64.zip
+          retention-days: 7
+
+  build-linux:
+    name: Build Linux x64
+    needs: verify
+    if: ${{ github.event_name == 'push' || inputs.platform == 'all' || inputs.platform == 'linux' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build Electron app
+        run: npm run electron:build
+
+      - name: Package Linux x64
+        run: npx electron-builder --linux --x64 --config electron-builder.yml --publish never
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: codepilot-linux-x64
+          path: |
+            release/*.AppImage
+            release/*.deb
+            release/*.rpm
+          retention-days: 7

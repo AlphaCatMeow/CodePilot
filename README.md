@@ -3,10 +3,10 @@
 
 **A multi-model AI agent desktop client** -- connect any AI provider, extend with MCP & skills, control from your phone, and let your assistant learn your workflow.
 
-[![GitHub release](https://img.shields.io/github/v/release/op7418/CodePilot)](https://github.com/op7418/CodePilot/releases)
-[![Downloads](https://img.shields.io/github/downloads/op7418/CodePilot/total)](https://github.com/op7418/CodePilot/releases)
-[![GitHub stars](https://img.shields.io/github/stars/op7418/CodePilot)](https://github.com/op7418/CodePilot/stargazers)
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](https://github.com/op7418/CodePilot/releases)
+[![GitHub release](https://img.shields.io/github/v/release/AlphaCatMeow/CodePilot)](https://github.com/AlphaCatMeow/CodePilot/releases)
+[![Downloads](https://img.shields.io/github/downloads/AlphaCatMeow/CodePilot/total)](https://github.com/AlphaCatMeow/CodePilot/releases)
+[![GitHub stars](https://img.shields.io/github/stars/AlphaCatMeow/CodePilot)](https://github.com/AlphaCatMeow/CodePilot/stargazers)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-lightgrey)](https://github.com/AlphaCatMeow/CodePilot/releases)
 [![License](https://img.shields.io/badge/license-BSL--1.1-orange)](LICENSE)
 
 [中文文档](./README_CN.md) | [日本語](./README_JA.md)
@@ -27,7 +27,7 @@ Compared with the upstream repository, this fork currently adds:
 - **Chat-generated image asset workflow** -- generated chat images can open in a lightbox, save to disk, be added to the media library, be favorited separately from library membership, and keep the real generation prompt instead of generic alt text such as `image_1`.
 - **Local agent workflow documentation** -- this fork keeps project-specific Codex / Claude Code entry rules, execution plans, handover notes, and worklogs for ongoing fork development.
 
-The release badges and download links below still point to the upstream project unless this fork publishes its own release.
+Release badges, download links, and electron-builder publishing now point to this fork. Ordinary pushes build CI artifacts; `v*` tags publish fork releases when the release workflow is enabled.
 
 ---
 
@@ -43,11 +43,11 @@ The release badges and download links below still point to the upstream project 
 
 | Platform | Download | Architecture |
 |---|---|---|
-| macOS | [Apple Silicon (.dmg)](https://github.com/op7418/CodePilot/releases/latest) · [Intel (.dmg)](https://github.com/op7418/CodePilot/releases/latest) | arm64 / x64 |
-| Windows | [Installer (.exe)](https://github.com/op7418/CodePilot/releases/latest) | x64 + arm64 |
+| macOS | [Apple Silicon (.dmg)](https://github.com/AlphaCatMeow/CodePilot/releases/latest) · [Intel (.dmg)](https://github.com/AlphaCatMeow/CodePilot/releases/latest) | arm64 / x64 |
+| Windows | [Installer (.exe)](https://github.com/AlphaCatMeow/CodePilot/releases/latest) | x64 + arm64 |
 | Linux | Build from source | x64 + arm64 |
 
-Or visit the [Releases](https://github.com/op7418/CodePilot/releases) page for all versions.
+Or visit the [Releases](https://github.com/AlphaCatMeow/CodePilot/releases) page for all versions.
 
 ---
 
@@ -107,7 +107,7 @@ CodePilot started as a coding tool but has grown into a **general-purpose AI age
 | npm | 9+ (ships with Node 18) |
 
 ```bash
-git clone https://github.com/op7418/CodePilot.git
+git clone https://github.com/AlphaCatMeow/CodePilot.git
 cd CodePilot
 npm install
 npm run dev              # browser mode at http://localhost:3000
@@ -260,8 +260,8 @@ Each Bridge channel (Telegram, Feishu, Discord, QQ, WeChat) requires its own bot
 
 Scan the QR code to join the WeChat user group for discussions, feedback, and updates.
 
-- [GitHub Issues](https://github.com/op7418/CodePilot/issues) -- Bug reports and feature requests
-- [GitHub Discussions](https://github.com/op7418/CodePilot/discussions) -- Questions and general discussion
+- [GitHub Issues](https://github.com/AlphaCatMeow/CodePilot/issues) -- Bug reports and feature requests
+- [GitHub Discussions](https://github.com/AlphaCatMeow/CodePilot/discussions) -- Questions and general discussion
 
 ---
 
