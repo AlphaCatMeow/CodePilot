@@ -13,6 +13,14 @@
 
 ---
 
+## Fork Notice
+
+本项目 Fork 自歸藏（[@op7418](https://x.com/op7418)）自主开发的 CodePilot（[op7418/CodePilot](https://github.com/op7418/CodePilot)）。项目原始版权、许可与商业授权均归原作者及其授权体系管理；如需任何商业用途或商业授权，请直接联系歸藏本人获取许可。
+
+当前 Fork 仅作为个人 VibeCoding 练手项目，用于学习、实验和调整为更符合个人使用习惯的版本；不会用于、也不接受任何形式的商业用途。
+
+---
+
 ## Fork Differences
 
 This repository is a personal fork of [op7418/CodePilot](https://github.com/op7418/CodePilot). As of 2026-06-17, this branch is synced with upstream `main` through the upstream v0.56.0 release and has no missing upstream commits in the local comparison.
