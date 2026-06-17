@@ -63,9 +63,9 @@ jobs:
   validate-inputs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
       - name: preview_version must be valid semver AND > 0.54.0
         env:
           PV: ${{ inputs.preview_version }}
@@ -103,7 +103,7 @@ jobs:
     needs: validate-inputs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
           fetch-depth: 0   # full history so the 6923f13 ancestry check resolves
@@ -119,9 +119,9 @@ jobs:
             exit 1
           fi
           echo "✓ 6923f13 in ancestry + no --listen in app-server-manager"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - run: npm ci
       - name: Typecheck
@@ -172,12 +172,12 @@ jobs:
     needs: [validate-inputs, verify-source]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
       - name: Patch version (single source)
         run: npm version "${{ inputs.preview_version }}" --no-git-tag-version --allow-same-version
       - name: Show + save patch diff + resolved sources
@@ -209,12 +209,12 @@ jobs:
     # label (e.g. macos-26) when it is GA on this repo.
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - name: Record build inputs
         run: |
@@ -271,12 +271,12 @@ jobs:
     if: ${{ inputs.build_windows_x64 }}
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
       - name: Record build inputs
         shell: bash

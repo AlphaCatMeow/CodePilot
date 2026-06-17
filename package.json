@@ -3,6 +3,10 @@
   "version": "0.56.1-alphacat.1",
   "private": true,
   "license": "BUSL-1.1",
+  "engines": {
+    "node": ">=22 <25",
+    "npm": ">=10"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
