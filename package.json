@@ -4,8 +4,8 @@
   "private": true,
   "license": "BUSL-1.1",
   "engines": {
-    "node": ">=22 <25",
-    "npm": ">=10"
+    "node": "22.16.0",
+    "npm": ">=10.9 <11"
   },
   "workspaces": [
     "apps/*",

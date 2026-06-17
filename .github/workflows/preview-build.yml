@@ -20,7 +20,7 @@ name: Preview Build (manual · artifacts only · no release)
 #     clientInfo + NEXT_PUBLIC_APP_VERSION disagreed).
 #   - macOS = arm64 ONLY (user decision; no Intel real machine to smoke, and
 #     cross-building x64 on arm64 pollutes better-sqlite3 ABI).
-#   - Windows = x64 ONLY, built on windows-latest (native .node cannot be
+#   - Windows = x64 ONLY, built on windows-2022 (native .node cannot be
 #     cross-compiled from macOS — preview-build-readiness Phase 2 实现路径 5).
 
 on:
@@ -65,7 +65,7 @@ jobs:
     steps:
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 22.16.0
       - name: preview_version must be valid semver AND > 0.54.0
         env:
           PV: ${{ inputs.preview_version }}
@@ -121,7 +121,7 @@ jobs:
           echo "✓ 6923f13 in ancestry + no --listen in app-server-manager"
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version-file: .node-version
           cache: npm
       - run: npm ci
       - name: Typecheck
@@ -177,7 +177,7 @@ jobs:
           ref: ${{ inputs.commit_sha || github.sha }}
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version-file: .node-version
       - name: Patch version (single source)
         run: npm version "${{ inputs.preview_version }}" --no-git-tag-version --allow-same-version
       - name: Show + save patch diff + resolved sources
@@ -214,7 +214,7 @@ jobs:
           ref: ${{ inputs.commit_sha || github.sha }}
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version-file: .node-version
           cache: npm
       - name: Record build inputs
         run: |
@@ -264,19 +264,19 @@ jobs:
           retention-days: 7
 
   # --------------------------------------------------------------------------
-  # Windows x64 installer (MUST run on windows-latest — native modules)
+  # Windows x64 installer (MUST run on windows-2022 — native modules)
   # --------------------------------------------------------------------------
   build-windows-x64:
     needs: [validate-inputs, verify-source]
     if: ${{ inputs.build_windows_x64 }}
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.commit_sha || github.sha }}
       - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version-file: .node-version
           cache: npm
       - name: Record build inputs
         shell: bash
